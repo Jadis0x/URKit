@@ -80,6 +80,11 @@ between games, Unity versions, and runtime configurations.
 
 Game updates can change internal layouts or behavior. Always retest your mods after updating the game or its Unity version.
 
+## Documentation
+
+For setup instructions and API usage, see the
+[URKit SDK Handbook](docs/SDK_HANDBOOK.md).
+
 ## Related Projects
 
 - [UnityRuntimeExplorer](https://github.com/Jadis0x/UnityRuntimeExplorer) 
