@@ -317,6 +317,7 @@ struct Backend {
         }
         return nullptr;
     }
+    static bool method_is_generic(const void* method) { return method && URK::il2cpp::method_is_generic(static_cast<const URK::il2cpp::Method*>(method)); }
     static const void* find_method_exact(const void* klass, std::string_view name, const std::vector<const char*>& parameterTypeNames) {
         if (!klass) { set_error("Unity exact method lookup failed: class is null"); return nullptr; }
         const std::string cacheKey = member_cache_key(klass, name, parameterTypeNames);

@@ -319,6 +319,7 @@ template<class Ret, class... Args> Ret Object::InvokeGeneric(std::string_view me
     if (!klass) { detail::set_error("Unity Object::InvokeGeneric failed: object_get_class failed"); detail::append_backend_error(); return detail::from_result<Ret>(nullptr); }
     const void* method = detail::Backend::find_method(klass, methodName, sizeof...(Args));
     if (!method) { detail::set_error(std::string("Unity Object::InvokeGeneric failed: generic method not found: ") + std::string(methodName)); detail::append_backend_error(); return detail::from_result<Ret>(nullptr); }
+    if (!detail::Backend::method_is_generic(method)) { detail::set_error(std::string("Unity Object::InvokeGeneric failed: selected overload is not generic: ") + std::string(methodName)); return detail::from_result<Ret>(nullptr); }
     void* methodInfo = detail::Backend::method_get_object(method, klass);
     if (!methodInfo) { detail::set_error("Unity Object::InvokeGeneric failed: backend cannot expose MethodInfo for generic method"); detail::append_backend_error(); return detail::from_result<Ret>(nullptr); }
     std::vector<void*> genericTypeObjects;

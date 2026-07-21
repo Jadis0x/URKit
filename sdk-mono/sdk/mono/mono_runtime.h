@@ -383,6 +383,12 @@ inline const char *method_get_name(const Method *method) {
              ? a->method_get_name(method)
              : nullptr;
 }
+inline bool method_is_generic(const Method *method) {
+  const auto *a = api();
+  return a && URK_MONO_HAS(method_is_generic) && a->method_is_generic
+             ? a->method_is_generic(method) != 0
+             : false;
+}
 inline std::uint32_t method_get_flags(const Method *method,
                                       std::uint32_t *iflags = nullptr) {
   const auto *a = api();

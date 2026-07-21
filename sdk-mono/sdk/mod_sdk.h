@@ -7,8 +7,8 @@ extern "C" {
 #endif
 
 #define URK_SDK_VERSION 28
-#define URK_MONO_API_VERSION 7
-#define URK_RUNTIME_API_VERSION 6
+#define URK_MONO_API_VERSION 8
+#define URK_RUNTIME_API_VERSION 8
 #define URK_IL2CPP_API_VERSION 6
 #define URK_NETWORK_API_VERSION 1
 
@@ -172,6 +172,14 @@ typedef struct URK_ObjectDestroyRequest {
 
 typedef void (*URK_OnObjectDestroyRequestedFn)(const URK_ObjectDestroyRequest *request);
 
+/*
+ * Receives a native window message through the loader-owned dispatcher. Set
+ * handled to non-zero to keep the message away from the game's original
+ * window procedure. The return value becomes the dispatch result when handled.
+ */
+typedef intptr_t (*URK_WindowMessageCallback)(void *window, uint32_t message, uintptr_t wparam, intptr_t lparam,
+                                              int *handled);
+
 typedef struct URK_RuntimeApi {
     int version;
     uint32_t size;
@@ -185,9 +193,12 @@ typedef struct URK_RuntimeApi {
     int (*scene_current)(URK_SceneInfo *scene);
     /*
      * Acquires or releases one cursor-ownership reference for a native menu.
-     * While any reference is active, the loader exposes and unlocks the cursor
-     * and suppresses Unity mouse-button polling. The last release restores the
-     * previous state. Returns zero without changing state when unavailable.
+     * References are isolated by the calling native module, so an unmatched
+     * release cannot affect another mod. Any leases left by an unloading mod
+     * are released automatically. While any reference is active, the loader
+     * exposes and unlocks the cursor and suppresses Unity mouse-button polling.
+     * The last release restores the previous state. Returns zero without
+     * changing state when unavailable.
      */
     int (*menu_cursor_set_open)(int open);
     /*
@@ -215,6 +226,21 @@ typedef struct URK_RuntimeApi {
      * empty string when Steam is unavailable or not initialized yet.
      */
     int (*steam_id64)(char *output, size_t output_size);
+    /*
+     * Registers a module-owned callback without replacing GWLP_WNDPROC in the
+     * mod itself. Multiple mods may register for the same window. The loader
+     * removes any remaining callbacks before their owning module is unloaded.
+     * These append-only v7 entries must be size-checked before use.
+     */
+    int (*window_message_register)(void *window, URK_WindowMessageCallback callback);
+    int (*window_message_unregister)(void *window, URK_WindowMessageCallback callback);
+    intptr_t (*window_message_call_original)(void *window, uint32_t message, uintptr_t wparam, intptr_t lparam);
+    /*
+     * Owner-explicit cursor lease entry. owner_address must point inside the
+     * calling mod image. This v8 entry avoids return-address inference under
+     * aggressive tail-call optimization.
+     */
+    int (*menu_cursor_set_open_owned)(const void *owner_address, int open);
 } URK_RuntimeApi;
 
 typedef struct URK_Il2CppManagedMethodDesc {
@@ -364,6 +390,7 @@ typedef struct URK_Il2CppApi {
     void *(*object_unbox)(void *object);
     void *(*string_new)(const char *utf8);
     int (*string_to_utf8)(void *string, char *output, size_t output_size);
+    /* Pointer-sized managed array length; do not narrow to uint32_t on 64-bit IL2CPP. */
     size_t (*array_length)(void *array);
     void *(*array_addr_with_size)(void *array, int element_size, size_t index);
     /* Append-only safe object/reference array element helper. Implementations
@@ -561,6 +588,14 @@ static_assert(offsetof(URK_RuntimeApi, graphics_device_type) > offsetof(URK_Runt
               "URK_RuntimeApi graphics device helper must stay appended.");
 static_assert(offsetof(URK_RuntimeApi, steam_id64) > offsetof(URK_RuntimeApi, graphics_device_type),
               "URK_RuntimeApi Steam identity helper must stay appended.");
+static_assert(offsetof(URK_RuntimeApi, window_message_register) > offsetof(URK_RuntimeApi, steam_id64),
+              "URK_RuntimeApi window message helpers must stay appended.");
+static_assert(offsetof(URK_RuntimeApi, window_message_call_original) >
+                  offsetof(URK_RuntimeApi, window_message_unregister),
+              "URK_RuntimeApi window message helper order changed unexpectedly.");
+static_assert(offsetof(URK_RuntimeApi, menu_cursor_set_open_owned) >
+                  offsetof(URK_RuntimeApi, window_message_call_original),
+              "URK_RuntimeApi owner-explicit cursor helper must stay appended.");
 static_assert(offsetof(URK_ObjectDestroyRequest, typeName) > offsetof(URK_ObjectDestroyRequest, name),
               "URK_ObjectDestroyRequest fields must remain append-only.");
 static_assert(offsetof(URK_Il2CppApi, size) > offsetof(URK_Il2CppApi, version),
@@ -584,6 +619,7 @@ typedef struct URK_MonoApi {
     int (*runtime_invoke)(const void *method, void *object, void **params, void **result, void **exception,
                           uint32_t *native_exception);
     void *(*new_string)(const char *utf8);
+    /* Pointer-sized managed array length; matches the runtime ABI on 64-bit Mono. */
     size_t (*array_length)(void *array);
     void *(*array_address)(void *array, int element_size, size_t index);
     int (*object_class_name)(void *object, char *output, size_t output_size);
@@ -656,6 +692,8 @@ typedef struct URK_MonoApi {
     void *(*method_get_object)(const void *method);
     /* Boxes a value-type storage slot into a managed object. */
     void *(*value_box)(const void *klass, void *data);
+    /* Returns non-zero when the method is a generic method definition or an inflated generic method. */
+    int (*method_is_generic)(const void *method);
 } URK_MonoApi;
 
 #ifdef __cplusplus
@@ -663,6 +701,8 @@ static_assert(offsetof(URK_MonoApi, method_get_object) > offsetof(URK_MonoApi, g
               "URK_MonoApi new fields must be appended.");
 static_assert(offsetof(URK_MonoApi, value_box) > offsetof(URK_MonoApi, method_get_object),
               "URK_MonoApi value_box must be appended.");
+static_assert(offsetof(URK_MonoApi, method_is_generic) > offsetof(URK_MonoApi, value_box),
+              "URK_MonoApi generic method helper must stay appended.");
 #endif
 
 typedef enum URK_HookBackend {
