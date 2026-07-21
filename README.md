@@ -32,12 +32,21 @@ The public Windows x64 release contains:
 - `version.dll`
 - `winhttp.dll`
 - `winmm.dll`
+- `URKitInjected.dll`
 
 Keep `urk-sdk.exe` anywhere convenient.
 
 In the target game directory, place only the proxy DLL imported by the game executable. Do not rename the proxy DLL and do not place all three proxies in the same directory.
 
 Generated mod DLLs should be placed in the game's `Mods` directory.
+
+### Optional proxy-free loader
+
+`URKitInjected.dll` is the dedicated proxy-free loader DLL for external loading
+workflows. When it is loaded into a supported x64 game, it reads
+`<GameDir>/URKit_config.ini` and scans `<GameDir>/Mods` (or its configured
+`ModsDir`) exactly as it does with a proxy. URKit does not ship an injector;
+generated mod DLLs remain loader plugins and must not be injected directly.
 
 For loader and startup issues, check `URKit_logs.log` next to the game executable.
 
