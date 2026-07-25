@@ -1,6 +1,0 @@
-CompileFlags:
-  CompilationDatabase: out/build/clang-debug
-  Compiler: clang++
-
-Index:
-  Background: Build
