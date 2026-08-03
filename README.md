@@ -1,3 +1,8 @@
+
+[![Views](https://hits.sh/github.com/Jadis0x/URKit.svg?style=flat-square&label=views&color=blue)](https://hits.sh/github.com/Jadis0x/URKit/)
+[![Downloads](https://img.shields.io/github/downloads/Jadis0x/URKit/total?style=flat-square&label=downloads&color=blue)](https://github.com/Jadis0x/URKit/releases)
+
+
 # URKit
 
 URKit is a native C++ modding SDK for Windows x64 Unity games. It supports
