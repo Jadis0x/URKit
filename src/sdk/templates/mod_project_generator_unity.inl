@@ -826,6 +826,9 @@ struct Backend {
     static const void* object_get_class(void* object) { return object ? URK::)URKUNITY"
         << backendNs << R"URKUNITY(::object_get_class(static_cast<URK::)URKUNITY" << backendNs
         << R"URKUNITY(::Object*>(object)) : nullptr; }
+    static bool class_is_valuetype(const void* klass) { return klass && URK::)URKUNITY"
+        << backendNs << R"URKUNITY(::class_is_valuetype(static_cast<const URK::)URKUNITY" << backendNs
+        << R"URKUNITY(::Class*>(klass)); }
     static const char* class_get_name(const void* klass) { return klass ? URK::)URKUNITY"
         << backendNs << R"URKUNITY(::class_get_name(static_cast<const URK::)URKUNITY" << backendNs
         << R"URKUNITY(::Class*>(klass)) : nullptr; }
@@ -4458,6 +4461,11 @@ template <> struct Arg<std::string_view> {
     Arg(std::string_view v) : storage(Backend::new_string(v)), ptr(storage), valid(storage != nullptr) {
     }
 };
+void *make_reflection_array(void *elementType, const std::vector<void *> &values);
+template <class T> void *reflection_argument(Arg<T> &argument);
+template <class Tuple> void *invoke_reflection_method(void *reflectionMethod, void *target, Tuple &arguments);
+template <class Tuple>
+void *invoke_value_type_method(const void *method, const void *declaringClass, void *target, Tuple &arguments);
 template <class T> inline std::optional<const char *> parameter_type_name() {
     if constexpr (std::is_array_v<T> && std::is_same_v<std::remove_cv_t<std::remove_extent_t<T>>, char>)
         return "System.String";
@@ -4793,9 +4801,13 @@ template <class Ret, class... Args> Ret Object::Call(std::string_view methodName
         detail::append_backend_error();
         return detail::from_result<Ret>(nullptr);
     }
+    if (detail::Backend::class_is_valuetype(k)) {
+        void *result = detail::invoke_value_type_method(m, k, handle_, pack);
+        return detail::from_result<Ret>(result);
+    }
     void *result = nullptr;
     void *ex = nullptr;
-    if (!detail::Backend::runtime_invoke(m, handle_, argv.data(), &result, &ex) || ex) {
+    if (!detail::Backend::runtime_invoke(m, handle_, argv.empty() ? nullptr : argv.data(), &result, &ex) || ex) {
         detail::set_error(std::string("Unity Object::Call failed: runtime_invoke exception in ") +
                           std::string(methodName));
         detail::append_backend_error();
@@ -4843,7 +4855,7 @@ Ret detail::InvokeStatic(TypeRef type, std::string_view methodName, Args &&...ar
     }
     void *result = nullptr;
     void *ex = nullptr;
-    if (!Backend::runtime_invoke(m, nullptr, argv.data(), &result, &ex) || ex) {
+    if (!Backend::runtime_invoke(m, nullptr, argv.empty() ? nullptr : argv.data(), &result, &ex) || ex) {
         set_error(std::string("Unity static call failed: runtime_invoke exception in ") + std::string(methodName));
         append_backend_error();
         return from_result<Ret>(nullptr);
@@ -5037,7 +5049,17 @@ Ret Object::CallExact(std::string_view methodName, const std::vector<const char 
         detail::append_backend_error();
         return detail::from_result<Ret>(nullptr);
     }
-    return CallExact<Ret>(methodName, parameterTypeNames, argv.data());
+    if (handle_) {
+        const void *k = detail::Backend::object_get_class(handle_);
+        if (k && detail::Backend::class_is_valuetype(k)) {
+            const void *m = detail::Backend::find_method_exact(k, methodName, parameterTypeNames);
+            if (m) {
+                void *result = detail::invoke_value_type_method(m, k, handle_, pack);
+                return detail::from_result<Ret>(result);
+            }
+        }
+    }
+    return CallExact<Ret>(methodName, parameterTypeNames, argv.empty() ? nullptr : argv.data());
 }
 namespace detail {
 inline TypeRef reflection_type_ref(std::string_view typeName) {
@@ -5078,6 +5100,48 @@ template <class T> void *reflection_argument(Arg<T> &argument) {
         }
         return boxed;
     }
+}
+template <class Tuple>
+void *invoke_reflection_method(void *reflectionMethod, void *target, Tuple &arguments) {
+    if (!reflectionMethod) {
+        set_error("Unity reflection invocation failed: MethodInfo is null");
+        return nullptr;
+    }
+
+    std::vector<void *> values;
+    values.reserve(std::tuple_size_v<std::remove_reference_t<Tuple>>);
+    std::apply(
+        [&](auto &...argument) {
+            (values.push_back(reflection_argument(argument)), ...);
+        },
+        arguments);
+    if (fallback_error())
+        return nullptr;
+
+    void *argumentArray = nullptr;
+    if constexpr (std::tuple_size_v<std::remove_reference_t<Tuple>> != 0) {
+        void *objectType = TypeRef{"mscorlib", "System", "Object"}.resolve_type_object();
+        argumentArray = make_reflection_array(objectType, values);
+        if (!argumentArray)
+            return nullptr;
+    }
+
+    Object methodObject{reflectionMethod};
+    return methodObject.CallExact<void *>("Invoke", {"System.Object", "System.Object[]"}, target, argumentArray);
+}
+template <class Tuple>
+void *invoke_value_type_method(const void *method, const void *declaringClass, void *target, Tuple &arguments) {
+    if (!method || !declaringClass || !target) {
+        set_error("Unity value-type invocation failed: method, declaring class, or target is null");
+        return nullptr;
+    }
+    void *reflectionMethod = Backend::method_get_object(method, declaringClass);
+    if (!reflectionMethod) {
+        set_error("Unity value-type invocation failed: MethodInfo conversion failed");
+        append_backend_error();
+        return nullptr;
+    }
+    return invoke_reflection_method(reflectionMethod, target, arguments);
 }
 inline void *make_reflection_array(void *elementType, const std::vector<void *> &values) {
     if (!elementType) {
@@ -5319,21 +5383,7 @@ Ret Object::InvokeGeneric(std::string_view methodName, const std::vector<TypeObj
         return detail::from_result<Ret>(nullptr);
     auto pack = std::tuple<detail::Arg<std::remove_cvref_t<Args>>...>(
         detail::Arg<std::remove_cvref_t<Args>>(std::forward<Args>(args))...);
-    std::vector<void *> arguments;
-    arguments.reserve(sizeof...(Args));
-    std::apply([&](auto &...a) { (arguments.push_back(detail::reflection_argument(a)), ...); }, pack);
-    if (detail::fallback_error())
-        return detail::from_result<Ret>(nullptr);
-    void *argumentArray = nullptr;
-    if constexpr (sizeof...(Args) != 0) {
-        void *objectType = TypeRef{"mscorlib", "System", "Object"}.resolve_type_object();
-        argumentArray = detail::make_reflection_array(objectType, arguments);
-        if (!argumentArray)
-            return detail::from_result<Ret>(nullptr);
-    }
-    Object inflatedMethod{inflated};
-    void *result =
-        inflatedMethod.CallExact<void *>("Invoke", {"System.Object", "System.Object[]"}, handle_, argumentArray);
+    void *result = detail::invoke_reflection_method(inflated, handle_, pack);
     return detail::from_result<Ret>(result);
 }
 template <class T>
@@ -5415,7 +5465,7 @@ std::vector<T> Object::CallArrayExact(std::string_view methodName, const std::ve
         detail::append_backend_error();
         return {};
     }
-    return CallArrayExact<T>(methodName, parameterTypeNames, argv.data());
+    return CallArrayExact<T>(methodName, parameterTypeNames, argv.empty() ? nullptr : argv.data());
 }
 template <class T, class... Args>
 detail::RootedObjectArray<T>
@@ -5458,7 +5508,8 @@ Object::CallArrayExactRooted(std::string_view methodName, const std::vector<cons
 
     void *array = nullptr;
     void *exception = nullptr;
-    if (!detail::Backend::runtime_invoke(method, handle_, argv.data(), &array, &exception) || exception) {
+    if (!detail::Backend::runtime_invoke(method, handle_, argv.empty() ? nullptr : argv.data(), &array, &exception) ||
+        exception) {
         detail::set_error(std::string("Unity Object::CallArrayExactRooted failed: runtime_invoke exception in ") +
                           detail::signature_text(methodName, parameterTypeNames));
         detail::append_backend_error();
