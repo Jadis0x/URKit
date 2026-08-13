@@ -7,6 +7,8 @@ method calls, hooks, lifecycle callbacks, networking, and ImGui overlays.
 Generated mod DLLs are URKit plugins. Load them with a URKit proxy or
 `URKitInjector.dll`; do not inject mod DLLs directly.
 
+<img src="showcase/ss1.png" width="550">
+
 ## Release contents
 
 - `urk-sdk.exe`: project generator for Mono and IL2CPP mods.
