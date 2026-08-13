@@ -680,6 +680,19 @@ its managed wrapper has no callable body. The SDK retains the public overloads a
 compatibility fallbacks and reports both failures through `Unity::last_error()` if
 neither path succeeds.
 
+Use the default `Object` result wrapper when the GameObject can contain unrelated
+component types. URKit queries Unity with `UnityEngine.Component` in this case and
+returns each heterogeneous component as an `Object`:
+
+```cpp
+for (const Unity::Object& component : actor.GetComponents<>()) {
+  ModLog::info("%s", component.runtime_class_name().c_str());
+}
+```
+
+The same rule applies to the rooted and hierarchy variants. Supplying a concrete
+wrapper such as `Renderer` still uses that wrapper's Unity type as the filter.
+
 The vector-returning overloads preserve the familiar API and keep the managed
 result array rooted while it is decoded. For a scan that performs several managed
 calls while iterating, keep the rooted lease for the whole loop:

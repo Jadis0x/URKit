@@ -1221,6 +1221,16 @@ inline constexpr TypeRef ResourcesType{"", "UnityEngine", "Resources"};
 inline constexpr TypeRef DebugType{"", "UnityEngine", "Debug"};
 
 namespace detail {
+// Object is the SDK's type-erased result wrapper, not a valid Unity component
+// search type. Keep heterogeneous results represented as Object while asking
+// Unity for every Component attached to the GameObject.
+template <class T> constexpr TypeRef component_search_type() {
+    if constexpr (std::is_same_v<std::remove_cvref_t<T>, Object>)
+        return ComponentType;
+    else
+        return T::unity_type();
+}
+
 // IL2CPP field setters take the address of raw value-type storage, but take a
 // managed object directly for reference fields. Field getters still write a
 // reference into an output slot, so FieldOut keeps its pointer-to-pointer form.
@@ -4085,15 +4095,17 @@ struct GameObject : Object {
             .copy_items();
     }
     template <class T = Object> detail::RootedObjectArray<T> GetComponentsRooted() const {
-        return detail::QueryComponentsRooted<T>(*this, T::unity_type(), false, true, false);
+        return detail::QueryComponentsRooted<T>(*this, detail::component_search_type<T>(), false, true, false);
     }
     template <class T = Object>
     detail::RootedObjectArray<T> GetComponentsInChildrenRooted(bool includeInactive = false) const {
-        return detail::QueryComponentsRooted<T>(*this, T::unity_type(), true, includeInactive, false);
+        return detail::QueryComponentsRooted<T>(*this, detail::component_search_type<T>(), true, includeInactive,
+                                                false);
     }
     template <class T = Object>
     detail::RootedObjectArray<T> GetComponentsInParentRooted(bool includeInactive = false) const {
-        return detail::QueryComponentsRooted<T>(*this, T::unity_type(), true, includeInactive, true);
+        return detail::QueryComponentsRooted<T>(*this, detail::component_search_type<T>(), true, includeInactive,
+                                                true);
     }
     template <class T> T AddComponent() const {
         if constexpr (std::is_same_v<T, Transform>)
