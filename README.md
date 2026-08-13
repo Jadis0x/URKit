@@ -1,5 +1,12 @@
 # URKit
 
+[![GitHub Release](https://img.shields.io/github/v/release/Jadis0x/URKit?label=Release)](https://github.com/Jadis0x/URKit/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Jadis0x/URKit/total?label=Downloads)](https://github.com/Jadis0x/URKit/releases)
+[![GitHub Stars](https://img.shields.io/github/stars/Jadis0x/URKit?style=flat&label=Stars)](https://github.com/Jadis0x/URKit/stargazers)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/XC7RUpGp6e)
+[![Support](https://img.shields.io/badge/Support-GitHub%20Issues-blue?logo=github)](https://github.com/Jadis0x/URKit/issues)
+[![License](https://img.shields.io/github/license/Jadis0x/URKit)](https://github.com/Jadis0x/URKit/blob/main/LICENSE)
+
 URKit is a native C++ modding toolkit for Windows x64 Unity games. It supports
 Mono and IL2CPP through one loader ABI and provides Unity object access, managed
 method calls, hooks, lifecycle callbacks, networking, and ImGui overlays.
