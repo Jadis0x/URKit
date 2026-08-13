@@ -37,6 +37,7 @@ std::string UnityCoreModuleFull(const ModuleProjectOptions &options) {
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -680,8 +681,10 @@ enum class KeyCode : int {
 using DiagnosticSink = void (*)(const char *);
 
 namespace detail {
+// Unity diagnostics follow a last-error contract: each calling thread owns
+// its error text so main/render activity cannot race or overwrite it.
 inline std::string &error_slot() {
-    static std::string value;
+    thread_local std::string value;
     return value;
 }
 inline std::mutex &cache_mutex() {
@@ -704,15 +707,17 @@ inline std::unordered_map<std::string, const void *> &field_cache() {
     static std::unordered_map<std::string, const void *> value;
     return value;
 }
-inline void clear_error() {
+inline void clear_error() noexcept {
     error_slot().clear();
 }
 inline void set_error(std::string_view text) {
-    error_slot() = std::string(text);
+    error_slot().assign(text.data(), text.size());
 }
-inline const char *fallback_error() {
-    return error_slot().empty() ? nullptr : error_slot().c_str();
+inline const char *fallback_error() noexcept {
+    const std::string &value = error_slot();
+    return value.empty() ? nullptr : value.c_str();
 }
+inline void append_backend_error();
 inline std::string z(std::string_view v) {
     return std::string(v);
 }
@@ -809,13 +814,12 @@ struct Backend {
         << backendNs << R"URKUNITY(::available(); }
     static const char* backend_last_error() { return URK::)URKUNITY"
         << backendNs << R"URKUNITY(::last_error(); }
-    static const char* last_error() {
+    static const char* last_error() noexcept {
         // Backend diagnostics are copied into the local slot at the failure
         // site. Returning that slot prevents a stale backend error from
         // turning a successful false/null Unity result into a failure.
-        thread_local std::string snapshot;
-        snapshot = fallback_error() ? fallback_error() : "";
-        return snapshot.empty() ? nullptr : snapshot.c_str();
+        const std::string &value = error_slot();
+        return value.empty() ? nullptr : value.c_str();
     }
     static const void* find_class(std::string_view image, std::string_view ns, std::string_view name) { auto i=z(image), n=z(ns), c=z(name); return URK::)URKUNITY"
         << backendNs << R"URKUNITY(::find_class(i.c_str(), n.c_str(), c.c_str()); }
@@ -922,6 +926,109 @@ struct Backend {
 }
 }
 ;
+
+// Keeps a managed reference array alive while callers iterate over the SDK's
+// lightweight object wrappers. The wrappers themselves intentionally remain
+// non-owning; the array's strong GC handle owns their lifetime as a group.
+template <class T> class RootedObjectArray {
+  public:
+    RootedObjectArray() = default;
+    RootedObjectArray(const RootedObjectArray &) = delete;
+    RootedObjectArray &operator=(const RootedObjectArray &) = delete;
+
+    RootedObjectArray(RootedObjectArray &&other) noexcept
+        : items_(std::move(other.items_)), root_(std::exchange(other.root_, 0)) {
+    }
+    RootedObjectArray &operator=(RootedObjectArray &&other) noexcept {
+        if (this != &other) {
+            reset();
+            items_ = std::move(other.items_);
+            root_ = std::exchange(other.root_, 0);
+        }
+        return *this;
+    }
+    ~RootedObjectArray() {
+        reset();
+    }
+
+    explicit operator bool() const {
+        return root_ != 0;
+    }
+    bool empty() const {
+        return items_.empty();
+    }
+    std::size_t size() const {
+        return items_.size();
+    }
+    const T &operator[](std::size_t index) const {
+        return items_[index];
+    }
+    auto begin() const {
+        return items_.begin();
+    }
+    auto end() const {
+        return items_.end();
+    }
+    std::vector<T> copy_items() const & {
+        return items_;
+    }
+    std::vector<T> copy_items() && {
+        return std::move(items_);
+    }
+
+    void reset() {
+        items_.clear();
+        const std::uint32_t root = std::exchange(root_, 0);
+        if (root)
+            Backend::gchandle_free(root);
+    }
+
+    static RootedObjectArray from_managed_array(void *array, std::string_view operation) {
+        RootedObjectArray out;
+        if (!array) {
+            if (!fallback_error())
+                set_error(std::string(operation) + " returned a null managed array");
+            return out;
+        }
+        out.root_ = Backend::gchandle_new(array, 0);
+        if (!out.root_) {
+            set_error(std::string(operation) + " could not root the managed result array");
+            append_backend_error();
+            return out;
+        }
+        if (!Backend::has_array_length() || !Backend::has_array_ref_at()) {
+            set_error(std::string(operation) + " requires array_length and array_ref_at exports");
+            append_backend_error();
+            out.reset();
+            return {};
+        }
+
+        const std::size_t count = Backend::array_length(array);
+        if (count > out.items_.max_size()) {
+            set_error(std::string(operation) + " returned an array larger than the native container can represent");
+            out.reset();
+            return {};
+        }
+        try {
+            out.items_.reserve(count);
+        } catch (const std::bad_alloc &) {
+            set_error(std::string(operation) + " could not allocate storage for " + std::to_string(count) +
+                      " managed references");
+            out.reset();
+            return {};
+        }
+        for (std::size_t index = 0; index < count; ++index) {
+            if (void *item = Backend::array_ref_at(array, index))
+                out.items_.emplace_back(item);
+        }
+        return out;
+    }
+
+  private:
+    std::vector<T> items_;
+    std::uint32_t root_ = 0;
+};
+
 inline void append_backend_error() {
     const char *e = Backend::backend_last_error();
     if (e && e[0]) {
@@ -1223,6 +1330,13 @@ std::vector<T> StaticArrayCall(TypeRef type, std::string_view methodName, Args &
 template <class T, class... ExtraArgs>
 std::vector<T> FindObjectsUsing(TypeRef owner, std::string_view methodName, std::string_view image,
                                 std::string_view namespc, std::string_view className, ExtraArgs &&...extraArgs);
+template <class T, class... ExtraArgs>
+RootedObjectArray<T> FindObjectsUsingRooted(TypeRef owner, std::string_view methodName, std::string_view image,
+                                            std::string_view namespc, std::string_view className,
+                                            ExtraArgs &&...extraArgs);
+template <class T>
+RootedObjectArray<T> QueryComponentsRooted(const Object &target, TypeRef componentType, bool recursive,
+                                           bool includeInactive, bool reverse);
 }
 struct TypeObject {
     void *handle_ = nullptr;
@@ -1319,6 +1433,16 @@ struct Object {
         const TypeRef type = T::unity_type();
         return FindObjectsOfTypeAll<T>(type.image, type.namespc, type.name);
     }
+    template <class T> static detail::RootedObjectArray<T> FindObjectsOfTypeRooted() {
+        const TypeRef type = T::unity_type();
+        return detail::FindObjectsUsingRooted<T>(UnityObjectType, "FindObjectsOfType", type.image, type.namespc,
+                                                 type.name);
+    }
+    template <class T> static detail::RootedObjectArray<T> FindObjectsOfTypeAllRooted() {
+        const TypeRef type = T::unity_type();
+        return detail::FindObjectsUsingRooted<T>(ResourcesType, "FindObjectsOfTypeAll", type.image, type.namespc,
+                                                 type.name);
+    }
     template <class T> static T FindObjectOfType() {
         auto all = FindObjectsOfType<T>();
         return all.empty() ? T{} : all.front();
@@ -1389,6 +1513,10 @@ struct Object {
     template <class T = Object, class... Args>
     std::vector<T> CallArrayExact(std::string_view methodName, const std::vector<const char *> &parameterTypeNames,
                                   Args &&...args) const;
+    template <class T = Object, class... Args>
+    detail::RootedObjectArray<T>
+    CallArrayExactRooted(std::string_view methodName, const std::vector<const char *> &parameterTypeNames,
+                         Args &&...args) const;
     std::vector<std::string> CallStringArrayExact(std::string_view methodName,
                                                   const std::vector<const char *> &parameterTypeNames) const;
     template <class T>
@@ -1464,6 +1592,11 @@ struct Component : Object {
     template <class T = Object> std::vector<T> GetComponents() const;
     template <class T = Object> std::vector<T> GetComponentsInChildren(bool includeInactive = false) const;
     template <class T = Object> std::vector<T> GetComponentsInParent(bool includeInactive = false) const;
+    template <class T = Object> detail::RootedObjectArray<T> GetComponentsRooted() const;
+    template <class T = Object>
+    detail::RootedObjectArray<T> GetComponentsInChildrenRooted(bool includeInactive = false) const;
+    template <class T = Object>
+    detail::RootedObjectArray<T> GetComponentsInParentRooted(bool includeInactive = false) const;
     template <class T> T AddComponent() const;
     Object AddComponent(std::string_view image, std::string_view namespc, std::string_view className) const;
     template <class T> bool HasComponent() const;
@@ -3923,61 +4056,41 @@ struct GameObject : Object {
                                : CallExact<Object>("GetComponentInParent", {"System.Type"}, TypeObject{type});
     }
     template <class T = Object> std::vector<T> GetComponents() const {
-        const TypeRef type = T::unity_type();
-        return GetComponents<T>(type.image, type.namespc, type.name);
+        return GetComponentsRooted<T>().copy_items();
     }
     template <class T = Object>
     std::vector<T> GetComponents(std::string_view image, std::string_view namespc, std::string_view className) const {
-        detail::clear_error();
-        void *type = TypeRef{image, namespc, className}.resolve_type_object();
-        if (!type) {
-            detail::set_error(std::string("Unity GameObject::GetComponents failed: "
-                                          "component class not found: ") +
-                              std::string(image) + ":" + std::string(namespc) + "." + std::string(className));
-            detail::append_backend_error();
-            return {};
-        }
-        return CallArrayExact<T>("GetComponents", {"System.Type"}, TypeObject{type});
+        return detail::QueryComponentsRooted<T>(*this, TypeRef{image, namespc, className}, false, true, false)
+            .copy_items();
     }
     template <class T = Object> std::vector<T> GetComponentsInChildren(bool includeInactive = false) const {
-        const TypeRef type = T::unity_type();
-        return GetComponentsInChildren<T>(type.image, type.namespc, type.name, includeInactive);
+        return GetComponentsInChildrenRooted<T>(includeInactive).copy_items();
     }
     template <class T = Object>
     std::vector<T> GetComponentsInChildren(std::string_view image, std::string_view namespc, std::string_view className,
                                            bool includeInactive = false) const {
-        detail::clear_error();
-        void *type = TypeRef{image, namespc, className}.resolve_type_object();
-        if (!type) {
-            detail::set_error(std::string("Unity GameObject::GetComponentsInChildren "
-                                          "failed: component class not found: ") +
-                              std::string(image) + ":" + std::string(namespc) + "." + std::string(className));
-            detail::append_backend_error();
-            return {};
-        }
-        return includeInactive ? CallArrayExact<T>("GetComponentsInChildren", {"System.Type", "System.Boolean"},
-                                                   TypeObject{type}, includeInactive)
-                               : CallArrayExact<T>("GetComponentsInChildren", {"System.Type"}, TypeObject{type});
+        return detail::QueryComponentsRooted<T>(*this, TypeRef{image, namespc, className}, true, includeInactive, false)
+            .copy_items();
     }
     template <class T = Object> std::vector<T> GetComponentsInParent(bool includeInactive = false) const {
-        const TypeRef type = T::unity_type();
-        return GetComponentsInParent<T>(type.image, type.namespc, type.name, includeInactive);
+        return GetComponentsInParentRooted<T>(includeInactive).copy_items();
     }
     template <class T = Object>
     std::vector<T> GetComponentsInParent(std::string_view image, std::string_view namespc, std::string_view className,
                                          bool includeInactive = false) const {
-        detail::clear_error();
-        void *type = TypeRef{image, namespc, className}.resolve_type_object();
-        if (!type) {
-            detail::set_error(std::string("Unity GameObject::GetComponentsInParent "
-                                          "failed: component class not found: ") +
-                              std::string(image) + ":" + std::string(namespc) + "." + std::string(className));
-            detail::append_backend_error();
-            return {};
-        }
-        return includeInactive ? CallArrayExact<T>("GetComponentsInParent", {"System.Type", "System.Boolean"},
-                                                   TypeObject{type}, includeInactive)
-                               : CallArrayExact<T>("GetComponentsInParent", {"System.Type"}, TypeObject{type});
+        return detail::QueryComponentsRooted<T>(*this, TypeRef{image, namespc, className}, true, includeInactive, true)
+            .copy_items();
+    }
+    template <class T = Object> detail::RootedObjectArray<T> GetComponentsRooted() const {
+        return detail::QueryComponentsRooted<T>(*this, T::unity_type(), false, true, false);
+    }
+    template <class T = Object>
+    detail::RootedObjectArray<T> GetComponentsInChildrenRooted(bool includeInactive = false) const {
+        return detail::QueryComponentsRooted<T>(*this, T::unity_type(), true, includeInactive, false);
+    }
+    template <class T = Object>
+    detail::RootedObjectArray<T> GetComponentsInParentRooted(bool includeInactive = false) const {
+        return detail::QueryComponentsRooted<T>(*this, T::unity_type(), true, includeInactive, true);
     }
     template <class T> T AddComponent() const {
         if constexpr (std::is_same_v<T, Transform>)
@@ -4185,6 +4298,17 @@ template <class T> inline std::vector<T> Component::GetComponentsInChildren(bool
 }
 template <class T> inline std::vector<T> Component::GetComponentsInParent(bool includeInactive) const {
     return gameObject().GetComponentsInParent<T>(includeInactive);
+}
+template <class T> inline detail::RootedObjectArray<T> Component::GetComponentsRooted() const {
+    return gameObject().GetComponentsRooted<T>();
+}
+template <class T>
+inline detail::RootedObjectArray<T> Component::GetComponentsInChildrenRooted(bool includeInactive) const {
+    return gameObject().GetComponentsInChildrenRooted<T>(includeInactive);
+}
+template <class T>
+inline detail::RootedObjectArray<T> Component::GetComponentsInParentRooted(bool includeInactive) const {
+    return gameObject().GetComponentsInParentRooted<T>(includeInactive);
 }
 template <class T> inline T Component::AddComponent() const {
     return gameObject().AddComponent<T>();
@@ -4714,44 +4838,27 @@ Ret detail::InvokeStatic(TypeRef type, std::string_view methodName, Args &&...ar
 
 template <class T, class... Args>
 std::vector<T> detail::StaticArrayCall(TypeRef type, std::string_view methodName, Args &&...args) {
-    std::vector<T> out;
     void *array = InvokeStatic<void *>(type, methodName, std::forward<Args>(args)...);
-    if (!array) {
-        if (!fallback_error())
-            set_error(std::string("Unity array call returned null: ") + std::string(methodName));
-        return out;
-    }
-    if (!Backend::has_array_length()) {
-        set_error("Unity array length unavailable: backend array_length API is "
-                  "unavailable");
-        append_backend_error();
-        return out;
-    }
-    const std::size_t count = Backend::array_length(array);
-    if (count == 0) {
-        append_backend_error();
-        return out;
-    }
-    if (!Backend::has_array_ref_at()) {
-        set_error("Unity array element access unavailable: backend array_ref_at "
-                  "API is unavailable");
-        append_backend_error();
-        return out;
-    }
-    out.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        void *item = Backend::array_ref_at(array, i);
-        if (item)
-            out.emplace_back(item);
-    }
-    return out;
+    return RootedObjectArray<T>::from_managed_array(array, "Unity static array call").copy_items();
 }
 
 template <class T, class... ExtraArgs>
 std::vector<T> detail::FindObjectsUsing(TypeRef owner, std::string_view methodName, std::string_view image,
                                         std::string_view namespc, std::string_view className,
                                         ExtraArgs &&...extraArgs) {
-    std::vector<T> out;
+    auto rooted = FindObjectsUsingRooted<T>(owner, methodName, image, namespc, className,
+                                            std::forward<ExtraArgs>(extraArgs)...);
+    std::vector<T> out = std::move(rooted).copy_items();
+    if (out.empty() && !fallback_error())
+        set_error(std::string("Unity object finding failed: no non-null instances found: ") + std::string(image) +
+                  ":" + std::string(namespc) + "." + std::string(className));
+    return out;
+}
+
+template <class T, class... ExtraArgs>
+detail::RootedObjectArray<T>
+detail::FindObjectsUsingRooted(TypeRef owner, std::string_view methodName, std::string_view image,
+                               std::string_view namespc, std::string_view className, ExtraArgs &&...extraArgs) {
     clear_error();
     TypeRef target{image, namespc, className};
     void *type = target.resolve_type_object();
@@ -4759,44 +4866,14 @@ std::vector<T> detail::FindObjectsUsing(TypeRef owner, std::string_view methodNa
         set_error(std::string("Unity object finding failed: class not found: ") + std::string(image) + ":" +
                   std::string(namespc) + "." + std::string(className));
         append_backend_error();
-        return out;
+        return {};
     }
     void *array = InvokeStatic<void *>(owner, methodName, TypeObject{type}, std::forward<ExtraArgs>(extraArgs)...);
     if (!array && methodName == "FindObjectsOfType" && sizeof...(ExtraArgs) == 0) {
         clear_error();
         array = InvokeStatic<void *>(owner, "FindObjectsByType", TypeObject{type}, FindObjectsSortMode::None);
     }
-    if (!array) {
-        if (!fallback_error())
-            set_error(std::string("Unity object finding failed: returned array was null: ") + std::string(methodName));
-        return out;
-    }
-    if (!Backend::has_array_length()) {
-        set_error("Unity object finding failed: backend array_length API is unavailable");
-        append_backend_error();
-        return out;
-    }
-    const std::size_t count = Backend::array_length(array);
-    if (count == 0) {
-        append_backend_error();
-        return out;
-    }
-    if (!Backend::has_array_ref_at()) {
-        set_error("Unity object finding failed: Unity array element access "
-                  "unavailable: backend array_ref_at API is unavailable");
-        append_backend_error();
-        return out;
-    }
-    out.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        void *item = Backend::array_ref_at(array, i);
-        if (item)
-            out.emplace_back(item);
-    }
-    if (out.empty())
-        set_error(std::string("Unity object finding failed: no non-null instances found: ") + std::string(image) + ":" +
-                  std::string(namespc) + "." + std::string(className));
-    return out;
+    return RootedObjectArray<T>::from_managed_array(array, "Unity rooted object finding");
 }
 
 template <class T> T Object::GetField(std::string_view fieldName) const {
@@ -5324,6 +5401,121 @@ std::vector<T> Object::CallArrayExact(std::string_view methodName, const std::ve
         return {};
     }
     return CallArrayExact<T>(methodName, parameterTypeNames, argv.data());
+}
+template <class T, class... Args>
+detail::RootedObjectArray<T>
+Object::CallArrayExactRooted(std::string_view methodName, const std::vector<const char *> &parameterTypeNames,
+                             Args &&...args) const {
+    detail::clear_error();
+    if (!handle_) {
+        detail::set_error("Unity Object::CallArrayExactRooted failed: target object is null");
+        return {};
+    }
+    const void *klass = detail::Backend::object_get_class(handle_);
+    if (!klass) {
+        detail::set_error("Unity Object::CallArrayExactRooted failed: object_get_class failed");
+        detail::append_backend_error();
+        return {};
+    }
+    const void *method = detail::Backend::find_method_exact(klass, methodName, parameterTypeNames);
+    if (!method) {
+        const std::string lookupDetail = detail::fallback_error() ? detail::fallback_error() : "";
+        detail::set_error(std::string("Unity Object::CallArrayExactRooted failed: exact method not found: ") +
+                          detail::signature_text(methodName, parameterTypeNames) +
+                          (lookupDetail.empty() ? std::string{} : std::string("; detail: ") + lookupDetail));
+        detail::append_backend_error();
+        return {};
+    }
+
+    auto pack = std::tuple<detail::Arg<std::remove_cvref_t<Args>>...>(
+        detail::Arg<std::remove_cvref_t<Args>>(std::forward<Args>(args))...);
+    std::array<void *, sizeof...(Args)> argv{};
+    std::size_t index = 0;
+    bool argsValid = true;
+    std::apply([&](auto &...argument) { ((argsValid = argsValid && argument.valid, argv[index++] = argument.ptr), ...); },
+               pack);
+    if (!argsValid) {
+        detail::set_error(std::string("Unity Object::CallArrayExactRooted failed: managed argument allocation failed in ") +
+                          std::string(methodName));
+        detail::append_backend_error();
+        return {};
+    }
+
+    void *array = nullptr;
+    void *exception = nullptr;
+    if (!detail::Backend::runtime_invoke(method, handle_, argv.data(), &array, &exception) || exception) {
+        detail::set_error(std::string("Unity Object::CallArrayExactRooted failed: runtime_invoke exception in ") +
+                          detail::signature_text(methodName, parameterTypeNames));
+        detail::append_backend_error();
+        return {};
+    }
+    return detail::RootedObjectArray<T>::from_managed_array(array, "Unity Object::CallArrayExactRooted");
+}
+
+template <class T>
+detail::RootedObjectArray<T> detail::QueryComponentsRooted(const Object &target, TypeRef componentType,
+                                                           bool recursive, bool includeInactive, bool reverse) {
+    clear_error();
+    void *typeObject = componentType.resolve_type_object();
+    if (!typeObject) {
+        set_error(std::string("Unity component query failed: component class not found: ") +
+                  std::string(componentType.image) + ":" + std::string(componentType.namespc) + "." +
+                  std::string(componentType.name));
+        append_backend_error();
+        return {};
+    }
+
+    // GetComponentsInternal is Unity's native-backed implementation. Prefer it
+    // because stripped managed wrappers can retain metadata without a callable
+    // body in IL2CPP players.
+    auto result = target.CallArrayExactRooted<T>(
+        "GetComponentsInternal",
+        {"System.Type", "System.Boolean", "System.Boolean", "System.Boolean", "System.Boolean", "System.Object"},
+        TypeObject{typeObject}, false, recursive, includeInactive, reverse, Object{});
+    if (result)
+        return result;
+
+    const std::string internalError =
+        fallback_error() ? fallback_error() : "GetComponentsInternal returned no rooted array";
+    clear_error();
+
+    std::string publicMethod;
+    if (!recursive) {
+        publicMethod = "GetComponents";
+        result = target.CallArrayExactRooted<T>(publicMethod, {"System.Type"}, TypeObject{typeObject});
+    } else {
+        publicMethod = reverse ? "GetComponentsInParent" : "GetComponentsInChildren";
+        if (includeInactive) {
+            result = target.CallArrayExactRooted<T>(publicMethod, {"System.Type", "System.Boolean"},
+                                                    TypeObject{typeObject}, true);
+        } else {
+            // Preserve compatibility with older Unity versions that only expose
+            // the one-parameter overload, then try the newer explicit overload.
+            result = target.CallArrayExactRooted<T>(publicMethod, {"System.Type"}, TypeObject{typeObject});
+            if (!result) {
+                const std::string oneParameterError =
+                    fallback_error() ? fallback_error() : "one-parameter public component query failed";
+                clear_error();
+                result = target.CallArrayExactRooted<T>(publicMethod, {"System.Type", "System.Boolean"},
+                                                        TypeObject{typeObject}, false);
+                if (!result) {
+                    const std::string explicitBooleanError =
+                        fallback_error() ? fallback_error() : "two-parameter public component query failed";
+                    set_error("Unity component query failed through native and public paths; native: " +
+                              internalError + "; public one-parameter: " + oneParameterError +
+                              "; public explicit-boolean: " + explicitBooleanError);
+                    return {};
+                }
+            }
+        }
+    }
+    if (result)
+        return result;
+
+    const std::string publicError = fallback_error() ? fallback_error() : "public component query returned no rooted array";
+    set_error("Unity component query failed through native and public paths; native: " + internalError +
+              "; public " + publicMethod + ": " + publicError);
+    return {};
 }
 inline std::vector<std::string> Object::CallStringArrayExact(
     std::string_view methodName, const std::vector<const char *> &parameterTypeNames) const {

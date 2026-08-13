@@ -668,6 +668,39 @@ for (const Unity::Renderer& renderer : all_renderers) {
 }
 ```
 
+Plural component queries first use Unity's native-backed
+`GetComponentsInternal` implementation. This matters in stripped IL2CPP players,
+where a public `GetComponents*` method can remain visible in metadata even though
+its managed wrapper has no callable body. The SDK retains the public overloads as
+compatibility fallbacks and reports both failures through `Unity::last_error()` if
+neither path succeeds.
+
+The vector-returning overloads preserve the familiar API and keep the managed
+result array rooted while it is decoded. For a scan that performs several managed
+calls while iterating, keep the rooted lease for the whole loop:
+
+```cpp
+auto renderers =
+    actor.GetComponentsInChildrenRooted<Unity::Renderer>(true);
+
+if (!renderers) {
+  ModLog::warn("component scan failed: %s", Unity::last_error());
+  return;
+}
+
+for (const Unity::Renderer& renderer : renderers) {
+  if (renderer.alive())
+    ModLog::info("renderer: %s", renderer.name().c_str());
+}
+```
+
+`GetComponentsRooted`, `GetComponentsInChildrenRooted`, and
+`GetComponentsInParentRooted` are move-only RAII leases. Destroying or resetting
+the lease frees its strong GC handle. A valid lease may be empty; test the lease
+itself to distinguish an empty Unity result from an API failure. The lease keeps
+managed references reachable, but it does not prevent Unity from destroying a
+native object, so `alive()` remains necessary when the hierarchy can change.
+
 Do not call `GetComponentsInChildren` every frame just to rediscover an
 unchanged hierarchy. Cache the wrappers, validate long-lived entries with
 `alive()`, and rebuild the cache after scene or hierarchy changes.
@@ -696,6 +729,7 @@ inside the Animator.
 | One component somewhere above | `object.GetComponentInParent<T>(includeInactive)` |
 | Every local match | `object.GetComponents<T>()` |
 | Every match below or above | `GetComponentsInChildren<T>()` / `GetComponentsInParent<T>()` |
+| Multi-call iteration with managed lifetime protection | `GetComponentsInChildrenRooted<T>()` or the matching rooted variant |
 | Owning GameObject from a component | `component.gameObject()` |
 | Sibling component from a component | `component.GetComponent<T>()` |
 
@@ -2143,6 +2177,12 @@ Wrapper handles are borrowed. If a managed object truly must outlive scene
 ownership and ordinary managed references, use the backend GC-handle API and
 free the handle during shutdown. Do not add GC handles to a first feature when
 normal scene ownership is sufficient.
+
+For array-returning Unity searches, prefer the SDK's scoped leases instead of
+managing one handle per result. `FindObjectsOfTypeRooted<T>()`,
+`FindObjectsOfTypeAllRooted<T>()`, and the rooted component-query variants keep
+the managed result array alive with one move-only RAII owner and free that owner
+automatically at scope exit.
 
 Never guess the layout of a managed value type. Use SDK definitions for
 `Vector3`, `Quaternion`, `Color`, and other built-in values. For a custom game
