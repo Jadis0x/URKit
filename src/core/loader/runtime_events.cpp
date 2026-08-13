@@ -38,7 +38,7 @@ struct MonoSceneMethods {
     MonoMethod *getBuildIndexInternal = nullptr;
 
     bool ready() const {
-        return getActiveScene && getNameInternal && getBuildIndexInternal;
+        return getActiveScene && getNameInternal;
     }
 };
 
@@ -109,7 +109,7 @@ struct Il2CppSceneMethods {
     const Il2CppMethod *getBuildIndexInternal = nullptr;
 
     bool ready() const {
-        return getActiveScene && getNameInternal && getBuildIndexInternal;
+        return getActiveScene && getNameInternal;
     }
 };
 
@@ -559,9 +559,18 @@ Il2CppCursorMethods ResolveIl2CppCursorMethods(Il2CppApi &il2cpp) {
     const char *boolean[] = {"System.Boolean"};
     const char *cursorLockMode[] = {"UnityEngine.CursorLockMode"};
     methods.getVisible = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "get_visible", nullptr, 0);
+    if (!methods.getVisible)
+        methods.getVisible = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "GetVisible", nullptr, 0);
     methods.setVisible = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "set_visible", boolean, 1);
+    if (!methods.setVisible)
+        methods.setVisible = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "SetVisible", boolean, 1);
     methods.getLockState = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "get_lockState", nullptr, 0);
+    if (!methods.getLockState)
+        methods.getLockState = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "GetLockState", nullptr, 0);
     methods.setLockState = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "set_lockState", cursorLockMode, 1);
+    if (!methods.setLockState)
+        methods.setLockState = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "SetLockState",
+                                                          cursorLockMode, 1);
     return methods;
 }
 
@@ -836,9 +845,17 @@ MonoCursorMethods ResolveCursorMethods(MonoApi &mono) {
     const char *boolean[] = {"System.Boolean"};
     const char *cursorLockMode[] = {"UnityEngine.CursorLockMode"};
     methods.getVisible = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "get_visible", nullptr, 0);
+    if (!methods.getVisible)
+        methods.getVisible = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "GetVisible", nullptr, 0);
     methods.setVisible = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "set_visible", boolean, 1);
+    if (!methods.setVisible)
+        methods.setVisible = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "SetVisible", boolean, 1);
     methods.getLockState = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "get_lockState", nullptr, 0);
+    if (!methods.getLockState)
+        methods.getLockState = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "GetLockState", nullptr, 0);
     methods.setLockState = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "set_lockState", cursorLockMode, 1);
+    if (!methods.setLockState)
+        methods.setLockState = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "SetLockState", cursorLockMode, 1);
     return methods;
 }
 
@@ -894,7 +911,7 @@ void FillSceneInfo(URK_SceneInfo *scene, int32_t handle, int32_t buildIndex, con
 
 bool PopulateMonoSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::string *reason,
                                  const char *invalidHandleReason, const char *invalidSceneReason) {
-    if (!scene || !g_mono || !g_sceneMethods.getNameInternal || !g_sceneMethods.getBuildIndexInternal) {
+    if (!scene || !g_mono || !g_sceneMethods.getNameInternal) {
         if (reason)
             *reason = "Mono scene methods are incomplete";
         return false;
@@ -927,14 +944,15 @@ bool PopulateMonoSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::stri
         return false;
     }
 
-    MonoObject *buildIndexObject =
-        InvokeMono(g_sceneMethods.getBuildIndexInternal, nullptr, params, "Scene.GetBuildIndexInternal", &ok);
-
     int32_t buildIndex = -1;
-    if (!ok || !ReadBoxedInt32(buildIndexObject, &buildIndex)) {
-        if (reason)
-            *reason = "Scene.GetBuildIndexInternal failed";
-        return false;
+    if (g_sceneMethods.getBuildIndexInternal) {
+        MonoObject *buildIndexObject =
+            InvokeMono(g_sceneMethods.getBuildIndexInternal, nullptr, params, "Scene.GetBuildIndexInternal", &ok);
+        if (!ok || !ReadBoxedInt32(buildIndexObject, &buildIndex)) {
+            if (reason)
+                *reason = "Scene.GetBuildIndexInternal failed";
+            return false;
+        }
     }
 
     FillSceneInfo(scene, handle, buildIndex, MonoStringToUtf8(nameObject));
@@ -982,7 +1000,7 @@ bool ReadMonoActiveScene(URK_SceneInfo *scene, std::string *reason) {
 
 bool PopulateIl2CppSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::string *reason,
                                    const char *invalidHandleReason, const char *invalidSceneReason) {
-    if (!scene || !g_il2cpp || !g_il2cppSceneMethods.getNameInternal || !g_il2cppSceneMethods.getBuildIndexInternal) {
+    if (!scene || !g_il2cpp || !g_il2cppSceneMethods.getNameInternal) {
         if (reason)
             *reason = "IL2CPP scene methods are incomplete";
         return false;
@@ -1017,14 +1035,15 @@ bool PopulateIl2CppSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::st
         return false;
     }
 
-    Il2CppObject *buildIndexObject =
-        InvokeIl2Cpp(g_il2cppSceneMethods.getBuildIndexInternal, nullptr, params, "Scene.GetBuildIndexInternal", &ok);
-
     int32_t buildIndex = -1;
-    if (!ok || !ReadIl2CppBoxedInt32(buildIndexObject, &buildIndex)) {
-        if (reason)
-            *reason = "Scene.GetBuildIndexInternal failed";
-        return false;
+    if (g_il2cppSceneMethods.getBuildIndexInternal) {
+        Il2CppObject *buildIndexObject = InvokeIl2Cpp(g_il2cppSceneMethods.getBuildIndexInternal, nullptr, params,
+                                                      "Scene.GetBuildIndexInternal", &ok);
+        if (!ok || !ReadIl2CppBoxedInt32(buildIndexObject, &buildIndex)) {
+            if (reason)
+                *reason = "Scene.GetBuildIndexInternal failed";
+            return false;
+        }
     }
 
     FillSceneInfo(scene, handle, buildIndex, Il2CppStringToUtf8(nameObject));

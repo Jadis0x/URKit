@@ -435,25 +435,25 @@ inline void thread_detach(const void *thread) {
     if (a && URK_MONO_HAS(thread_detach) && a->thread_detach && thread)
         a->thread_detach(thread);
 }
-inline std::uint32_t gchandle_new(void *object, int pinned) {
+inline std::uintptr_t gchandle_new(void *object, int pinned) {
     const auto *a = api();
     return a && URK_MONO_HAS(gchandle_new) && a->gchandle_new ? a->gchandle_new(object, pinned) : 0;
 }
-inline std::uint32_t gchandle_new_weakref(void *object, int track_resurrection) {
+inline std::uintptr_t gchandle_new_weakref(void *object, int track_resurrection) {
     const auto *a = api();
     return a && URK_MONO_HAS(gchandle_new_weakref) && a->gchandle_new_weakref
                ? a->gchandle_new_weakref(object, track_resurrection)
                : 0;
 }
-inline void *gchandle_get_target(std::uint32_t gchandle) {
+inline void *gchandle_get_target(std::uintptr_t gchandle) {
     const auto *a = api();
-    return a && URK_MONO_HAS(gchandle_get_target) && a->gchandle_get_target ? a->gchandle_get_target(gchandle)
-                                                                            : nullptr;
+    return a && URK_MONO_HAS(gchandle_get_target) && a->gchandle_get_target
+               ? a->gchandle_get_target(static_cast<std::uint32_t>(gchandle)) : nullptr;
 }
-inline void gchandle_free(std::uint32_t gchandle) {
+inline void gchandle_free(std::uintptr_t gchandle) {
     const auto *a = api();
     if (a && URK_MONO_HAS(gchandle_free) && a->gchandle_free)
-        a->gchandle_free(gchandle);
+        a->gchandle_free(static_cast<std::uint32_t>(gchandle));
 }
 #undef URK_MONO_HAS
 } // namespace URK::mono

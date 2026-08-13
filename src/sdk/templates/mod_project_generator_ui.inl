@@ -1677,9 +1677,14 @@ inline void render_menu() {
                              ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(base_min_size.x * dpi_scale, base_min_size.y * dpi_scale),
                                         ImVec2(base_max_size.x * size_scale, base_max_size.y * size_scale));
+    ImGuiWindowClass window_class{};
+    window_class.ViewportFlagsOverrideSet =
+        ImGuiViewportFlags_NoFocusOnAppearing | ImGuiViewportFlags_NoFocusOnClick |
+        ImGuiViewportFlags_NoTaskBarIcon;
+    ImGui::SetNextWindowClass(&window_class);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     if (!ImGui::Begin(ModConfig::display_name, &ModConfig::show_menu,
-                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar)) {
+                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking)) {
         ImGui::PopStyleVar();
         ImGui::End();
         return;
@@ -3108,6 +3113,54 @@ const char *dxgi_swap_effect_name(DXGI_SWAP_EFFECT effect) {
 )URK";
 }
 
+std::string Dx11StateGuardHeaderModule() {
+    return R"URK(#pragma once
+#include <array>
+#include <d3d11.h>
+
+namespace ModRenderHook {
+class Dx11OutputMergerStateGuard final {
+  public:
+    explicit Dx11OutputMergerStateGuard(ID3D11DeviceContext *context) noexcept;
+    ~Dx11OutputMergerStateGuard();
+
+    Dx11OutputMergerStateGuard(const Dx11OutputMergerStateGuard &) = delete;
+    Dx11OutputMergerStateGuard &operator=(const Dx11OutputMergerStateGuard &) = delete;
+
+  private:
+    ID3D11DeviceContext *context_{};
+    std::array<ID3D11RenderTargetView *, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> render_targets_{};
+    ID3D11DepthStencilView *depth_stencil_{};
+};
+} // namespace ModRenderHook
+)URK";
+}
+
+std::string Dx11StateGuardSourceModule() {
+    return R"URK(#include "dx11_state_guard.h"
+
+namespace ModRenderHook {
+Dx11OutputMergerStateGuard::Dx11OutputMergerStateGuard(ID3D11DeviceContext *context) noexcept : context_(context) {
+    if (context_)
+        context_->OMGetRenderTargets(static_cast<UINT>(render_targets_.size()), render_targets_.data(),
+                                     &depth_stencil_);
+}
+
+Dx11OutputMergerStateGuard::~Dx11OutputMergerStateGuard() {
+    if (!context_)
+        return;
+
+    context_->OMSetRenderTargets(static_cast<UINT>(render_targets_.size()), render_targets_.data(), depth_stencil_);
+    for (ID3D11RenderTargetView *render_target : render_targets_)
+        if (render_target)
+            render_target->Release();
+    if (depth_stencil_)
+        depth_stencil_->Release();
+}
+} // namespace ModRenderHook
+)URK";
+}
+
 std::string Win32InputCoordinatesHeaderModule() {
     return R"URK(#pragma once
 
@@ -3273,6 +3326,99 @@ bool uninstall();
 )URK";
 }
 
+std::string Win32ViewportPolicyHeaderModule() {
+    return R"URK(#pragma once
+#include <span>
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+
+namespace ModRenderHook {
+struct Win32ViewportPolicyResult {
+    HWND window{};
+    const char *operation{};
+    DWORD error{ERROR_SUCCESS};
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return error == ERROR_SUCCESS;
+    }
+};
+
+struct Win32ViewportTopology {
+    HWND owner{};
+    DWORD windowThread{};
+    LONG_PTR extendedStyle{};
+};
+
+[[nodiscard]] Win32ViewportPolicyResult enforce_overlay_viewport_policy(std::span<const HWND> windows,
+                                                                         HWND gameWindow) noexcept;
+[[nodiscard]] Win32ViewportTopology query_viewport_topology(HWND window) noexcept;
+} // namespace ModRenderHook
+)URK";
+}
+
+std::string Win32ViewportPolicySourceModule() {
+    return R"URK(#include "win32_viewport_policy.h"
+
+namespace ModRenderHook {
+Win32ViewportPolicyResult enforce_overlay_viewport_policy(std::span<const HWND> windows, HWND gameWindow) noexcept {
+    Win32ViewportPolicyResult firstFailure{};
+    const HWND zOrder = gameWindow && GetForegroundWindow() == gameWindow ? HWND_TOPMOST : HWND_NOTOPMOST;
+
+    for (const HWND window : windows) {
+        if (!window || !IsWindow(window))
+            continue;
+
+        SetLastError(ERROR_SUCCESS);
+        const LONG_PTR currentStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        DWORD error = GetLastError();
+        if (!currentStyle && error != ERROR_SUCCESS) {
+            if (firstFailure)
+                firstFailure = {window, "GetWindowLongPtrW(GWL_EXSTYLE)", error};
+            continue;
+        }
+
+        const LONG_PTR desiredStyle =
+            (currentStyle | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
+        if (desiredStyle != currentStyle) {
+            SetLastError(ERROR_SUCCESS);
+            const LONG_PTR previous = SetWindowLongPtrW(window, GWL_EXSTYLE, desiredStyle);
+            error = GetLastError();
+            if (!previous && error != ERROR_SUCCESS) {
+                if (firstFailure)
+                    firstFailure = {window, "SetWindowLongPtrW(GWL_EXSTYLE)", error};
+                continue;
+            }
+        }
+
+        if (!SetWindowPos(window, zOrder, 0, 0, 0, 0,
+                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
+            error = GetLastError();
+            if (firstFailure)
+                firstFailure = {window, "SetWindowPos(z-order)", error};
+        }
+    }
+    return firstFailure;
+}
+
+Win32ViewportTopology query_viewport_topology(HWND window) noexcept {
+    if (!window || !IsWindow(window))
+        return {};
+    Win32ViewportTopology result{};
+    result.owner = GetWindow(window, GW_OWNER);
+    result.windowThread = GetWindowThreadProcessId(window, nullptr);
+    result.extendedStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    return result;
+}
+} // namespace ModRenderHook
+)URK";
+}
+
 std::string RenderHookSourceModule() {
     return R"URK(#include "render_imgui_hook.h"
 
@@ -3320,6 +3466,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT mes
 #endif
 
 #include "dx11_viewport_swap_chain.h"
+#include "dx11_state_guard.h"
 #include "sdk/hook_api.h"
 #include "sdk/runtime_api.h"
 #include "ui/highlight.h"
@@ -3327,6 +3474,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT mes
 #include "ui/theme.h"
 #include "win32_input_coordinates.h"
 #include "win32_message_pump.h"
+#include "win32_viewport_policy.h"
 
 namespace ModRenderHook {
 using PresentFn = HRESULT(__stdcall *)(IDXGISwapChain *, UINT, UINT);
@@ -3434,6 +3582,7 @@ inline std::deque<InputEvent> g_input_events;
 inline std::vector<HWND> g_platform_windows;
 inline bool g_platform_window_topology_logged = false;
 inline ULONGLONG g_platform_message_warning_tick = 0;
+inline ULONGLONG g_platform_window_policy_warning_tick = 0;
 inline std::array<bool, 5> g_wndproc_mouse_down{};
 inline std::array<KeyboardButtonState, 256> g_physical_keyboard{};
 inline std::array<KeyboardButtonState, 256> g_game_keyboard{};
@@ -3643,6 +3792,11 @@ inline bool is_process_main_window(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd || GetWindow(hwnd, GW_OWNER) != nullptr) {
         return false;
     }
+    // Dear ImGui marks every secondary Win32 viewport with this property. An
+    // injected process can contain several independent ImGui contexts, so a
+    // late-installed hook must not adopt another mod's viewport swap chain.
+    if (GetPropA(hwnd, "IMGUI_CONTEXT") != nullptr)
+        return false;
     DWORD process_id = 0;
     GetWindowThreadProcessId(hwnd, &process_id);
     return process_id == GetCurrentProcessId();
@@ -3666,8 +3820,19 @@ inline bool same_com_identity(IUnknown *left, IUnknown *right) {
 }
 
 inline bool is_active_game_swap_chain(IDXGISwapChain *swap_chain) {
-    return swap_chain && g_active_swap_chain &&
-           (swap_chain == g_active_swap_chain || same_com_identity(swap_chain, g_active_swap_chain));
+    if (!swap_chain || !g_active_swap_chain)
+        return false;
+    if (swap_chain == g_active_swap_chain)
+        return true;
+
+    // Secondary ImGui swap chains are the common hot path here when several
+    // generated mods coexist. Reject them by their Win32 viewport marker before
+    // paying for two COM identity queries on every detached-window Present.
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if (query_swap_chain_desc(swap_chain, &desc) && desc.OutputWindow &&
+        GetPropA(desc.OutputWindow, "IMGUI_CONTEXT") != nullptr)
+        return false;
+    return same_com_identity(swap_chain, g_active_swap_chain);
 }
 
 inline void platform_renderer_create_window(ImGuiViewport *viewport) {
@@ -3738,6 +3903,20 @@ inline void collect_platform_windows() {
     }
 }
 
+inline void apply_platform_window_policy() {
+    collect_platform_windows();
+    const Win32ViewportPolicyResult result = enforce_overlay_viewport_policy(g_platform_windows, g_hwnd);
+    const ULONGLONG now = GetTickCount64();
+    if (!result && now - g_platform_window_policy_warning_tick >= 2000) {
+        char text[224]{};
+        std::snprintf(text, sizeof(text), "Detached viewport policy failed: operation=%s hwnd=%p error=%lu.",
+                      result.operation ? result.operation : "unknown", static_cast<void *>(result.window),
+                      static_cast<unsigned long>(result.error));
+        log(text);
+        g_platform_window_policy_warning_tick = now;
+    }
+}
+
 inline void pump_platform_window_messages() {
     collect_platform_windows();
     const WindowMessagePumpResult result = pump_owned_window_messages(g_platform_windows);
@@ -3762,15 +3941,20 @@ inline void validate_platform_window_topology() {
         return;
 
     const HWND window = g_platform_windows.front();
-    const HWND owner = GetWindow(window, GW_OWNER);
-    const DWORD windowThread = GetWindowThreadProcessId(window, nullptr);
+    const Win32ViewportTopology topology = query_viewport_topology(window);
     const DWORD renderThread = GetCurrentThreadId();
-    char text[256]{};
+    char text[320]{};
     std::snprintf(text, sizeof(text),
                   "Detached viewport topology: hwnd=%p owner=%p windowThread=%lu "
-                  "renderThread=%lu isolated=%s.",
-                  static_cast<void *>(window), static_cast<void *>(owner), static_cast<unsigned long>(windowThread),
-                  static_cast<unsigned long>(renderThread), !owner && windowThread == renderThread ? "yes" : "no");
+                  "renderThread=%lu ownerless=%s threadOwned=%s noActivate=%s taskbarHidden=%s.",
+                  static_cast<void *>(window), static_cast<void *>(topology.owner),
+                  static_cast<unsigned long>(topology.windowThread), static_cast<unsigned long>(renderThread),
+                  !topology.owner ? "yes" : "no", topology.windowThread == renderThread ? "yes" : "no",
+                  (topology.extendedStyle & WS_EX_NOACTIVATE) != 0 ? "yes" : "no",
+                  (topology.extendedStyle & WS_EX_TOOLWINDOW) != 0 &&
+                          (topology.extendedStyle & WS_EX_APPWINDOW) == 0
+                      ? "yes"
+                      : "no");
     log(text);
     g_platform_window_topology_logged = true;
 }
@@ -4644,6 +4828,7 @@ inline void shutdown_imgui() {
     g_platform_windows.clear();
     g_platform_window_topology_logged = false;
     g_platform_message_warning_tick = 0;
+    g_platform_window_policy_warning_tick = 0;
     if (g_active_swap_chain) {
         g_active_swap_chain->Release();
         g_active_swap_chain = nullptr;
@@ -5209,6 +5394,9 @@ inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
 inline bool init_imgui(IDXGISwapChain *swap_chain) {
     if (g_imgui_ready)
         return g_active_swap_chain == swap_chain;
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if (!query_swap_chain_desc(swap_chain, &desc) || (desc.OutputWindow && !is_process_main_window(desc.OutputWindow)))
+        return false;
     ID3D11Device *dx11_device = nullptr;
     const bool is_dx11 =
         SUCCEEDED(swap_chain->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void **>(&dx11_device))) &&
@@ -5223,11 +5411,10 @@ inline void render_platform_windows() {
         return;
     PlatformRendererGuard platformGuard{};
     ImGui::UpdatePlatformWindows();
+    apply_platform_window_policy();
     pump_platform_window_messages();
     validate_platform_window_topology();
     ImGui::RenderPlatformWindowsDefault();
-    if (g_backend == GraphicsBackend::dx11 && g_context && g_render_target)
-        g_context->OMSetRenderTargets(1, &g_render_target, nullptr);
 }
 
 inline void render_dx12_frame(IDXGISwapChain *swap_chain) {
@@ -5325,6 +5512,7 @@ inline void render_frame(IDXGISwapChain *swap_chain) {
     publish_imgui_capture_state();
     ImGui::Render();
 
+    Dx11OutputMergerStateGuard output_merger_state(g_context);
     g_context->OMSetRenderTargets(1, &g_render_target, nullptr);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     render_platform_windows();
@@ -5352,6 +5540,8 @@ inline HRESULT __stdcall detour_present(IDXGISwapChain *swap_chain, UINT sync_in
     if (depth_guard.reentrant()) {
         return g_present ? g_present(swap_chain, sync_interval, flags) : DXGI_ERROR_INVALID_CALL;
     }
+    if (!swap_chain || (flags & DXGI_PRESENT_TEST) != 0)
+        return g_present ? g_present(swap_chain, sync_interval, flags) : DXGI_ERROR_INVALID_CALL;
     if (g_imgui_ready && !is_active_game_swap_chain(swap_chain))
         return g_present ? g_present(swap_chain, sync_interval, flags) : DXGI_ERROR_INVALID_CALL;
 
@@ -5382,6 +5572,8 @@ inline HRESULT __stdcall detour_present1(IDXGISwapChain1 *swap_chain, UINT sync_
     if (depth_guard.reentrant()) {
         return g_present1 ? g_present1(swap_chain, sync_interval, flags, parameters) : DXGI_ERROR_INVALID_CALL;
     }
+    if (!swap_chain || (flags & DXGI_PRESENT_TEST) != 0)
+        return g_present1 ? g_present1(swap_chain, sync_interval, flags, parameters) : DXGI_ERROR_INVALID_CALL;
     if (g_imgui_ready && !is_active_game_swap_chain(swap_chain))
         return g_present1 ? g_present1(swap_chain, sync_interval, flags, parameters) : DXGI_ERROR_INVALID_CALL;
 

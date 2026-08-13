@@ -6,10 +6,10 @@
 extern "C" {
 #endif
 
-#define URK_SDK_VERSION 28
+#define URK_SDK_VERSION 29
 #define URK_MONO_API_VERSION 8
 #define URK_RUNTIME_API_VERSION 9
-#define URK_IL2CPP_API_VERSION 6
+#define URK_IL2CPP_API_VERSION 7
 #define URK_NETWORK_API_VERSION 1
 
 #define URK_SCENE_NAME_MAX 128
@@ -110,6 +110,7 @@ typedef struct URK_NetworkApi {
 
 typedef struct URK_SceneInfo {
     uint32_t size;
+    /* -1 when Unity strips the optional GetBuildIndexInternal binding. */
     int32_t buildIndex;
     int32_t handle;
     char name[URK_SCENE_NAME_MAX];
@@ -572,6 +573,15 @@ typedef struct URK_Il2CppApi {
     uint32_t (*offset_of_array_bounds_in_array_object_header)();
     uint32_t (*allocation_granularity)();
     int (*array_set_ref)(void *array, size_t index, void *value);
+    /*
+     * Unity 6 changed Il2CppGCHandle from a 32-bit token to a pointer-sized
+     * opaque handle. The older uint32_t entries remain in place for binary
+     * compatibility; new code must use these pointer-sized entries.
+     */
+    uintptr_t (*gchandle_new_v2)(void *object, int pinned);
+    uintptr_t (*gchandle_new_weakref_v2)(void *object, int track_resurrection);
+    void *(*gchandle_get_target_v2)(uintptr_t gchandle);
+    void (*gchandle_free_v2)(uintptr_t gchandle);
 } URK_Il2CppApi;
 
 #ifdef __cplusplus
@@ -608,6 +618,10 @@ static_assert(offsetof(URK_Il2CppApi, last_error) > offsetof(URK_Il2CppApi, fiel
               "URK_Il2CppApi field order changed unexpectedly.");
 static_assert(offsetof(URK_Il2CppApi, array_set_ref) > offsetof(URK_Il2CppApi, allocation_granularity),
               "URK_Il2CppApi new fields must be appended.");
+static_assert(offsetof(URK_Il2CppApi, gchandle_new_v2) > offsetof(URK_Il2CppApi, array_set_ref),
+              "URK_Il2CppApi pointer-sized GC handle helpers must stay appended.");
+static_assert(offsetof(URK_Il2CppApi, gchandle_free_v2) > offsetof(URK_Il2CppApi, gchandle_new_v2),
+              "URK_Il2CppApi pointer-sized GC handle helper order changed unexpectedly.");
 static_assert(offsetof(URK_NetworkApi, json_request) > offsetof(URK_NetworkApi, size),
               "URK_NetworkApi keeps version and size before callable entries.");
 #endif

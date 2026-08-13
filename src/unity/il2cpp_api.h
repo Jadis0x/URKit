@@ -52,6 +52,9 @@ using Il2CppStat = int;
 using Il2CppProfileFlags = int;
 using Il2CppRuntimeUnhandledExceptionPolicy = int;
 using il2cpp_array_size_t = uintptr_t;
+// Unity 6 represents GC handles as opaque pointers. Older Unity releases
+// return 32-bit tokens; uintptr_t safely carries both ABIs on Windows x64.
+using Il2CppGCHandle = uintptr_t;
 
 #define IL2CPP_FN(ret, name, args) using name##_t = ret(*) args
 
@@ -239,10 +242,10 @@ IL2CPP_FN(void, il2cpp_gc_collect, (int maxGenerations));
 IL2CPP_FN(int64_t, il2cpp_gc_get_used_size, ());
 IL2CPP_FN(int64_t, il2cpp_gc_get_heap_size, ());
 
-IL2CPP_FN(uint32_t, il2cpp_gchandle_new, (Il2CppObject * obj, bool pinned));
-IL2CPP_FN(uint32_t, il2cpp_gchandle_new_weakref, (Il2CppObject * obj, bool track_resurrection));
-IL2CPP_FN(Il2CppObject *, il2cpp_gchandle_get_target, (uint32_t gchandle));
-IL2CPP_FN(void, il2cpp_gchandle_free, (uint32_t gchandle));
+IL2CPP_FN(Il2CppGCHandle, il2cpp_gchandle_new, (Il2CppObject * obj, bool pinned));
+IL2CPP_FN(Il2CppGCHandle, il2cpp_gchandle_new_weakref, (Il2CppObject * obj, bool track_resurrection));
+IL2CPP_FN(Il2CppObject *, il2cpp_gchandle_get_target, (Il2CppGCHandle gchandle));
+IL2CPP_FN(void, il2cpp_gchandle_free, (Il2CppGCHandle gchandle));
 IL2CPP_FN(void, il2cpp_gc_wbarrier_set_field, (Il2CppObject * obj, void **target_address, Il2CppObject *value));
 
 // object/array layout query exports

@@ -434,6 +434,11 @@ void stop() {
 `FindWithTag` reports an error. Continue once the scene name, object name, and
 position appear in the log.
 
+`URK_SceneInfo::buildIndex` is `-1` when an IL2CPP player strips Unity's
+optional build-index binding. Scene-loaded and active-scene-changed callbacks
+remain available; use the scene name and handle when the build index is
+unavailable.
+
 The probe repeats its search because the character can spawn after the scene
 callback. Production code should add a search interval and cache, as shown
 later.

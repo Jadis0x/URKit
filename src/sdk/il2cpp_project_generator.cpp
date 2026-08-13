@@ -22,6 +22,7 @@ std::string Il2CppRuntimeModule() {
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <type_traits>
 
 namespace URK::il2cpp {
@@ -927,26 +928,45 @@ inline std::int64_t gc_get_heap_size() {
     const auto *a = api();
     return available() && URK_IL2CPP_HAS(gc_get_heap_size) && a->gc_get_heap_size ? a->gc_get_heap_size() : 0;
 }
-inline std::uint32_t gchandle_new(void *object, int pinned) {
+inline std::uintptr_t gchandle_new(void *object, int pinned) {
     const auto *a = api();
-    return available() && URK_IL2CPP_HAS(gchandle_new) && a->gchandle_new ? a->gchandle_new(object, pinned) : 0;
+    if (!available())
+        return 0;
+    if (URK_IL2CPP_HAS(gchandle_new_v2) && a->gchandle_new_v2)
+        return a->gchandle_new_v2(object, pinned);
+    return URK_IL2CPP_HAS(gchandle_new) && a->gchandle_new ? a->gchandle_new(object, pinned) : 0;
 }
-inline std::uint32_t gchandle_new_weakref(void *object, int track_resurrection) {
+inline std::uintptr_t gchandle_new_weakref(void *object, int track_resurrection) {
     const auto *a = api();
-    return available() && URK_IL2CPP_HAS(gchandle_new_weakref) && a->gchandle_new_weakref
-               ? a->gchandle_new_weakref(object, track_resurrection)
-               : 0;
+    if (!available())
+        return 0;
+    if (URK_IL2CPP_HAS(gchandle_new_weakref_v2) && a->gchandle_new_weakref_v2)
+        return a->gchandle_new_weakref_v2(object, track_resurrection);
+    return URK_IL2CPP_HAS(gchandle_new_weakref) && a->gchandle_new_weakref
+               ? a->gchandle_new_weakref(object, track_resurrection) : 0;
 }
-inline void *gchandle_get_target(std::uint32_t gchandle) {
+inline void *gchandle_get_target(std::uintptr_t gchandle) {
     const auto *a = api();
-    return available() && URK_IL2CPP_HAS(gchandle_get_target) && a->gchandle_get_target
-               ? a->gchandle_get_target(gchandle)
-               : nullptr;
+    if (!available())
+        return nullptr;
+    if (URK_IL2CPP_HAS(gchandle_get_target_v2) && a->gchandle_get_target_v2)
+        return a->gchandle_get_target_v2(gchandle);
+    if (gchandle > static_cast<std::uintptr_t>((std::numeric_limits<std::uint32_t>::max)()))
+        return nullptr;
+    return URK_IL2CPP_HAS(gchandle_get_target) && a->gchandle_get_target
+               ? a->gchandle_get_target(static_cast<std::uint32_t>(gchandle)) : nullptr;
 }
-inline void gchandle_free(std::uint32_t gchandle) {
+inline void gchandle_free(std::uintptr_t gchandle) {
     const auto *a = api();
-    if (available() && URK_IL2CPP_HAS(gchandle_free) && a->gchandle_free)
-        a->gchandle_free(gchandle);
+    if (!available())
+        return;
+    if (URK_IL2CPP_HAS(gchandle_free_v2) && a->gchandle_free_v2) {
+        a->gchandle_free_v2(gchandle);
+        return;
+    }
+    if (gchandle <= static_cast<std::uintptr_t>((std::numeric_limits<std::uint32_t>::max)()) &&
+        URK_IL2CPP_HAS(gchandle_free) && a->gchandle_free)
+        a->gchandle_free(static_cast<std::uint32_t>(gchandle));
 }
 inline char *thread_get_name(const void *thread, std::uint32_t *length) {
     const auto *a = api();

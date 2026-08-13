@@ -77,6 +77,18 @@ __declspec(noinline) bool SehInvokeValue(Function function, Result *result, DWOR
     }
 }
 
+template <typename Function, typename... Args>
+__declspec(noinline) bool SehInvokeVoid(Function function, DWORD *exceptionCode, Args... args) {
+    static_assert(std::is_pointer_v<Function> && std::is_function_v<std::remove_pointer_t<Function>>);
+    static_assert((std::is_trivially_copyable_v<Args> && ...));
+    __try {
+        function(args...);
+        return true;
+    } __except ((*exceptionCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)) {
+        return false;
+    }
+}
+
 __declspec(noinline) int SehMethodPointerGet(const Il2CppMethod *method, void **target, DWORD *exceptionCode) {
     __try {
         *target = *reinterpret_cast<void *const *>(method);
@@ -1355,36 +1367,66 @@ bool TryGetArrayLength(void *array, size_t *length, const char *operation) {
         SetError(std::string("IL2CPP: ") + operation + " array is required");
         return false;
     }
-    if (!g_api || !g_api->il2cpp_offset_of_array_length_in_array_object_header) {
-        SetError(std::string("IL2CPP: ") + operation +
-                 " unavailable: il2cpp_offset_of_array_length_in_array_object_header export is required");
+    if (!g_api) {
+        SetError(std::string("IL2CPP: ") + operation + " unavailable: runtime API is not initialized");
         return false;
     }
 
-    // Use the runtime's explicitly exported array-layout query instead of a
-    // folded accessor or a value inferred from the element type. In particular
-    // System.Type[] is used by reflection's MakeGenericMethod and has exposed
-    // differing results from the inferred path in this Unity build.
-    const uint32_t lengthOffset = g_api->il2cpp_offset_of_array_length_in_array_object_header();
-    const uint32_t headerSize = g_api->il2cpp_array_object_header_size
-        ? g_api->il2cpp_array_object_header_size()
-        : 0;
-    if (lengthOffset == 0 || lengthOffset % alignof(uintptr_t) != 0 ||
-        (headerSize != 0 && lengthOffset + sizeof(uintptr_t) > headerSize)) {
-        SetError(std::string("IL2CPP: ") + operation + " failed: runtime reported an invalid array-length offset");
-        return false;
-    }
-
-    uintptr_t rawLength = 0;
     DWORD exceptionCode = 0;
-    if (!SehCopyMemory(static_cast<const char *>(array) + lengthOffset, &rawLength, sizeof(rawLength),
-                       &exceptionCode)) {
-        SetError(std::string("IL2CPP: ") + operation + " blocked an invalid array pointer");
-        return false;
+    if (g_api->il2cpp_offset_of_array_length_in_array_object_header) {
+        // Prefer the runtime's layout query. It is available in newer Unity
+        // versions and avoids depending on the historical accessor return type.
+        uint32_t lengthOffset = 0;
+        if (!SehInvokeValue(g_api->il2cpp_offset_of_array_length_in_array_object_header, &lengthOffset,
+                            &exceptionCode)) {
+            SetError(std::string("IL2CPP: ") + operation +
+                     " failed: array-length layout query raised a native exception");
+            return false;
+        }
+        uint32_t headerSize = 0;
+        if (g_api->il2cpp_array_object_header_size &&
+            !SehInvokeValue(g_api->il2cpp_array_object_header_size, &headerSize, &exceptionCode)) {
+            SetError(std::string("IL2CPP: ") + operation +
+                     " failed: array-header layout query raised a native exception");
+            return false;
+        }
+        if (lengthOffset == 0 || lengthOffset % alignof(uintptr_t) != 0 ||
+            (headerSize != 0 && lengthOffset + sizeof(uintptr_t) > headerSize)) {
+            SetError(std::string("IL2CPP: ") + operation +
+                     " failed: runtime reported an invalid array-length offset");
+            return false;
+        }
+
+        uintptr_t rawLength = 0;
+        if (!SehCopyMemory(static_cast<const char *>(array) + lengthOffset, &rawLength, sizeof(rawLength),
+                           &exceptionCode)) {
+            SetError(std::string("IL2CPP: ") + operation + " blocked an invalid array pointer");
+            return false;
+        }
+        if (length)
+            *length = static_cast<size_t>(rawLength);
+        return true;
     }
-    if (length)
-        *length = static_cast<size_t>(rawLength);
-    return true;
+
+    // Older IL2CPP releases predate the layout-query exports but expose the
+    // stable array-length accessor. Its integer return is zero-extended on the
+    // Windows x64 ABI, so the pointer-sized declaration covers both variants.
+    if (g_api->il2cpp_array_length) {
+        il2cpp_array_size_t rawLength = 0;
+        if (!SehInvokeValue(g_api->il2cpp_array_length, &rawLength, &exceptionCode,
+                            static_cast<Il2CppArray *>(array))) {
+            SetError(std::string("IL2CPP: ") + operation +
+                     " failed: il2cpp_array_length raised a native exception");
+            return false;
+        }
+        if (length)
+            *length = static_cast<size_t>(rawLength);
+        return true;
+    }
+
+    SetError(std::string("IL2CPP: ") + operation +
+             " unavailable: no array-length accessor or layout query is exported");
+    return false;
 }
 
 size_t Api_ArrayLength(void *a) {
@@ -1516,7 +1558,13 @@ void *Api_ArrayRefAt(void *a, size_t i) {
         }
         return nullptr;
     }
-    return *slot;
+    void *value = nullptr;
+    DWORD exceptionCode = 0;
+    if (!SehCopyMemory(slot, &value, sizeof(value), &exceptionCode)) {
+        SetError("IL2CPP: Unity array element access blocked an unreadable reference slot");
+        return nullptr;
+    }
+    return value;
 }
 int Api_ArraySetRef(void *a, size_t i, void *value) {
     REQAPI(il2cpp_gc_wbarrier_set_field,
@@ -1631,6 +1679,105 @@ void *Api_Alloc(size_t size) {
 void Api_Free(void *ptr) {
     if (g_api && g_api->il2cpp_free && ptr)
         g_api->il2cpp_free(ptr);
+}
+
+Il2CppGCHandle Api_GcHandleNewV2(void *object, int pinned) {
+    g_lastError.clear();
+    REQAPI(il2cpp_gchandle_new, "IL2CPP: il2cpp_gchandle_new unavailable", 0);
+    if (!object) {
+        SetError("IL2CPP: gchandle_new object is required");
+        return 0;
+    }
+    ATTACHAPI(0);
+    Il2CppGCHandle handle = 0;
+    DWORD exceptionCode = 0;
+    if (!SehInvokeValue(g_api->il2cpp_gchandle_new, &handle, &exceptionCode,
+                        static_cast<Il2CppObject *>(object), pinned != 0)) {
+        SetError("IL2CPP: il2cpp_gchandle_new raised a native exception");
+        return 0;
+    }
+    if (!handle)
+        SetError("IL2CPP: il2cpp_gchandle_new returned an empty handle");
+    return handle;
+}
+
+Il2CppGCHandle Api_GcHandleNewWeakRefV2(void *object, int trackResurrection) {
+    g_lastError.clear();
+    REQAPI(il2cpp_gchandle_new_weakref, "IL2CPP: il2cpp_gchandle_new_weakref unavailable", 0);
+    if (!object) {
+        SetError("IL2CPP: gchandle_new_weakref object is required");
+        return 0;
+    }
+    ATTACHAPI(0);
+    Il2CppGCHandle handle = 0;
+    DWORD exceptionCode = 0;
+    if (!SehInvokeValue(g_api->il2cpp_gchandle_new_weakref, &handle, &exceptionCode,
+                        static_cast<Il2CppObject *>(object), trackResurrection != 0)) {
+        SetError("IL2CPP: il2cpp_gchandle_new_weakref raised a native exception");
+        return 0;
+    }
+    if (!handle)
+        SetError("IL2CPP: il2cpp_gchandle_new_weakref returned an empty handle");
+    return handle;
+}
+
+void *Api_GcHandleGetTargetV2(Il2CppGCHandle handle) {
+    g_lastError.clear();
+    REQAPI(il2cpp_gchandle_get_target, "IL2CPP: il2cpp_gchandle_get_target unavailable", nullptr);
+    if (!handle) {
+        SetError("IL2CPP: gchandle_get_target handle is required");
+        return nullptr;
+    }
+    ATTACHAPI(nullptr);
+    Il2CppObject *target = nullptr;
+    DWORD exceptionCode = 0;
+    if (!SehInvokeValue(g_api->il2cpp_gchandle_get_target, &target, &exceptionCode, handle)) {
+        SetError("IL2CPP: il2cpp_gchandle_get_target raised a native exception");
+        return nullptr;
+    }
+    return target;
+}
+
+void Api_GcHandleFreeV2(Il2CppGCHandle handle) {
+    g_lastError.clear();
+    if (!handle)
+        return;
+    if (!g_api || !g_api->il2cpp_gchandle_free) {
+        SetError("IL2CPP: il2cpp_gchandle_free unavailable");
+        return;
+    }
+    Il2CppThreadScope attach(*g_api);
+    if (!attach.ok())
+        return;
+    DWORD exceptionCode = 0;
+    if (!SehInvokeVoid(g_api->il2cpp_gchandle_free, &exceptionCode, handle))
+        SetError("IL2CPP: il2cpp_gchandle_free raised a native exception");
+}
+
+uint32_t Api_GcHandleNewLegacy(void *object, int pinned) {
+    const Il2CppGCHandle handle = Api_GcHandleNewV2(object, pinned);
+    if (handle <= static_cast<Il2CppGCHandle>((std::numeric_limits<uint32_t>::max)()))
+        return static_cast<uint32_t>(handle);
+    Api_GcHandleFreeV2(handle);
+    SetError("IL2CPP: the runtime returned a pointer-sized GC handle; regenerate this mod with URKit SDK 29+");
+    return 0;
+}
+
+uint32_t Api_GcHandleNewWeakRefLegacy(void *object, int trackResurrection) {
+    const Il2CppGCHandle handle = Api_GcHandleNewWeakRefV2(object, trackResurrection);
+    if (handle <= static_cast<Il2CppGCHandle>((std::numeric_limits<uint32_t>::max)()))
+        return static_cast<uint32_t>(handle);
+    Api_GcHandleFreeV2(handle);
+    SetError("IL2CPP: the runtime returned a pointer-sized weak GC handle; regenerate this mod with URKit SDK 29+");
+    return 0;
+}
+
+void *Api_GcHandleGetTargetLegacy(uint32_t handle) {
+    return Api_GcHandleGetTargetV2(static_cast<Il2CppGCHandle>(handle));
+}
+
+void Api_GcHandleFreeLegacy(uint32_t handle) {
+    Api_GcHandleFreeV2(static_cast<Il2CppGCHandle>(handle));
 }
 
 int Api_AttachManagedMethodHook(const URK_Il2CppManagedMethodDesc *desc, void **original, void *detour,
@@ -2212,24 +2359,10 @@ const URK_Il2CppApi g_publicApi = [] {
     api.gc_get_heap_size = []() -> int64_t {
         return g_api && g_api->il2cpp_gc_get_heap_size ? g_api->il2cpp_gc_get_heap_size() : 0;
     };
-    api.gchandle_new = [](void *object, int pinned) -> uint32_t {
-        return g_api && g_api->il2cpp_gchandle_new && object
-                   ? g_api->il2cpp_gchandle_new((Il2CppObject *)object, pinned != 0)
-                   : 0;
-    };
-    api.gchandle_new_weakref = [](void *object, int track_resurrection) -> uint32_t {
-        return g_api && g_api->il2cpp_gchandle_new_weakref && object
-                   ? g_api->il2cpp_gchandle_new_weakref((Il2CppObject *)object, track_resurrection != 0)
-                   : 0;
-    };
-    api.gchandle_get_target = [](uint32_t gchandle) -> void * {
-        return g_api && g_api->il2cpp_gchandle_get_target && gchandle ? g_api->il2cpp_gchandle_get_target(gchandle)
-                                                                      : nullptr;
-    };
-    api.gchandle_free = [](uint32_t gchandle) {
-        if (g_api && g_api->il2cpp_gchandle_free && gchandle)
-            g_api->il2cpp_gchandle_free(gchandle);
-    };
+    api.gchandle_new = &Api_GcHandleNewLegacy;
+    api.gchandle_new_weakref = &Api_GcHandleNewWeakRefLegacy;
+    api.gchandle_get_target = &Api_GcHandleGetTargetLegacy;
+    api.gchandle_free = &Api_GcHandleFreeLegacy;
 
     api.thread_get_name = [](const void *thread, uint32_t *length) -> char * {
         if (!g_api || !g_api->il2cpp_thread_get_name || !thread)
@@ -2528,6 +2661,10 @@ const URK_Il2CppApi g_publicApi = [] {
         return g_api && g_api->il2cpp_allocation_granularity ? g_api->il2cpp_allocation_granularity() : 0;
     };
     api.array_set_ref = &Api_ArraySetRef;
+    api.gchandle_new_v2 = &Api_GcHandleNewV2;
+    api.gchandle_new_weakref_v2 = &Api_GcHandleNewWeakRefV2;
+    api.gchandle_get_target_v2 = &Api_GcHandleGetTargetV2;
+    api.gchandle_free_v2 = &Api_GcHandleFreeV2;
     return api;
 }();
 } // namespace

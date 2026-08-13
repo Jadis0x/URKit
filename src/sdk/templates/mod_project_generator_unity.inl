@@ -906,13 +906,13 @@ struct Backend {
     static bool array_set_ref(void* array, std::size_t index, void* value) { return URK::)URKUNITY"
         << backendNs << R"URKUNITY(::array_set_ref(static_cast<URK::)URKUNITY" << backendNs
         << R"URKUNITY(::Array*>(array), index, value); }
-    static std::uint32_t gchandle_new(void* object, int pinned) { return URK::)URKUNITY"
+    static std::uintptr_t gchandle_new(void* object, int pinned) { return URK::)URKUNITY"
         << backendNs << R"URKUNITY(::gchandle_new(object, pinned); }
-    static std::uint32_t gchandle_new_weakref(void* object, int trackResurrection) { return URK::)URKUNITY"
+    static std::uintptr_t gchandle_new_weakref(void* object, int trackResurrection) { return URK::)URKUNITY"
         << backendNs << R"URKUNITY(::gchandle_new_weakref(object, trackResurrection); }
-    static void* gchandle_get_target(std::uint32_t handle) { return URK::)URKUNITY"
+    static void* gchandle_get_target(std::uintptr_t handle) { return URK::)URKUNITY"
         << backendNs << R"URKUNITY(::gchandle_get_target(handle); }
-    static void gchandle_free(std::uint32_t handle) { URK::)URKUNITY"
+    static void gchandle_free(std::uintptr_t handle) { URK::)URKUNITY"
         << backendNs << R"URKUNITY(::gchandle_free(handle); }
     static void* type_object_for_class(std::string_view image, std::string_view ns, std::string_view name) { const void* k=find_class(image, ns, name); if (!k) return nullptr; auto* t = URK::)URKUNITY"
         << backendNs << R"URKUNITY(::class_get_type(static_cast<const URK::)URKUNITY" << backendNs
@@ -978,7 +978,7 @@ template <class T> class RootedObjectArray {
 
     void reset() {
         items_.clear();
-        const std::uint32_t root = std::exchange(root_, 0);
+        const std::uintptr_t root = std::exchange(root_, 0);
         if (root)
             Backend::gchandle_free(root);
     }
@@ -1026,7 +1026,7 @@ template <class T> class RootedObjectArray {
 
   private:
     std::vector<T> items_;
-    std::uint32_t root_ = 0;
+    std::uintptr_t root_ = 0;
 };
 
 inline void append_backend_error() {
@@ -3900,7 +3900,10 @@ struct GameObject : Object {
         return detail::InvokeStatic<GameObject>(GameObjectType, "Find", name);
     }
     static GameObject FindWithTag(std::string_view tag) {
-        return detail::InvokeStatic<GameObject>(GameObjectType, "FindWithTag", tag);
+        // FindWithTag is a managed convenience wrapper and can disappear from
+        // IL2CPP metadata after inlining/stripping. The canonical extern binding
+        // has retained this name from legacy Unity through Unity 6.
+        return detail::InvokeStatic<GameObject>(GameObjectType, "FindGameObjectWithTag", tag);
     }
     static std::vector<GameObject> FindGameObjectsWithTag(std::string_view tag) {
         return detail::StaticArrayCall<GameObject>(GameObjectType, "FindGameObjectsWithTag", tag);
@@ -5989,7 +5992,7 @@ struct ObjectRefInfo {
     bool expandable = false;
 };
 struct ObjectHandle {
-    std::uint32_t handle = 0;
+    std::uintptr_t handle = 0;
     bool weak = false;
     bool pinned = false;
 };
@@ -6497,7 +6500,7 @@ struct ObjectRefInfo {
     bool expandable = false;
 };
 struct ObjectHandle {
-    std::uint32_t handle = 0;
+    std::uintptr_t handle = 0;
     bool weak = false;
     bool pinned = false;
 };
@@ -6777,7 +6780,7 @@ struct ObjectRefInfo {
     bool expandable = false;
 };
 struct ObjectHandle {
-    std::uint32_t handle = 0;
+    std::uintptr_t handle = 0;
     bool weak = false;
     bool pinned = false;
 };
