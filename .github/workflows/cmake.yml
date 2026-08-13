@@ -1,0 +1,51 @@
+name: CMake
+
+on:
+  push:
+    branches:
+      - main
+      - refactor/**
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  portable-configure:
+    name: Portable configure validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure without Windows loader
+        run: cmake -S . -B build -DURK_BUILD_LOADER=OFF
+
+  windows-build:
+    name: Windows ${{ matrix.compiler }} build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: Clang
+            preset: clang-release
+          - compiler: MSVC
+            preset: msvc-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up MSVC environment
+        if: matrix.compiler == 'MSVC'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel

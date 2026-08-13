@@ -1,156 +1,103 @@
-
-[![Views](https://hits.sh/github.com/Jadis0x/URKit.svg?style=flat-square&label=views&color=blue)](https://hits.sh/github.com/Jadis0x/URKit/)
-[![Downloads](https://img.shields.io/github/downloads/Jadis0x/URKit/total?style=flat-square&label=downloads&color=blue)](https://github.com/Jadis0x/URKit/releases)
-
-
 # URKit
 
-URKit is a native C++ modding SDK for Windows x64 Unity games. It supports
-both Mono and IL2CPP and gives a mod the runtime services it needs without
-requiring game-specific source code in the mod project.
+URKit is a native C++ modding toolkit for Windows x64 Unity games. It supports
+Mono and IL2CPP through one loader ABI and provides Unity object access, managed
+method calls, hooks, lifecycle callbacks, networking, and ImGui overlays.
 
-The SDK generates a ready-to-build project around the game you select. From
-there, you can find Unity objects, read and change managed state, call methods,
-install hooks, run work on Unity's main thread, and add an in-game ImGui menu.
+Generated mod DLLs are URKit plugins. Load them with a URKit proxy or
+`URKitInjector.dll`; do not inject mod DLLs directly.
 
-![URKit showcase](showcase/ss1.png)
+## Release contents
 
-URKit mods are plugins loaded by the URKit loader. A generated mod DLL is not a
-standalone program and must not be injected directly.
+- `urk-sdk.exe`: project generator for Mono and IL2CPP mods.
+- `version.dll`, `winhttp.dll`, `winmm.dll`: proxy loaders. Install exactly the
+  proxy imported by the game executable.
+- `URKitInjector.dll`: loader for external injection workflows. URKit does not
+  include an injector.
 
-## Quick start
+Place the selected proxy beside the game executable. Built mods belong in the
+game's `Mods` directory. Do not rename a proxy or install more than one proxy in
+the same game directory.
 
-Download the latest Windows x64 release and extract it somewhere convenient.
-The package contains:
+`URKitInjector.dll` provides a proxy-free alternative. Once loaded, it prompts
+for a configuration file and one or more mod DLLs; it does not create files or
+scan a `Mods` directory automatically.
 
-- `urk-sdk.exe` - project generator and SDK tool
-- `version.dll`, `winhttp.dll`, `winmm.dll` - loader proxies
-- `URKitInjector.dll` - optional loader for external loading workflows
-- SDK documentation and licenses
+## Generate and build a mod
 
-In the game directory, copy exactly one proxy DLL. Use the filename that the
-game executable imports; do not rename a proxy and do not copy all three into
-the same directory.
+Run `urk-sdk.exe`, select a game executable and backend, then enter a project
+name. The equivalent command is:
 
-Then start `urk-sdk.exe`, select the game's executable, choose `Auto`, `Mono`,
-or `IL2CPP`, and enter a project name. The generated project is written to:
+```powershell
+./urk-sdk.exe --game-exe C:\Games\Example\Example.exe --backend auto --name MyMod
+```
+
+`auto` detects Mono or IL2CPP from the game directory. Add `--localization` to
+include editable locale JSON files. Projects are written to:
 
 ```text
 <GameDir>/urk-sdk-output/<Project>/project
 ```
 
-The command-line form is useful when creating projects from scripts:
+Requirements:
 
-```powershell
-.\urk-sdk.exe `
-  --game-exe "C:\Games\Example\Example.exe" `
-  --backend auto `
-  --name MyMod
-```
+- CMake 3.28 or newer;
+- Ninja;
+- LLVM/Clang or the MSVC toolchain from Visual Studio 2022 Build Tools or
+  newer.
 
-Add `--localization` if the mod needs editable locale JSON files.
-
-## Build a generated mod
-
-Generated projects require:
-
-- Windows x64
-- CMake 3.28 or newer
-- LLVM/Clang
-- Ninja
-
-Open a terminal in the generated project directory and run:
+Clang build:
 
 ```powershell
 cmake --preset clang-debug
 cmake --build --preset clang-debug --parallel
 ```
 
-Use `clang-release` when building a mod for distribution:
+MSVC build, from an x64 Visual Studio Developer PowerShell:
 
 ```powershell
-cmake --preset clang-release
-cmake --build --preset clang-release --parallel
+cmake --preset msvc-debug
+cmake --build --preset msvc-debug --parallel
 ```
 
-The generated project is configured to deploy the mod DLL to the selected
-game's `Mods` directory. If you copy the DLL manually, place it in:
+Use `clang-release` or `msvc-release` for distributable builds. Generated
+projects copy the resulting DLL to the selected game's `Mods` directory.
 
-```text
-<GameDir>/Mods/
-```
+## Generated project layout
 
-## Where to start coding
+| Path | Purpose |
+| --- | --- |
+| `mod/lifecycle/mod_runtime.cpp` | Startup, main-thread updates, scene events, and shutdown. |
+| `mod/hooks/mod_hooks.cpp` | Hook installation and removal. |
+| `mod/lifecycle/mod_network.cpp` | HTTP configuration and policy. |
+| `mod/support/mod_log.cpp` | Shared mod logging. |
+| `mod/config/mod_config.h` | Mod identity and settings. |
+| `mod/ui/theme.h` | UI styling. |
 
-Most mods begin in `mod/lifecycle/mod_runtime.cpp`:
+Files under `sdk/`, `mod/generated/`, and generated UI support are refreshed by
+the generator. Keep custom code in separate files under `mod/`.
 
-- `start()` runs once after the selected Unity backend is ready.
-- `update()` runs on Unity's main thread.
-- `on_scene_loaded()` and `on_scene_changed()` are useful for rebuilding
-  scene-owned state.
-- `stop()` releases hooks, callbacks, handles, workers, and other resources.
+## Runtime notes
 
-Keep application code under `mod/`. The generator owns `sdk/`,
-`mod/generated/`, generated UI support, and build/editor configuration files;
-those files may be refreshed when the project is regenerated.
+- Unity calls belong on the Unity main thread.
+- Cache scene lookups and clear borrowed Unity handles on scene changes.
+- Check `Unity::last_error()` after an unexpected empty or zero result.
+- Detach hooks and release mod-owned resources before unload.
+- DX11, DX12, and OpenGL overlays are supported. Vulkan overlays are not.
 
-Useful starter files include:
+Loader API tables and context structures are versioned and append-only. Mods
+must check the advertised `version` and `size` before accessing newer fields.
+The public ABI is defined in `sdk/mod_sdk.h`.
 
-```text
-mod/lifecycle/mod_runtime.cpp  Runtime lifecycle and Unity work
-mod/hooks/mod_hooks.cpp        Hook installation and removal
-mod/support/mod_log.cpp        Shared logging helpers
-mod/config/mod_config.h        Mod metadata and settings
-mod/ui/theme.h                 ImGui styling
-```
+See the [URKit SDK Handbook](docs/SDK_HANDBOOK.md) for GameObject/component
+access, custom bindings, threading, hooks, and diagnostics. Its highlight
+chapter documents how overlay draw commands are
+projected and submitted through the generated DirectX 11, DirectX 12, or OpenGL
+render path. Internal components are described in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
-## What the SDK provides
+For loader and startup failures, inspect `URKit_logs.log` beside the game
+executable. If the file does not exist, verify that the game imports the proxy
+you installed.
 
-- Common Unity wrappers for Mono and IL2CPP
-- GameObject, Component, Transform, Scene, Camera, physics, animation, audio,
-  asset, and Unity UI helpers
-- Field and property access, overload resolution, arrays, generics, and managed
-  method invocation
-- Main-thread callbacks, scene events, input, cursor ownership, coroutines,
-  and Steam identity helpers
-- Hook helpers with unload-safe ownership tracking
-- Optional ImGui overlays for DX11, DX12, and OpenGL
-- HTTPS JSON helpers backed by Windows Schannel
-- Runtime diagnostics and `Unity::last_error()` reporting
-
-Vulkan overlays are not supported. URKit does not include an offline offset
-database or game-specific layouts; compatibility depends on the game, Unity
-version, backend, and runtime configuration.
-
-## Optional injected loader
-
-`URKitInjector.dll` is a loader DLL for external loading workflows. It loads
-the URKit runtime and lets the user select a configuration file and mod DLLs.
-It is not an injector supplied by URKit, and it is not a replacement for the
-generated mod DLL installation rules. Generated mods remain loader plugins.
-
-For normal use, the proxy loader is simpler: put the correct proxy beside the
-game executable and put mod DLLs in `Mods`.
-
-## Troubleshooting
-
-The loader writes `URKit_logs.log` beside the game executable.
-
-- No log file usually means the selected proxy was not loaded. Check the
-  proxy filename and its location.
-- If the loader starts but no mod appears, check the `Mods` directory, the
-  backend selected by the generator, and the log file.
-- `Auto` selects IL2CPP when `GameAssembly.dll` is present and otherwise checks
-  for a Mono runtime.
-- A mod DLL built for 32-bit Windows cannot load into a 64-bit game.
-- Retest after game or Unity updates; internal layouts and managed metadata can
-  change.
-
-## Documentation
-
-- [URKit SDK Handbook](docs/SDK_HANDBOOK.md)
-- [MIT license](LICENSE)
-
-The public SDK is MIT-licensed. The precompiled loader binaries are distributed
-under their own binary license, included in the release package. Loader source
-code is not part of this repository.
+URKit is available under the [MIT License](LICENSE).
