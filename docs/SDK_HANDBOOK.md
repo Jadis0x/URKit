@@ -478,79 +478,41 @@ later.
 
 ### Scene callbacks are hints, not object-readiness signals
 
-Do not assume that a game loads a new scene when it moves from a title screen
-to gameplay. A game may keep one scene active for its entire lifetime, load
-content additively, keep objects under `DontDestroyOnLoad`, or spawn the object
-you need long after every scene callback has finished. Conversely, a scene
-change can destroy a cached object before the feature uses it again.
-
-`OnSceneLoaded` and `OnSceneChanged` exports being resolved only confirms that
-the loader found those functions in the mod DLL. Check
-`URK::has_scene_events()` when availability matters. A loader log that reports
-`scene events=no` means the runtime cannot currently supply those events, even
-if both mod exports were resolved successfully.
-
-The durable pattern is:
-
-1. Let `ModRuntime::update()` own discovery and use of Unity objects.
-2. Retry discovery at a measured interval until the object exists.
-3. Validate a cached wrapper with `alive()` before use.
-4. Discard a dead handle and return to discovery.
-5. Use scene callbacks only to invalidate the cache earlier.
-
-This compact example continues to work in a single-scene game and also reacts
-quickly when scene events are available:
+Some games keep one scene active and spawn gameplay objects much later. Do not
+wait for a scene callback before discovery. Poll at a bounded interval, cache
+the result, and return to discovery when `alive()` fails. Scene callbacks only
+invalidate the cache earlier.
 
 ```cpp
 #include <chrono>
 
-#include "mod_runtime.h"
-#include "support/mod_log.h"
 #include "sdk/unity/unity.h"
 
 namespace {
 using Clock = std::chrono::steady_clock;
-
 Unity::GameObject g_character;
 Clock::time_point g_next_lookup{};
-bool g_wait_reported = false;
 
 void forget_character() {
   g_character = {};
   g_next_lookup = Clock::time_point{};
-  g_wait_reported = false;
-}
-
-void discover_character(Clock::time_point now) {
-  if (g_character || now < g_next_lookup)
-    return;
-
-  g_next_lookup = now + std::chrono::milliseconds(750);
-  Unity::clear_error();
-  g_character = Unity::GameObject::FindWithTag("MainCharacter");
-
-  if (!g_character && !g_wait_reported) {
-    const char* detail = Unity::last_error();
-    ModLog::info("waiting for main character: %s",
-                 detail && detail[0] ? detail : "not spawned yet");
-    g_wait_reported = true;
-  }
 }
 } // namespace
 
 void ModRuntime::update() {
   const Clock::time_point now = Clock::now();
 
-  if (g_character && !g_character.alive()) {
-    ModLog::info("main character was destroyed; discovery resumed");
+  if (g_character && !g_character.alive())
     forget_character();
+
+  if (!g_character && now >= g_next_lookup) {
+    g_next_lookup = now + std::chrono::milliseconds(750);
+    g_character = Unity::GameObject::FindWithTag("MainCharacter");
   }
 
-  discover_character(now);
-  if (!g_character)
-    return;
-
-  // Perform feature work with g_character here on the Unity main thread.
+  if (g_character) {
+    // Perform feature work here on the Unity main thread.
+  }
 }
 
 void ModRuntime::on_scene_loaded(const URK_SceneInfo*) {
@@ -564,10 +526,10 @@ void ModRuntime::on_scene_changed(
 }
 ```
 
-The callbacks intentionally contain no discovery work. They mark cached state
-stale; the regular update path performs the next lookup. If scene events are
-unavailable or the active scene never changes, the `alive()` check and timed
-discovery path still provide the same recovery behavior.
+`OnSceneLoaded` and `OnSceneChanged` being resolved only means the exports were
+found in the mod DLL. Use `URK::has_scene_events()` to check whether the runtime
+can deliver them. The polling path above remains valid when it cannot. Capture
+`Unity::last_error()` after a failed lookup and throttle repeated log output.
 
 ## 6. Choose the right object search
 
@@ -1162,16 +1124,9 @@ a toggle, and `GetKeyUp` is useful when release matters. Mouse equivalents are
 `GetMouseButton`, `GetMouseButtonDown`, and `GetMouseButtonUp`.
 
 Always check `Unity::Input::available()` before interpreting a `false` result.
-When legacy input is unavailable, the boolean helpers also return `false`; that
-is an unavailable service, not proof that the key is up. IL2CPP can strip
-unused `UnityEngine.Input` bindings, and a game may use the newer Input System
-without retaining the complete legacy API expected by URKit.
-
-If input is optional, keep the rest of the feature working and expose the
-action through the generated menu. If a native hotkey is a requirement, place
-window-message or platform-keyboard handling in a dedicated native input
-module and apply the resulting plain request from `ModRuntime::update()`. Do
-not call Unity APIs from the window procedure or render hook.
+Its boolean helpers also return `false` when legacy input is unavailable. Use a
+menu action instead, or have a native input module publish a plain request that
+`ModRuntime::update()` applies.
 
 ### Time
 
@@ -2398,14 +2353,10 @@ Adding five layers at once makes a crash much harder to localize.
 ### A scene callback never fires
 
 - The loader's `scene events=yes/no` capability line is checked.
-- `URK::has_scene_events()` is checked independently from whether the mod's
-  `OnSceneLoaded` and `OnSceneChanged` exports were resolved.
-- The game is verified to actually load or activate another scene; a later
-  object spawn in the same scene is not a scene event.
-- Discovery also runs from `ModRuntime::update()` at a bounded interval.
-- Cached wrappers are checked with `alive()` even when no scene event arrives.
-- The loader's per-method diagnostics are inspected for stripped
-  `SceneManager` or `Scene` bindings.
+- `URK::has_scene_events()` is checked; resolved mod exports do not guarantee
+  runtime event delivery.
+- Discovery still runs from `ModRuntime::update()` and cached wrappers use
+  `alive()` because an object can spawn or die without a scene change.
 
 On IL2CPP, `URK_SceneInfo::buildIndex == -1` is supported and does not by itself
 make scene events unavailable. Use the scene name and handle when the optional
@@ -2415,17 +2366,10 @@ build-index binding was stripped.
 
 - `Unity::Input::available()` is checked before reading a key or mouse button.
 - The loader's `input=yes/no` capability line is checked.
-- The per-method diagnostics identify which legacy `Input.GetKey*` or
-  `Input.GetMouseButton*` binding was not retained by the player.
 - Input polling occurs from `ModRuntime::update()`, not from the render thread.
-- The target game may use Unity's newer Input System while IL2CPP strips some
-  or all of the legacy `UnityEngine.Input` surface.
 
 An unavailable input service and an unpressed key both produce `false` from the
-boolean helper. Do not diagnose the key state until availability has been
-confirmed. Keep a menu action available as a portable control path, or isolate
-a required native hotkey behind a platform input module that publishes a plain
-request to the main-thread feature code.
+boolean helper. Confirm availability before diagnosing key state.
 
 ### A component is not found
 
