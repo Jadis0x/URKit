@@ -2,13 +2,13 @@ if (NOT DEFINED OUTPUT_DIR OR NOT IS_ABSOLUTE "${OUTPUT_DIR}")
     message(FATAL_ERROR "OUTPUT_DIR must be an absolute path.")
 endif()
 
-foreach(required_var SDK_TOOL VERSION_LOADER WINHTTP_LOADER WINMM_LOADER INJECTED_LOADER SOURCE_DIR)
+foreach(required_var SDK_TOOL UPDATER VERSION_LOADER WINHTTP_LOADER WINMM_LOADER INJECTED_LOADER SOURCE_DIR)
     if (NOT DEFINED ${required_var} OR "${${required_var}}" STREQUAL "")
         message(FATAL_ERROR "${required_var} is required.")
     endif()
 endforeach()
 
-foreach(binary_var SDK_TOOL VERSION_LOADER WINHTTP_LOADER WINMM_LOADER INJECTED_LOADER)
+foreach(binary_var SDK_TOOL UPDATER VERSION_LOADER WINHTTP_LOADER WINMM_LOADER INJECTED_LOADER)
     if (NOT EXISTS "${${binary_var}}")
         message(FATAL_ERROR "${binary_var} does not exist: ${${binary_var}}")
     endif()
@@ -16,6 +16,7 @@ endforeach()
 
 set(release_files
     urk-sdk.exe
+    urk-updater.exe
     version.dll
     winhttp.dll
     winmm.dll
@@ -59,6 +60,7 @@ function(copy_release_file source destination_name)
 endfunction()
 
 copy_release_file("${SDK_TOOL}" urk-sdk.exe)
+copy_release_file("${UPDATER}" urk-updater.exe)
 copy_release_file("${VERSION_LOADER}" version.dll)
 copy_release_file("${WINHTTP_LOADER}" winhttp.dll)
 copy_release_file("${WINMM_LOADER}" winmm.dll)

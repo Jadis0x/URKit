@@ -67,13 +67,30 @@ set(URK_UI_SRC
     ${URK_SRC_DIR}/ui/intro.cpp
 )
 
-set(URK_SDK_TOOL_SRC
-    ${URK_SRC_DIR}/tools/win32_tool_ui.h
-    ${URK_SRC_DIR}/tools/sdk_tool/main.cpp
+set(URK_SDK_GENERATOR_SRC
     ${URK_SRC_DIR}/sdk/mod_project_generator_common.cpp
     ${URK_SRC_DIR}/sdk/mono_sdk_generator.cpp
     ${URK_SRC_DIR}/sdk/il2cpp_project_generator.cpp
     ${URK_SRC_DIR}/sdk/sdk_generator_contract.cpp
+    ${URK_SRC_DIR}/sdk/project_manifest.cpp
+)
+
+set(URK_PROJECT_UPDATER_SRC
+    ${URK_SRC_DIR}/sdk/project_updater.cpp
+    ${URK_SRC_DIR}/sdk/updater_self_update.cpp
+)
+
+set(URK_SDK_TOOL_SRC
+    ${URK_SRC_DIR}/tools/win32_tool_ui.h
+    ${URK_SRC_DIR}/tools/sdk_tool/main.cpp
+    ${URK_SDK_GENERATOR_SRC}
+)
+
+set(URK_UPDATER_SRC
+    ${URK_SRC_DIR}/tools/win32_tool_ui.h
+    ${URK_SRC_DIR}/tools/updater_tool/main.cpp
+    ${URK_SDK_GENERATOR_SRC}
+    ${URK_PROJECT_UPDATER_SRC}
 )
 
 set(URK_SDK_TEMPLATE_FILES
@@ -83,6 +100,7 @@ set(URK_SDK_TEMPLATE_FILES
 )
 set_source_files_properties(${URK_SDK_TEMPLATE_FILES} PROPERTIES HEADER_FILE_ONLY TRUE)
 list(APPEND URK_SDK_TOOL_SRC ${URK_SDK_TEMPLATE_FILES})
+list(APPEND URK_UPDATER_SRC ${URK_SDK_TEMPLATE_FILES})
 
 set(URK_COMMON_SRC
     ${URK_CORE_SRC}
@@ -134,6 +152,10 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/sdk/il2cpp_sdk_generator.h
     ${URK_SRC_DIR}/sdk/mono_sdk_generator.h
     ${URK_SRC_DIR}/sdk/sdk_generator_contract.h
+    ${URK_SRC_DIR}/sdk/project_manifest.h
+    ${URK_SRC_DIR}/sdk/project_updater.h
+    ${URK_SRC_DIR}/sdk/updater_self_update.h
+    ${URK_SRC_DIR}/sdk/updater_version.h
 
     ${URK_SRC_DIR}/unity/mono_api.h
     ${URK_SRC_DIR}/unity/il2cpp_export_policy.h
@@ -152,3 +174,4 @@ endforeach()
 
 urk_validate_sources(${URK_COMMON_SRC})
 urk_validate_sources(${URK_SDK_TOOL_SRC})
+urk_validate_sources(${URK_UPDATER_SRC})

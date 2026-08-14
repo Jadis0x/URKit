@@ -69,37 +69,39 @@ if (URK_BUILD_SDK_TOOL)
         VERBATIM
     )
 
-    add_executable(URKitSdkTool
-        ${URK_SDK_TOOL_SRC}
-        ${URK_COMMON_HEADERS}
-        ${URK_EMBEDDED_MOD_SDK_HEADER}
-    )
+    function(urk_add_sdk_executable target_name output_name source_list)
+        add_executable(${target_name}
+            ${source_list}
+            ${URK_COMMON_HEADERS}
+            ${URK_EMBEDDED_MOD_SDK_HEADER}
+        )
+        target_compile_features(${target_name} PRIVATE cxx_std_20)
+        target_include_directories(${target_name} PRIVATE ${URK_INCLUDE_DIRS} ${URK_GENERATED_SDK_DIR})
+        target_compile_definitions(${target_name} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+        set_target_properties(${target_name} PROPERTIES OUTPUT_NAME "${output_name}")
+        if (WIN32)
+            set_target_properties(${target_name} PROPERTIES WIN32_EXECUTABLE TRUE)
+            target_compile_definitions(${target_name} PRIVATE UNICODE _UNICODE)
+            target_link_libraries(${target_name} PRIVATE comctl32 comdlg32 dwmapi ole32 shell32 uxtheme)
+        endif()
+        if (MSVC)
+            target_compile_options(${target_name} PRIVATE /W4 /permissive- /EHsc /utf-8)
+            target_link_options(${target_name} PRIVATE
+                "$<$<NOT:$<CONFIG:Debug>>:/INCREMENTAL:NO>"
+                "$<$<NOT:$<CONFIG:Debug>>:/OPT:REF>"
+                "$<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>"
+                "$<$<CONFIG:Release>:/LTCG>"
+            )
+            set_property(TARGET ${target_name} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        endif()
+        urk_disable_vs_vcpkg_integration(${target_name})
+    endfunction()
 
-    target_compile_features(URKitSdkTool PRIVATE cxx_std_20)
-    target_include_directories(URKitSdkTool PRIVATE ${URK_INCLUDE_DIRS} ${URK_GENERATED_SDK_DIR})
-    target_compile_definitions(URKitSdkTool PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    set_target_properties(URKitSdkTool PROPERTIES OUTPUT_NAME "urk-sdk")
+    urk_add_sdk_executable(URKitSdkTool "urk-sdk" "${URK_SDK_TOOL_SRC}")
+    urk_add_sdk_executable(URKitUpdater "urk-updater" "${URK_UPDATER_SRC}")
     if (WIN32)
-        set_target_properties(URKitSdkTool PROPERTIES WIN32_EXECUTABLE TRUE)
-        target_compile_definitions(URKitSdkTool PRIVATE UNICODE _UNICODE)
-        target_link_libraries(URKitSdkTool PRIVATE comctl32 comdlg32 dwmapi shell32 uxtheme)
+        target_link_libraries(URKitUpdater PRIVATE bcrypt winhttp)
     endif()
-    if (MSVC)
-        target_compile_options(URKitSdkTool PRIVATE
-            /W4
-            /permissive-
-            /EHsc
-            /utf-8
-        )
-        target_link_options(URKitSdkTool PRIVATE
-            "$<$<NOT:$<CONFIG:Debug>>:/INCREMENTAL:NO>"
-            "$<$<NOT:$<CONFIG:Debug>>:/OPT:REF>"
-            "$<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>"
-            "$<$<CONFIG:Release>:/LTCG>"
-        )
-        set_property(TARGET URKitSdkTool PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
-    endif()
-    urk_disable_vs_vcpkg_integration(URKitSdkTool)
 endif()
 
 if (NOT URK_BUILD_LOADER)
@@ -309,13 +311,14 @@ if (URK_BUILD_PUBLIC_RELEASE_STAGE)
         COMMAND ${CMAKE_COMMAND}
             -DOUTPUT_DIR=${URK_PUBLIC_RELEASE_DIR}
             -DSDK_TOOL=$<TARGET_FILE:URKitSdkTool>
+            -DUPDATER=$<TARGET_FILE:URKitUpdater>
             -DVERSION_LOADER=$<TARGET_FILE:URKit>
             -DWINHTTP_LOADER=$<TARGET_FILE:URKitWinHttp>
             -DWINMM_LOADER=$<TARGET_FILE:URKitWinMm>
             -DINJECTED_LOADER=$<TARGET_FILE:URKitInjected>
             -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/StagePublicRelease.cmake
-        DEPENDS URKitSdkTool URKit URKitWinHttp URKitWinMm URKitInjected
+        DEPENDS URKitSdkTool URKitUpdater URKit URKitWinHttp URKitWinMm URKitInjected
         COMMENT "Staging prebuilt URKit binaries"
         VERBATIM
     )

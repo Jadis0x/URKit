@@ -1,5 +1,7 @@
 #include "mod_project_generator_common.h"
 #include "embedded_mod_sdk.h"
+#include "mod_sdk.h"
+#include "project_manifest.h"
 
 #include <algorithm>
 #include <cctype>
@@ -671,7 +673,20 @@ bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error)
         if (!WriteByPolicy(project, write, error))
             return false;
 
-    return ValidateOutputSpecs(project.projectRoot, outputSpecs, error);
+    if (!ValidateOutputSpecs(project.projectRoot, outputSpecs, error))
+        return false;
+
+    if (project.deployDirectory.empty())
+        return true;
+
+    UrkProject::Manifest manifest;
+    manifest.sdkVersion = URK_SDK_VERSION;
+    manifest.backend = project.backendNamespace == "URK::il2cpp" ? UrkProject::Backend::Il2Cpp : UrkProject::Backend::Mono;
+    manifest.projectName = project.projectName;
+    manifest.gameDirectory = std::filesystem::path(project.deployDirectory).parent_path();
+    manifest.modsDirectory = std::filesystem::path(project.deployDirectory).filename().string();
+    manifest.enableLocalization = project.enableLocalization;
+    return UrkProject::WriteManifest(project.projectRoot, manifest, error);
 }
 
 } // namespace ModProjectGenerator
