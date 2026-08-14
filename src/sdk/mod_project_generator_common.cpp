@@ -156,7 +156,7 @@ std::string CMakeLists(const ModuleProjectOptions &options, const std::vector<fs
         << "include(FetchContent)\n"
         << "FetchContent_Declare(imgui\n"
         << "    GIT_REPOSITORY https://github.com/ocornut/imgui.git\n"
-        << "    GIT_TAG v1.92.2b-docking\n"
+        << "    GIT_TAG v1.92.9b-docking\n"
         << ")\n"
         << "FetchContent_MakeAvailable(imgui)\n"
         << "add_library(imgui STATIC\n"

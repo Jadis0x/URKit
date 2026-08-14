@@ -268,7 +268,10 @@ bool ParseHttpsUrl(std::string_view value, HttpsUrl *url) {
 
 bool OpenGetRequest(const HttpsUrl &url, InternetHandle *session, InternetHandle *connection, InternetHandle *request,
                     std::string *error) {
-    session->operator=(InternetHandle(WinHttpOpen(L"URKit Updater/0.3.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+    std::wstring userAgent = L"URKit Updater/";
+    for (const char character : kVersion)
+        userAgent.push_back(static_cast<wchar_t>(character));
+    session->operator=(InternetHandle(WinHttpOpen(userAgent.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)));
     if (!*session) {
         if (error)

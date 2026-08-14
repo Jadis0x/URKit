@@ -6,13 +6,13 @@ projects.
 ## Dear ImGui
 
 Generated projects fetch Dear ImGui from
-`https://github.com/ocornut/imgui.git` at tag `v1.92.2b-docking` and compile the
+`https://github.com/ocornut/imgui.git` at tag `v1.92.9b-docking` and compile the
 core plus Win32, DirectX 11, DirectX 12, and OpenGL 3 backends. Dear ImGui is
 licensed under the following MIT License, copied from that tag's `LICENSE.txt`:
 
 > The MIT License (MIT)
 >
-> Copyright (c) 2014-2025 Omar Cornut
+> Copyright (c) 2014-2026 Omar Cornut
 >
 > Permission is hereby granted, free of charge, to any person obtaining a copy
 > of this software and associated documentation files (the "Software"), to deal

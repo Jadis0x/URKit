@@ -1,5 +1,7 @@
 #include "json_rpc_session.h"
 
+#include "src/project_version.h"
+
 #include <array>
 
 namespace URK::DevMcp {
@@ -12,7 +14,7 @@ constexpr std::array<std::string_view, 5> kSupportedVersions{"2026-07-28", "2025
                                                              "2024-11-05"};
 
 Json ServerInfo() {
-    return {{"name", "urkit-dev"}, {"title", "URKit Development"}, {"version", "0.2.0"}};
+    return {{"name", "urkit-dev"}, {"title", "URKit Development"}, {"version", UrkVersion::kReleaseVersion}};
 }
 
 Json Capabilities() {

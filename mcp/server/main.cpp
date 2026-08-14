@@ -1,5 +1,7 @@
 #include "mcp_server.h"
 
+#include "src/project_version.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -24,7 +26,7 @@ int wmain(int argc, wchar_t **argv) {
     for (int index = 1; index < argc; ++index) {
         const std::wstring_view argument = argv[index];
         if (argument == L"--help") {
-            std::cerr << "URKit Development MCP 0.2.0\n"
+            std::cerr << "URKit Development MCP " << UrkVersion::kReleaseVersion << "\n"
                          "Usage: urk-dev-mcp.exe [--project <path>] [--game-pid <pid>]\n";
             return 0;
         }
@@ -48,7 +50,7 @@ int wmain(int argc, wchar_t **argv) {
         std::wcerr << L"Unknown or incomplete argument: " << argument << L'\n';
         return 2;
     }
-    std::cerr << "URKit Development MCP 0.2.0\n"
+    std::cerr << "URKit Development MCP " << UrkVersion::kReleaseVersion << "\n"
               << "Project: " << projectRoot.string() << '\n'
               << "Target : " << (gamePid ? "game PID " + std::to_string(*gamePid) : "automatic bridge discovery")
               << "\nTransport: stdio\n";
