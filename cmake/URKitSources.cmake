@@ -80,6 +80,46 @@ set(URK_PROJECT_UPDATER_SRC
     ${URK_SRC_DIR}/sdk/updater_self_update.cpp
 )
 
+set(URK_DEV_MCP_CORE_SRC
+    ${URK_ROOT_DIR}/mcp/core/bridge_protocol.cpp
+    ${URK_ROOT_DIR}/mcp/core/bridge_protocol.h
+)
+
+set(URK_DEV_MCP_SERVER_LIBRARY_SRC
+    ${URK_ROOT_DIR}/mcp/server/bridge_client.cpp
+    ${URK_ROOT_DIR}/mcp/server/bridge_client.h
+    ${URK_ROOT_DIR}/mcp/server/json_rpc_session.cpp
+    ${URK_ROOT_DIR}/mcp/server/json_rpc_session.h
+    ${URK_ROOT_DIR}/mcp/server/mcp_server.cpp
+    ${URK_ROOT_DIR}/mcp/server/mcp_server.h
+    ${URK_ROOT_DIR}/mcp/server/process_runner.cpp
+    ${URK_ROOT_DIR}/mcp/server/process_runner.h
+    ${URK_ROOT_DIR}/mcp/server/project_service.cpp
+    ${URK_ROOT_DIR}/mcp/server/project_service.h
+    ${URK_ROOT_DIR}/mcp/server/stdio_transport.cpp
+    ${URK_ROOT_DIR}/mcp/server/stdio_transport.h
+    ${URK_ROOT_DIR}/mcp/server/tool_catalog.cpp
+    ${URK_ROOT_DIR}/mcp/server/tool_catalog.h
+    ${URK_SRC_DIR}/sdk/project_manifest.cpp
+    ${URK_SRC_DIR}/sdk/project_manifest.h
+    ${URK_DEV_MCP_CORE_SRC}
+)
+
+set(URK_DEV_MCP_SERVER_SRC
+    ${URK_ROOT_DIR}/mcp/server/main.cpp
+    ${URK_DEV_MCP_SERVER_LIBRARY_SRC}
+)
+
+set(URK_DEV_BRIDGE_SRC
+    ${URK_ROOT_DIR}/dev/bridge/dev_bridge.cpp
+    ${URK_ROOT_DIR}/dev/bridge/dev_bridge.h
+    ${URK_ROOT_DIR}/dev/bridge/mod_entry.cpp
+    ${URK_ROOT_DIR}/dev/bridge/runtime_test_discovery.cpp
+    ${URK_ROOT_DIR}/dev/bridge/runtime_test_discovery.h
+    ${URK_SDK_DIR}/dev_test.h
+    ${URK_DEV_MCP_CORE_SRC}
+)
+
 set(URK_SDK_TOOL_SRC
     ${URK_SRC_DIR}/tools/win32_tool_ui.h
     ${URK_SRC_DIR}/tools/sdk_tool/main.cpp
@@ -162,6 +202,7 @@ set(URK_HEADER_CANDIDATES
 
 
     ${URK_SDK_DIR}/mod_sdk.h
+    ${URK_SDK_DIR}/dev_test.h
 )
 
 set(URK_COMMON_HEADERS)
@@ -175,3 +216,5 @@ endforeach()
 urk_validate_sources(${URK_COMMON_SRC})
 urk_validate_sources(${URK_SDK_TOOL_SRC})
 urk_validate_sources(${URK_UPDATER_SRC})
+urk_validate_sources(${URK_DEV_MCP_SERVER_SRC})
+urk_validate_sources(${URK_DEV_BRIDGE_SRC})

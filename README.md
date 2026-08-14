@@ -25,6 +25,10 @@ Generated mod DLLs are URKit plugins. Load them with a URKit proxy or
   proxy imported by the game executable.
 - `URKitInjector.dll`: loader for external injection workflows. URKit does not
   include an injector.
+- `urk-dev-mcp.exe`: local MCP server for building, deploying, diagnosing, and
+  runtime-testing generated URKit mods.
+- `URKitDevBridge.dll`: optional development-only mod that executes MCP runtime
+  requests on the Unity main thread.
 
 Place the selected proxy beside the game executable. Built mods belong in the
 game's `Mods` directory. Do not rename a proxy or install more than one proxy in
@@ -134,6 +138,24 @@ chapter documents how overlay draw commands are
 projected and submitted through the generated DirectX 11, DirectX 12, or OpenGL
 render path. Internal components are described in
 [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## AI-assisted mod development
+
+`urk-dev-mcp.exe` exposes the same local MCP tools to Codex, Claude, and other
+stdio-capable MCP clients. It reads the generated project's `.urk/project.ini`,
+uses only declared CMake presets, verifies deployment, returns bounded URKit
+logs, and connects to `URKitDevBridge.dll` for runtime status and tests.
+
+Copy `URKitDevBridge.dll` to the target game's `Mods` directory, then configure
+the MCP client with the generated mod project's root:
+
+```powershell
+urk-dev-mcp.exe --project C:\Games\Example\urk-sdk-output\MyMod\project
+```
+
+Runtime tests use the fixed C ABI in `sdk/dev_test.h`. See
+[URKit Development MCP](docs/DEV_MCP.md) for client configuration, test exports,
+security boundaries, and troubleshooting.
 
 For loader and startup failures, inspect `URKit_logs.log` beside the game
 executable. If the file does not exist, verify that the game imports the proxy

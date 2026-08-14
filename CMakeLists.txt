@@ -15,6 +15,8 @@ set(VCPKG_APPLOCAL_DEPS ${URK_VCPKG_APPLOCAL_DEPS} CACHE BOOL
 
 project(URKit LANGUAGES CXX)
 
+include(CTest)
+
 if (WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "URKit supports x64 Windows targets only.")
 endif()
@@ -35,6 +37,7 @@ option(URK_BUILD_SDK_TOOL "Build the standalone SDK/project generation tool" ON)
 option(URK_WITH_CURL "Enable libcurl-backed HTTPS JSON requests" ON)
 option(URK_HARDEN_RELEASE "Enable release hardening for loader DLLs" ON)
 option(URK_BUILD_PUBLIC_RELEASE_STAGE "Add the prebuilt release staging target" OFF)
+option(URK_BUILD_DEV_MCP "Build the local URKit mod-development MCP server and runtime bridge" ${WIN32})
 set(URK_PUBLIC_RELEASE_DIR "${CMAKE_CURRENT_BINARY_DIR}/public-release" CACHE PATH
     "Empty or URKit-managed directory for staged public release files")
 
@@ -46,6 +49,18 @@ if (URK_BUILD_PUBLIC_RELEASE_STAGE AND NOT URK_BUILD_SDK_TOOL)
     message(FATAL_ERROR "URK_BUILD_PUBLIC_RELEASE_STAGE requires URK_BUILD_SDK_TOOL=ON.")
 endif()
 
+if (URK_BUILD_PUBLIC_RELEASE_STAGE AND NOT URK_BUILD_DEV_MCP)
+    message(FATAL_ERROR "URK_BUILD_PUBLIC_RELEASE_STAGE requires URK_BUILD_DEV_MCP=ON.")
+endif()
+
+if (URK_BUILD_DEV_MCP)
+    FetchContent_Declare(nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG        v3.12.0
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
 function(urk_disable_vs_vcpkg_integration target_name)
     if (MSVC)
         set_target_properties(${target_name} PROPERTIES VS_GLOBAL_VcpkgEnabled "false")
@@ -54,18 +69,106 @@ endfunction()
 
 include(cmake/URKitSources.cmake)
 
+if (URK_BUILD_DEV_MCP)
+    if (NOT WIN32)
+        message(FATAL_ERROR "URKit development MCP currently requires Windows.")
+    endif()
+
+    add_executable(URKitDevMcp ${URK_DEV_MCP_SERVER_SRC})
+    target_compile_features(URKitDevMcp PRIVATE cxx_std_20)
+    target_include_directories(URKitDevMcp PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sdk
+        ${CMAKE_CURRENT_SOURCE_DIR}/sdk
+    )
+    target_compile_definitions(URKitDevMcp PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(URKitDevMcp PRIVATE nlohmann_json::nlohmann_json)
+    set_target_properties(URKitDevMcp PROPERTIES OUTPUT_NAME "urk-dev-mcp")
+
+    add_library(URKitDevBridge SHARED ${URK_DEV_BRIDGE_SRC})
+    target_compile_features(URKitDevBridge PRIVATE cxx_std_20)
+    target_include_directories(URKitDevBridge PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/sdk
+        ${CMAKE_CURRENT_SOURCE_DIR}/dev/bridge
+    )
+    target_compile_definitions(URKitDevBridge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(URKitDevBridge PRIVATE nlohmann_json::nlohmann_json advapi32)
+    set_target_properties(URKitDevBridge PROPERTIES PREFIX "" OUTPUT_NAME "URKitDevBridge")
+
+    foreach(target_name IN ITEMS URKitDevMcp URKitDevBridge)
+        if (MSVC)
+            target_compile_options(${target_name} PRIVATE /W4 /permissive- /EHsc /utf-8)
+        endif()
+        urk_disable_vs_vcpkg_integration(${target_name})
+    endforeach()
+
+    if (BUILD_TESTING)
+        add_executable(urk_mcp_protocol_tests
+            tests/mcp_protocol_tests.cpp
+            ${URK_DEV_MCP_SERVER_LIBRARY_SRC}
+        )
+        target_include_directories(urk_mcp_protocol_tests PRIVATE . src/sdk sdk)
+        target_compile_features(urk_mcp_protocol_tests PRIVATE cxx_std_20)
+        target_compile_definitions(urk_mcp_protocol_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(urk_mcp_protocol_tests PRIVATE nlohmann_json::nlohmann_json)
+        add_test(NAME urkit_mcp_protocol COMMAND urk_mcp_protocol_tests)
+
+        add_executable(urk_mcp_project_service_tests
+            tests/mcp_project_service_tests.cpp
+            mcp/server/process_runner.cpp
+            mcp/server/project_service.cpp
+            src/sdk/project_manifest.cpp
+        )
+        target_include_directories(urk_mcp_project_service_tests PRIVATE . src/sdk sdk)
+        target_compile_features(urk_mcp_project_service_tests PRIVATE cxx_std_20)
+        target_compile_definitions(urk_mcp_project_service_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_compile_definitions(urk_mcp_project_service_tests PRIVATE
+            URK_TEST_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
+        )
+        target_link_libraries(urk_mcp_project_service_tests PRIVATE nlohmann_json::nlohmann_json)
+        add_test(NAME urkit_mcp_project_service COMMAND urk_mcp_project_service_tests)
+
+        add_executable(urk_runtime_test_discovery_tests
+            tests/runtime_test_discovery_tests.cpp
+            dev/bridge/runtime_test_discovery.cpp
+        )
+        target_include_directories(urk_runtime_test_discovery_tests PRIVATE . sdk dev/bridge)
+        target_compile_features(urk_runtime_test_discovery_tests PRIVATE cxx_std_20)
+        target_compile_definitions(urk_runtime_test_discovery_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(urk_runtime_test_discovery_tests PRIVATE nlohmann_json::nlohmann_json)
+        add_test(NAME urkit_runtime_test_discovery COMMAND urk_runtime_test_discovery_tests)
+    endif()
+endif()
+
 if (URK_BUILD_SDK_TOOL)
     set(URK_GENERATED_SDK_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/sdk)
     set(URK_EMBEDDED_MOD_SDK_HEADER ${URK_GENERATED_SDK_DIR}/embedded_mod_sdk.h)
+    set(URK_EMBEDDED_DEV_TEST_HEADER ${URK_GENERATED_SDK_DIR}/embedded_dev_test.h)
 
     add_custom_command(
         OUTPUT ${URK_EMBEDDED_MOD_SDK_HEADER}
         COMMAND ${CMAKE_COMMAND}
             -DINPUT=${URK_SDK_DIR}/mod_sdk.h
             -DOUTPUT=${URK_EMBEDDED_MOD_SDK_HEADER}
+            -DSYMBOL=kEmbeddedModSdkHeader
+            -DDELIMITER=URKMODSDKH
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateEmbeddedSdkHeader.cmake
         DEPENDS ${URK_SDK_DIR}/mod_sdk.h ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateEmbeddedSdkHeader.cmake
         COMMENT "Embedding canonical sdk/mod_sdk.h for distribution-safe SDK generation"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT ${URK_EMBEDDED_DEV_TEST_HEADER}
+        COMMAND ${CMAKE_COMMAND}
+            -DINPUT=${URK_SDK_DIR}/dev_test.h
+            -DOUTPUT=${URK_EMBEDDED_DEV_TEST_HEADER}
+            -DSYMBOL=kEmbeddedDevTestHeader
+            -DDELIMITER=URKDEVTESTH
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateEmbeddedSdkHeader.cmake
+        DEPENDS ${URK_SDK_DIR}/dev_test.h ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateEmbeddedSdkHeader.cmake
+        COMMENT "Embedding canonical sdk/dev_test.h for generated mod runtime tests"
         VERBATIM
     )
 
@@ -74,6 +177,7 @@ if (URK_BUILD_SDK_TOOL)
             ${source_list}
             ${URK_COMMON_HEADERS}
             ${URK_EMBEDDED_MOD_SDK_HEADER}
+            ${URK_EMBEDDED_DEV_TEST_HEADER}
         )
         target_compile_features(${target_name} PRIVATE cxx_std_20)
         target_include_directories(${target_name} PRIVATE ${URK_INCLUDE_DIRS} ${URK_GENERATED_SDK_DIR})
@@ -316,9 +420,11 @@ if (URK_BUILD_PUBLIC_RELEASE_STAGE)
             -DWINHTTP_LOADER=$<TARGET_FILE:URKitWinHttp>
             -DWINMM_LOADER=$<TARGET_FILE:URKitWinMm>
             -DINJECTED_LOADER=$<TARGET_FILE:URKitInjected>
+            -DDEV_MCP=$<TARGET_FILE:URKitDevMcp>
+            -DDEV_BRIDGE=$<TARGET_FILE:URKitDevBridge>
             -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/StagePublicRelease.cmake
-        DEPENDS URKitSdkTool URKitUpdater URKit URKitWinHttp URKitWinMm URKitInjected
+        DEPENDS URKitSdkTool URKitUpdater URKit URKitWinHttp URKitWinMm URKitInjected URKitDevMcp URKitDevBridge
         COMMENT "Staging prebuilt URKit binaries"
         VERBATIM
     )

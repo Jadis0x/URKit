@@ -1,5 +1,6 @@
 #include "mod_project_generator_common.h"
 #include "embedded_mod_sdk.h"
+#include "embedded_dev_test.h"
 #include "mod_sdk.h"
 #include "project_manifest.h"
 
@@ -365,6 +366,10 @@ std::string Readme(const ModuleProjectOptions &options) {
         << "- `mod/config/mod_config.h` and `mod/ui/theme.h`: metadata and styling.\n\n"
         << "Files under `sdk/`, `mod/generated/`, generated UI support, and the build profiles are refreshed by "
            "the generator. User-owned files and new sources under `mod/` are preserved.\n\n"
+        << "## MCP runtime tests\n\n"
+        << "Generated projects include `sdk/dev_test.h`. Export `URK_DevTestCount`, `URK_DevTestDescribe`, and "
+           "`URK_DevTestRun` from a user-owned source under `mod/` to make runtime tests discoverable through "
+           "`URKitDevBridge.dll`. The development MCP guide is available in the URKit release documentation.\n\n"
         << "## Runtime constraints\n\n"
         << "- `sdk/mod_sdk.h` is the ABI source of truth. Check version, size, backend, capability, and function "
            "pointers before use.\n"
@@ -566,9 +571,16 @@ bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error)
     std::string sdkHeader;
     if (!ReadSdkHeader(project, sdkHeader, error))
         return false;
+    std::string devTestHeader(kEmbeddedDevTestHeader.begin(), kEmbeddedDevTestHeader.end());
+    if (devTestHeader.empty()) {
+        if (error)
+            *error = "embedded canonical sdk/dev_test.h is empty";
+        return false;
+    }
     const UnityModuleSet unityModules = BuildUnityModuleSet(project);
     std::vector<PlannedWrite> writes = {
         {"sdk/mod_sdk.h", OutputFilePolicy::GeneratedOverwrite, sdkHeader, true, false},
+        {"sdk/dev_test.h", OutputFilePolicy::GeneratedOverwrite, devTestHeader, true, true},
         {"sdk/runtime_api.h", OutputFilePolicy::GeneratedOverwrite, ModSdkModule(), true, true},
         {"sdk/runtime_bootstrap.h", OutputFilePolicy::GeneratedOverwrite, RuntimeBootstrapModule(project), true, true},
         {"sdk/hook_api.h", OutputFilePolicy::GeneratedOverwrite, HooksRuntimeModule(), true, true},

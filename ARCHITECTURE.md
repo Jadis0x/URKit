@@ -20,6 +20,9 @@ and export definition differ.
 | `src/tools/sdk_tool/` | `urk-sdk.exe` command-line and Win32 UI. |
 | `src/sdk/` | SDK/project writers and output validation. |
 | `src/sdk/templates/` | Generated runtime, Unity, and optional UI source. |
+| `mcp/` | Client-neutral stdio MCP server, project services, and bounded bridge protocol. |
+| `dev/bridge/` | Optional in-game development bridge and runtime-test discovery. |
+| `sdk/dev_test.h` | Fixed C ABI for mod-owned runtime tests. |
 | `cmake/` | Source lists, embedded header generation, and release staging. |
 
 ## Runtime flow
@@ -39,6 +42,12 @@ and export definition differ.
 7. The selected native DLLs receive a validated `URK_ModContext` through
    `ModInitEx`.
 8. The runtime owns callback dispatch, hook records, and orderly shutdown.
+
+Development MCP project operations run out of process against one generated
+project manifest. Runtime requests enter through a current-user local named
+pipe, wait in a bounded queue, and execute from the DevBridge main-thread
+callback. Native mods expose tests through fixed discovery and execution
+exports; the bridge does not retain callbacks across requests.
 
 Capabilities are explicit. A missing event pump, input service, or backend API
 stays unavailable instead of being inferred from private layouts.
