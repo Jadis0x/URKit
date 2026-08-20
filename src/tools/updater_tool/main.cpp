@@ -3,6 +3,7 @@
 #include "updater_self_update.h"
 #include "updater_version.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cwchar>
 #include <exception>
@@ -34,19 +35,32 @@ namespace fs = std::filesystem;
 struct CommandLineOptions {
     fs::path projectRoot;
     bool update = false;
+    bool stageSdkMigration = false;
 };
 
 void PrintUsage() {
     std::fprintf(stderr,
                  "Usage: urk-updater.exe --project C:\\path\\to\\project [--check|--update]\n"
+                 "       urk-updater.exe --project C:\\path\\to\\project --stage-sdk\n"
                  "       urk-updater.exe --check-updater\n"
                  "\n"
                  "--check  Inspect a generated URKit project without changing files (default).\n"
                  "--update Create a backup and update the project-managed SDK files.\n"
+                 "--stage-sdk Generate Mono/IL2CPP SDK migration candidates without modifying a custom project.\n"
                  "--check-updater Check GitHub for a newer urk-updater.exe.\n");
 }
 
 int RunCommandLine(const CommandLineOptions &options) {
+    if (options.stageSdkMigration) {
+        fs::path stagedDirectory;
+        std::string error;
+        if (!UrkProject::StageSdkMigration(options.projectRoot, &stagedDirectory, &error)) {
+            std::fprintf(stderr, "URKit SDK migration staging failed: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("Project was not modified. SDK migration candidate: %s\n", stagedDirectory.string().c_str());
+        return 0;
+    }
     UrkProject::UpdatePreview preview;
     std::string error;
     try {
@@ -63,6 +77,12 @@ int RunCommandLine(const CommandLineOptions &options) {
         if (!UrkProject::Update(options.projectRoot, &update, &error)) {
             std::fprintf(stderr, "URKit project update failed: %s\n", error.c_str());
             return 1;
+        }
+        if (update.staged) {
+            std::printf("Project was not modified. Review staged candidate: %s\n",
+                        update.stagedUpdateDirectory.string().c_str());
+            std::printf("Conflicting generated files: %zu\n", update.conflicts.size());
+            return 10;
         }
         if (!update.updated) {
             std::printf("Project is already up to date.\n");
@@ -113,6 +133,8 @@ std::optional<CommandLineOptions> ParseCommandLine(std::string *error, bool *sho
             options.update = false;
         } else if (argument == "--update") {
             options.update = true;
+        } else if (argument == "--stage-sdk") {
+            options.stageSdkMigration = true;
         } else if (argument == "--help" || argument == "-h" || argument == "/?") {
             if (showHelp)
                 *showHelp = true;
@@ -126,6 +148,11 @@ std::optional<CommandLineOptions> ParseCommandLine(std::string *error, bool *sho
     if (options.projectRoot.empty()) {
         if (error)
             *error = "Missing value for --project.";
+        return std::nullopt;
+    }
+    if (options.stageSdkMigration && options.update) {
+        if (error)
+            *error = "--stage-sdk cannot be combined with --update.";
         return std::nullopt;
     }
     return options;
@@ -358,8 +385,15 @@ class UpdaterWindow {
             return;
         }
 
+        const bool hasConflicts = std::any_of(preview.changes.begin(), preview.changes.end(),
+                                              [](const UrkProject::PlannedChange &change) {
+                                                  return change.kind == UrkProject::ChangeKind::Conflict;
+                                              });
         const std::string confirmation =
-            "The listed URKit-managed files will be updated. A backup will be created under .urk\\backups.\n\n" +
+            (hasConflicts ? "Conflicting generated files will not be overwritten. A complete candidate will be staged "
+                            "under .urk\\updates for manual migration.\n\n"
+                          : "The listed URKit-managed files will be updated. A backup will be created under "
+                            ".urk\\backups.\n\n") +
             UrkProject::DescribeChanges(preview.changes) + "\n\nContinue?";
         if (MessageBoxW(hwnd_, URK::ToolUi::Utf8ToWide(confirmation).c_str(), L"Confirm URKit project update",
                         MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
@@ -381,6 +415,13 @@ class UpdaterWindow {
         if (!succeeded) {
             SetResult("Update failed: " + error);
             MessageBoxW(hwnd_, URK::ToolUi::Utf8ToWide(error).c_str(), L"URKit project update failed", MB_OK | MB_ICONERROR);
+        } else if (update.staged) {
+            const std::string message = "Project was not modified. Review the staged candidate:\n" +
+                                        update.stagedUpdateDirectory.string() + "\n\n" +
+                                        UrkProject::DescribeChanges(update.conflicts);
+            SetResult(message);
+            MessageBoxW(hwnd_, URK::ToolUi::Utf8ToWide(message).c_str(), L"URKit project migration required",
+                        MB_OK | MB_ICONWARNING);
         } else if (!update.updated) {
             SetResult(UrkProject::Describe(update.inspection));
             MessageBoxW(hwnd_, L"This project is already up to date.", L"URKit Project Updater", MB_OK | MB_ICONINFORMATION);

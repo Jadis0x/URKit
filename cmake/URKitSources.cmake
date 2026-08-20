@@ -73,6 +73,7 @@ set(URK_SDK_GENERATOR_SRC
     ${URK_SRC_DIR}/sdk/il2cpp_project_generator.cpp
     ${URK_SRC_DIR}/sdk/sdk_generator_contract.cpp
     ${URK_SRC_DIR}/sdk/project_manifest.cpp
+    ${URK_SRC_DIR}/sdk/project_ledger.cpp
 )
 
 set(URK_PROJECT_UPDATER_SRC
@@ -102,6 +103,7 @@ set(URK_DEV_MCP_SERVER_LIBRARY_SRC
     ${URK_ROOT_DIR}/mcp/server/tool_catalog.h
     ${URK_SRC_DIR}/sdk/project_manifest.cpp
     ${URK_SRC_DIR}/sdk/project_manifest.h
+    ${URK_SRC_DIR}/sdk/project_ledger.h
     ${URK_DEV_MCP_CORE_SRC}
 )
 

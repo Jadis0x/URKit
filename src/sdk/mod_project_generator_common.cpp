@@ -2,6 +2,7 @@
 #include "embedded_mod_sdk.h"
 #include "embedded_dev_test.h"
 #include "mod_sdk.h"
+#include "project_ledger.h"
 #include "project_manifest.h"
 
 #include <algorithm>
@@ -707,7 +708,15 @@ bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error)
     manifest.gameDirectory = std::filesystem::path(project.deployDirectory).parent_path();
     manifest.modsDirectory = std::filesystem::path(project.deployDirectory).filename().string();
     manifest.enableLocalization = project.enableLocalization;
-    return UrkProject::WriteManifest(project.projectRoot, manifest, error);
+    if (!UrkProject::WriteManifest(project.projectRoot, manifest, error))
+        return false;
+
+    std::vector<fs::path> generatedPaths;
+    generatedPaths.reserve(outputSpecs.size());
+    for (const OutputFileSpec &spec : outputSpecs)
+        if (spec.policy == OutputFilePolicy::GeneratedOverwrite)
+            generatedPaths.push_back(spec.relativePath);
+    return UrkProject::WriteGeneratedFileLedger(project.projectRoot, URK_SDK_VERSION, generatedPaths, error);
 }
 
 } // namespace ModProjectGenerator

@@ -33,6 +33,7 @@ constexpr const char *kManagedPaths[] = {
     ".clangd",
     ".vscode/c_cpp_properties.json",
     ".urk/project.ini",
+    ".urk/generated-files.ini",
 };
 
 bool IsRegularFile(const fs::path &path) {
@@ -411,6 +412,123 @@ bool FileContentsEqual(const fs::path &left, const fs::path &right, bool *equal,
     return true;
 }
 
+ChangeKind ClassifyCandidateChange(const Inspection &inspection, const fs::path &relativePath,
+                                   const fs::path &existing, std::string *error) {
+    if (relativePath == fs::path(kProjectManifestRelativePath))
+        return PathExists(existing) ? ChangeKind::Modified : ChangeKind::Added;
+    if (!inspection.hasGeneratedFileLedger)
+        return ChangeKind::Conflict;
+    if (!PathExists(existing))
+        return ChangeKind::Added;
+
+    const auto baseline = inspection.generatedFileLedger.hashes.find(relativePath.generic_string());
+    if (baseline == inspection.generatedFileLedger.hashes.end())
+        return ChangeKind::Conflict;
+
+    std::string currentHash;
+    if (!HashFileSha256(existing, &currentHash, error))
+        return ChangeKind::Conflict;
+    return currentHash == baseline->second ? ChangeKind::Modified : ChangeKind::Conflict;
+}
+
+bool GenerateCandidateProject(const fs::path &projectRoot, const Manifest &manifest, const fs::path &candidate,
+                              std::string *error) {
+    std::error_code ec;
+    fs::create_directories(candidate, ec);
+    if (ec) {
+        if (error)
+            *error = "cannot create update candidate directory " + candidate.string() + ": " + ec.message();
+        return false;
+    }
+    for (const fs::path &preservedPath : {fs::path("mod"), fs::path("locales")}) {
+        const fs::path source = projectRoot / preservedPath;
+        if (PathExists(source) && !CopyPath(source, candidate / preservedPath, error))
+            return false;
+    }
+    return Regenerate(candidate, manifest, error);
+}
+
+bool StageConflictedCandidate(const Inspection &inspection, const std::vector<PlannedChange> &changes,
+                              fs::path *stagedDirectory, std::string *error) {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+    const fs::path stage = inspection.projectRoot / ".urk/updates" /
+                           ("sdk-v" + std::to_string(URK_SDK_VERSION) + "-" + std::to_string(stamp));
+    const fs::path candidate = stage / "candidate";
+    if (!GenerateCandidateProject(inspection.projectRoot, inspection.manifest, candidate, error))
+        return false;
+
+    std::ofstream report(stage / "CONFLICTS.txt", std::ios::binary | std::ios::trunc);
+    if (!report) {
+        if (error)
+            *error = "cannot write staged update report " + stage.string();
+        return false;
+    }
+    report << "URKit staged SDK update\n\n"
+           << "The project was not modified. Review candidate/ against the project and merge only the files you own.\n"
+           << "After resolving generated-file changes, run the updater again from a project with a generated-file ledger.\n\n";
+    for (const PlannedChange &change : changes)
+        if (change.kind == ChangeKind::Conflict)
+            report << "CONFLICT " << change.relativePath.generic_string() << '\n';
+    report.close();
+    if (!report) {
+        if (error)
+            *error = "cannot finish staged update report " + stage.string();
+        return false;
+    }
+    *stagedDirectory = stage;
+    return true;
+}
+
+bool StageBackendSdkCandidate(const fs::path &projectRoot, const fs::path &stage, Backend backend,
+                              const std::string &projectName, std::ostream &report, std::string *error) {
+    const char *backendName = BackendName(backend);
+    const fs::path candidateRoot = stage / backendName / "candidate";
+    const fs::path candidateSdk = candidateRoot / "sdk" / backendName;
+    const std::string reportDetails = "Staged SDK migration candidate.\n";
+    const bool generated = backend == Backend::Il2Cpp
+                               ? Il2CppSdkGenerator::Generate(candidateSdk.string(), reportDetails, error) &&
+                                     Il2CppSdkGenerator::GenerateModProject(
+                                         candidateRoot.string(), candidateSdk.string(), {}, projectName,
+                                         projectRoot.string(), "Mods", false, error)
+                               : MonoSdkGenerator::Generate(candidateSdk.string(), reportDetails, error) &&
+                                     MonoSdkGenerator::GenerateModProject(candidateRoot.string(), candidateSdk.string(),
+                                                                           {}, projectName, projectRoot.string(), "Mods",
+                                                                           false, error);
+    if (!generated)
+        return false;
+
+    std::error_code ec;
+    const fs::path stagedSdkRoot = candidateRoot / "sdk";
+    fs::recursive_directory_iterator iterator(stagedSdkRoot, ec);
+    const fs::recursive_directory_iterator end;
+    while (!ec && iterator != end) {
+        const fs::directory_entry entry = *iterator;
+        iterator.increment(ec);
+        if (ec)
+            break;
+        if (!entry.is_regular_file(ec) || ec)
+            continue;
+        const fs::path relative = entry.path().lexically_relative(stagedSdkRoot);
+        const fs::path existing = projectRoot / "sdk" / relative;
+        if (!PathExists(existing)) {
+            report << "ADD " << backendName << "/sdk/" << relative.generic_string() << '\n';
+            continue;
+        }
+        bool equal = false;
+        if (!FileContentsEqual(entry.path(), existing, &equal, error))
+            return false;
+        if (!equal)
+            report << "CHANGE " << backendName << "/sdk/" << relative.generic_string() << '\n';
+    }
+    if (ec) {
+        if (error)
+            *error = "cannot enumerate staged SDK candidate: " + ec.message();
+        return false;
+    }
+    return true;
+}
+
 bool BuildPreview(const Inspection &inspection, std::vector<PlannedChange> *changes, std::string *error) {
     std::error_code ec;
     const fs::path temporaryRoot = fs::temp_directory_path(ec);
@@ -431,12 +549,7 @@ bool BuildPreview(const Inspection &inspection, std::vector<PlannedChange> *chan
     }
     ScopedPreviewDirectory cleanup(stage);
 
-    for (const fs::path &preservedPath : {fs::path("mod"), fs::path("locales")}) {
-        const fs::path source = inspection.projectRoot / preservedPath;
-        if (PathExists(source) && !CopyPath(source, stage / preservedPath, error))
-            return false;
-    }
-    if (!Regenerate(stage, inspection.manifest, error))
+    if (!GenerateCandidateProject(inspection.projectRoot, inspection.manifest, stage, error))
         return false;
 
     changes->clear();
@@ -454,14 +567,14 @@ bool BuildPreview(const Inspection &inspection, std::vector<PlannedChange> *chan
             continue;
         const fs::path existing = inspection.projectRoot / relativePath;
         if (!PathExists(existing)) {
-            changes->push_back({relativePath, ChangeKind::Added});
+            changes->push_back({relativePath, ClassifyCandidateChange(inspection, relativePath, existing, error)});
             continue;
         }
         bool equal = false;
         if (!FileContentsEqual(entry.path(), existing, &equal, error))
             return false;
         if (!equal)
-            changes->push_back({relativePath, ChangeKind::Modified});
+            changes->push_back({relativePath, ClassifyCandidateChange(inspection, relativePath, existing, error)});
     }
     if (ec) {
         if (error)
@@ -511,6 +624,18 @@ bool Inspect(const fs::path &projectRoot, Inspection *inspection, std::string *e
         return false;
     }
 
+    if (PathExists(root / kGeneratedFileLedgerRelativePath)) {
+        std::string ledgerError;
+        if (ReadGeneratedFileLedger(root, &parsed.generatedFileLedger, &ledgerError)) {
+            parsed.hasGeneratedFileLedger = true;
+        } else {
+            parsed.notices.push_back("Generated-file ledger is invalid; updates will be staged instead of overwriting files: " +
+                                     ledgerError);
+        }
+    } else {
+        parsed.notices.push_back("No generated-file ledger was found; the first update will be staged for manual migration.");
+    }
+
     if (parsed.manifest.sdkVersion > URK_SDK_VERSION || parsed.detectedSdkVersion > URK_SDK_VERSION) {
         if (error) {
             *error = "this project uses a newer SDK than urk-updater.exe (project=" +
@@ -549,13 +674,30 @@ bool PreviewUpdate(const fs::path &projectRoot, UpdatePreview *preview, std::str
 }
 
 bool Update(const fs::path &projectRoot, UpdateResult *result, std::string *error) {
-    Inspection inspection;
-    if (!Inspect(projectRoot, &inspection, error))
+    UpdatePreview preview;
+    if (!PreviewUpdate(projectRoot, &preview, error))
         return false;
+    Inspection inspection = preview.inspection;
     if (result)
         result->inspection = inspection;
     if (!inspection.updateAvailable)
         return true;
+
+    std::vector<PlannedChange> conflicts;
+    for (const PlannedChange &change : preview.changes)
+        if (change.kind == ChangeKind::Conflict)
+            conflicts.push_back(change);
+    if (!conflicts.empty()) {
+        fs::path stagedDirectory;
+        if (!StageConflictedCandidate(inspection, conflicts, &stagedDirectory, error))
+            return false;
+        if (result) {
+            result->stagedUpdateDirectory = std::move(stagedDirectory);
+            result->conflicts = std::move(conflicts);
+            result->staged = true;
+        }
+        return true;
+    }
 
     fs::path backup;
     std::vector<SnapshotEntry> snapshot;
@@ -590,6 +732,75 @@ bool Update(const fs::path &projectRoot, UpdateResult *result, std::string *erro
     return true;
 }
 
+bool StageSdkMigration(const fs::path &projectRoot, fs::path *stagedUpdateDirectory, std::string *error) {
+    if (error)
+        error->clear();
+    if (!stagedUpdateDirectory) {
+        if (error)
+            *error = "staged SDK migration output is null";
+        return false;
+    }
+    std::error_code ec;
+    const fs::path root = fs::absolute(projectRoot, ec).lexically_normal();
+    if (ec || projectRoot.empty() || !fs::is_directory(root, ec) || ec) {
+        if (error)
+            *error = "project directory does not exist: " + projectRoot.string();
+        return false;
+    }
+
+    const bool hasMono = IsRegularFile(root / "sdk/mono/mono_runtime.h");
+    const bool hasIl2Cpp = IsRegularFile(root / "sdk/il2cpp/il2cpp_runtime.h");
+    if (!hasMono && !hasIl2Cpp) {
+        if (error)
+            *error = "project does not contain a Mono or IL2CPP SDK folder to stage";
+        return false;
+    }
+
+    std::string cmake;
+    std::string readError;
+    const std::string projectName = ReadText(root / "CMakeLists.txt", &cmake, &readError)
+                                        ? ExtractCMakeProjectName(cmake)
+                                        : root.filename().string();
+    if (projectName.empty()) {
+        if (error)
+            *error = "cannot infer a project name for staged SDK migration";
+        return false;
+    }
+
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+    const fs::path stage = root / ".urk/updates" /
+                           ("sdk-v" + std::to_string(URK_SDK_VERSION) + "-" + std::to_string(stamp));
+    fs::create_directories(stage, ec);
+    if (ec) {
+        if (error)
+            *error = "cannot create staged SDK migration directory " + stage.string() + ": " + ec.message();
+        return false;
+    }
+
+    std::ofstream report(stage / "MIGRATION.txt", std::ios::binary | std::ios::trunc);
+    if (!report) {
+        if (error)
+            *error = "cannot write staged SDK migration report";
+        return false;
+    }
+    report << "URKit staged SDK migration\n\n"
+           << "The project was not modified. Each backend candidate is stored below this directory.\n"
+           << "Compare candidate/sdk with the project's sdk directory and merge custom changes deliberately.\n\n";
+    if (hasMono && !StageBackendSdkCandidate(root, stage, Backend::Mono, projectName, report, error))
+        return false;
+    if (hasIl2Cpp && !StageBackendSdkCandidate(root, stage, Backend::Il2Cpp, projectName, report, error))
+        return false;
+    report.close();
+    if (!report) {
+        if (error)
+            *error = "cannot finish staged SDK migration report";
+        return false;
+    }
+    *stagedUpdateDirectory = stage;
+    return true;
+}
+
 std::string Describe(const Inspection &inspection) {
     std::ostringstream out;
     out << "Project: " << inspection.manifest.projectName << '\n'
@@ -597,6 +808,7 @@ std::string Describe(const Inspection &inspection) {
         << "Backend: " << (inspection.manifest.backend == Backend::Il2Cpp ? "IL2CPP" : "Mono") << '\n'
         << "Project SDK: " << inspection.detectedSdkVersion << '\n'
         << "Updater SDK: " << URK_SDK_VERSION << '\n'
+        << "Generated-file ledger: " << (inspection.hasGeneratedFileLedger ? "present" : "missing") << '\n'
         << "Manifest: " << (inspection.hasManifest ? "present" : "legacy project; will be created") << '\n'
         << "Status: " << (inspection.updateAvailable ? "update available" : "up to date");
     for (const std::string &notice : inspection.notices)
@@ -608,9 +820,13 @@ std::string DescribeChanges(const std::vector<PlannedChange> &changes) {
     std::ostringstream out;
     if (changes.empty())
         return "Files to change: none";
-    out << "Files to change (" << changes.size() << "):";
-    for (const PlannedChange &change : changes)
-        out << '\n' << (change.kind == ChangeKind::Added ? "+ " : "~ ") << change.relativePath.generic_string();
+    out << "Generated-file plan (" << changes.size() << "):";
+    for (const PlannedChange &change : changes) {
+        const char *prefix = change.kind == ChangeKind::Added   ? "+ "
+                             : change.kind == ChangeKind::Conflict ? "! "
+                                                                  : "~ ";
+        out << '\n' << prefix << change.relativePath.generic_string();
+    }
     return out.str();
 }
 
