@@ -137,6 +137,33 @@ set(URK_SDK_TEMPLATE_FILES
     ${URK_SRC_DIR}/sdk/templates/mod_project_generator_runtime.inl
     ${URK_SRC_DIR}/sdk/templates/mod_project_generator_ui.inl
     ${URK_SRC_DIR}/sdk/templates/mod_project_generator_unity.inl
+    ${URK_SRC_DIR}/sdk/templates/runtime/runtime_api.inl
+    ${URK_SRC_DIR}/sdk/templates/runtime/hooks_api.inl
+    ${URK_SRC_DIR}/sdk/templates/runtime/network_api.inl
+    ${URK_SRC_DIR}/sdk/templates/runtime/project_support.inl
+    ${URK_SRC_DIR}/sdk/templates/runtime/events_async.inl
+    ${URK_SRC_DIR}/sdk/templates/runtime/lifecycle.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/theme_widgets.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/localization.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/tabs.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/menu.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/highlight.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/graphics_dx11.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/graphics_dx12.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/graphics_discovery.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/win32_input.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/render_hook_api.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/viewport_policy.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/render_hook_source.inl
+    ${URK_SRC_DIR}/sdk/templates/unity/types.inl
+    ${URK_SRC_DIR}/sdk/templates/unity/components.inl
+    ${URK_SRC_DIR}/sdk/templates/unity/invoke.inl
+    ${URK_SRC_DIR}/sdk/templates/unity/shortcuts.inl
+    ${URK_SRC_DIR}/sdk/templates/unity/inspect_declarations.inl
+    ${URK_SRC_DIR}/sdk/templates/unity/aliases.inl
+    ${URK_SRC_DIR}/sdk/templates/unity/inspect_codegen.inl
+    ${URK_SRC_DIR}/sdk/templates/unity/backend_codegen.inl
+    ${URK_SRC_DIR}/sdk/templates/unity/module_split.inl
 )
 set_source_files_properties(${URK_SDK_TEMPLATE_FILES} PROPERTIES HEADER_FILE_ONLY TRUE)
 list(APPEND URK_SDK_TOOL_SRC ${URK_SDK_TEMPLATE_FILES})
