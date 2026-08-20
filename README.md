@@ -38,6 +38,22 @@ the same game directory.
 for a configuration file and one or more mod DLLs; it does not create files or
 scan a `Mods` directory automatically.
 
+## Security software and false positives
+
+The proxy loaders and `URKitInjector.dll` intentionally load into a game
+process and can install API hooks. Those behaviors are common to mod loaders,
+but they can also trigger heuristic detections from security software. A
+detection does not by itself establish that a URKit release is malicious.
+
+Download releases only from the official GitHub repository and verify the
+published SHA-256 digest before using an archive. Release binaries are
+self-signed for tamper identification, but that certificate is not trusted by
+Windows by default and must not be treated as a general trust signal. Do not
+disable security protection to run URKit. Instead, record the antivirus
+product and version, the exact detection name, the affected file, and its
+SHA-256 digest, then submit the file to that vendor's false-positive process
+or open a GitHub issue with those details.
+
 ## Generate and build a mod
 
 Run `urk-sdk.exe`, select a game executable and backend, then enter a project
