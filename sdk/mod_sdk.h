@@ -6,9 +6,9 @@
 extern "C" {
 #endif
 
-#define URK_SDK_VERSION 30
+#define URK_SDK_VERSION 31
 #define URK_MONO_API_VERSION 8
-#define URK_RUNTIME_API_VERSION 9
+#define URK_RUNTIME_API_VERSION 10
 #define URK_IL2CPP_API_VERSION 7
 #define URK_NETWORK_API_VERSION 1
 
@@ -241,6 +241,13 @@ typedef struct URK_RuntimeApi {
      * This v9 entry is owner-explicit and automatically released on unload.
      */
     int (*menu_mouse_capture_set_owned)(const void *owner_address, int capture);
+    /*
+     * Returns non-zero only on the Unity thread captured by the runtime event
+     * pump. This v10 entry lets mods reject unsafe Unity calls instead of
+     * mistaking a managed invocation without an exception for a valid
+     * cross-thread Unity operation.
+     */
+    int (*is_main_thread)();
 } URK_RuntimeApi;
 
 typedef struct URK_Il2CppManagedMethodDesc {
@@ -608,6 +615,9 @@ static_assert(offsetof(URK_RuntimeApi, menu_cursor_set_open_owned) >
 static_assert(offsetof(URK_RuntimeApi, menu_mouse_capture_set_owned) >
                   offsetof(URK_RuntimeApi, menu_cursor_set_open_owned),
               "URK_RuntimeApi mouse-capture helper must stay appended.");
+static_assert(offsetof(URK_RuntimeApi, is_main_thread) >
+                  offsetof(URK_RuntimeApi, menu_mouse_capture_set_owned),
+              "URK_RuntimeApi main-thread query must stay appended.");
 static_assert(offsetof(URK_ObjectDestroyRequest, typeName) > offsetof(URK_ObjectDestroyRequest, name),
               "URK_ObjectDestroyRequest fields must remain append-only.");
 static_assert(offsetof(URK_Il2CppApi, size) > offsetof(URK_Il2CppApi, version),

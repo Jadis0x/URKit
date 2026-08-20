@@ -121,6 +121,9 @@ Core rules:
 
 - Make Unity calls from `ModRuntime::update()` or another URKit main-thread
   callback.
+- Use `Unity::is_main_thread()` when code can also be reached from an ImGui,
+  window-message, network, or worker callback. `Unity::require_main_thread()`
+  records an actionable `last_error()` message for early returns.
 - Find scene objects once and cache them; do not repeat a global search every
   frame.
 - Validate long-lived cached handles with `alive()` and rediscover them after
@@ -157,8 +160,9 @@ checks the backend and SDK ABI version first and shows the exact URKit-managed
 file list: `+` means a file will be added and `~` means it will be refreshed.
 Selecting **Update Project** repeats that list in a confirmation dialog, then
 backs up URKit-managed files under `.urk/backups/` and rewrites the generated
-SDK, generated lifecycle, generated UI, generated hook, and build support
-files. User-owned source files are not part of that list.
+SDK, generated lifecycle, generated hook, and build support files. Files under
+`mod/ui/` are seeded for new projects and preserved on updates together with the
+other user-owned source files.
 
 ```powershell
 ./urk-updater.exe --project C:\Games\Example\urk-sdk-output\FirstSteps\project --check
@@ -264,10 +268,10 @@ File ownership matters:
 | `mod/ui/theme.h` | Change the visual theme here. |
 | Your own files under `mod/` | Put bindings, state, and features here. |
 
-`menu.h`, `highlight.h`, `widgets.h`, `localization.h`, and the default tabs
-provided by the generator may be overwritten by regeneration. Keep a custom
-tab in a separate user-owned file. If you add a small connection to generated
-`menu.h`, expect to reapply that connection after regenerating the project.
+`menu.h`, `highlight.h`, `widgets.h`, `localization.h`, and the default tabs are
+seeded by the generator but preserved by later regeneration. Keeping larger
+features in separate files still makes upstream UI changes easier to compare
+and adopt deliberately.
 
 Keep `mod_runtime.cpp` focused on lifecycle coordination. Move object discovery,
 settings, and UI code into dedicated modules as the project grows:
@@ -1006,6 +1010,23 @@ component.CallExact<void>(
     true);
 ```
 
+For a `void` method, `TryCallExact` is the less error-prone form because its
+return value reports lookup, marshalling, and managed invocation failure:
+
+```cpp
+if (!Unity::require_main_thread("Health.Heal") ||
+    !component.TryCallExact("Heal", {"System.Single"}, 15.0f)) {
+  ModLog::error("Heal failed: %s", Unity::last_error());
+  return;
+}
+```
+
+A successful runtime invocation means that the managed method returned without
+an exception. It cannot prove that game state changed: the method may clamp the
+value, reject it internally, or have its result overwritten later in the frame.
+Read a relevant field or property after the call when a state-change
+postcondition matters.
+
 The parameter list does not include the return type. Use complete managed type
 names:
 
@@ -1509,7 +1530,7 @@ inline void draw() {
 } // namespace PracticePanel
 ```
 
-To make the panel visible, include it from generated `mod/ui/menu.h` and call
+To make the panel visible, include it from the preserved `mod/ui/menu.h` and call
 `PracticePanel::draw()` in the desired content area. Regeneration may replace
 this small connection. The panel itself remains safe because it lives in a
 separate user-owned file.

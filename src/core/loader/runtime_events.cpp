@@ -30,15 +30,19 @@ FunctionPointer FunctionPointerFromAddress(void *address) {
 }
 
 struct MonoSceneMethods {
+    MonoClass *sceneClass = nullptr;
     MonoMethod *getActiveScene = nullptr;
     MonoMethod *internalSceneLoaded = nullptr;
     MonoMethod *internalActiveSceneChanged = nullptr;
     MonoMethod *isValidInternal = nullptr;
     MonoMethod *getNameInternal = nullptr;
     MonoMethod *getBuildIndexInternal = nullptr;
+    MonoMethod *getIsValid = nullptr;
+    MonoMethod *getName = nullptr;
+    MonoMethod *getBuildIndex = nullptr;
 
     bool ready() const {
-        return getActiveScene && getNameInternal;
+        return getActiveScene && (getNameInternal || (sceneClass && getName));
     }
 };
 
@@ -101,15 +105,19 @@ struct MonoObjectDestroyMethods {
 };
 
 struct Il2CppSceneMethods {
+    Il2CppClass *sceneClass = nullptr;
     const Il2CppMethod *getActiveScene = nullptr;
     const Il2CppMethod *internalSceneLoaded = nullptr;
     const Il2CppMethod *internalActiveSceneChanged = nullptr;
     const Il2CppMethod *isValidInternal = nullptr;
     const Il2CppMethod *getNameInternal = nullptr;
     const Il2CppMethod *getBuildIndexInternal = nullptr;
+    const Il2CppMethod *getIsValid = nullptr;
+    const Il2CppMethod *getName = nullptr;
+    const Il2CppMethod *getBuildIndex = nullptr;
 
     bool ready() const {
-        return getActiveScene && getNameInternal;
+        return getActiveScene && (getNameInternal || (sceneClass && getName));
     }
 };
 
@@ -316,20 +324,23 @@ MonoThreadScope::Mode MonoScopeModeForCurrentThread() {
 
 template <typename SceneMethods>
 void LogSceneMethodsUnavailable(const char *backend, const char *message, const SceneMethods &sceneMethods) {
-    Log("[runtime][events][%s][WARNING] %s: "
+    Log("[runtime][events][%s] %s: "
         "SceneManager.GetActiveScene=%s Scene.IsValidInternal=%s "
         "Scene.GetNameInternal=%s Scene.GetBuildIndexInternal=%s "
+        "Scene.get_isValid=%s Scene.get_name=%s Scene.get_buildIndex=%s "
         "SceneManager.Internal_SceneLoaded=%s SceneManager.Internal_ActiveSceneChanged=%s.",
         backend ? backend : "unknown", message ? message : "Scene events unavailable",
         BoolText(sceneMethods.getActiveScene != nullptr), BoolText(sceneMethods.isValidInternal != nullptr),
         BoolText(sceneMethods.getNameInternal != nullptr), BoolText(sceneMethods.getBuildIndexInternal != nullptr),
+        BoolText(sceneMethods.getIsValid != nullptr), BoolText(sceneMethods.getName != nullptr),
+        BoolText(sceneMethods.getBuildIndex != nullptr),
         BoolText(sceneMethods.internalSceneLoaded != nullptr),
         BoolText(sceneMethods.internalActiveSceneChanged != nullptr));
 }
 
 template <typename CursorMethods>
 void LogCursorMethodsUnavailable(const char *backend, const char *message, const CursorMethods &cursorMethods) {
-    Log("[runtime][events][%s][WARNING] %s: "
+    Log("[runtime][events][%s] %s: "
         "Cursor.get_visible=%s Cursor.set_visible=%s "
         "Cursor.get_lockState=%s Cursor.set_lockState=%s.",
         backend ? backend : "unknown", message ? message : "Cursor control unavailable",
@@ -339,7 +350,7 @@ void LogCursorMethodsUnavailable(const char *backend, const char *message, const
 
 template <typename InputMethods>
 void LogInputMethodsUnavailable(const char *backend, const char *message, const InputMethods &inputMethods) {
-    Log("[runtime][events][%s][WARNING] %s: "
+    Log("[runtime][events][%s] %s: "
         "Input.GetKey=%s Input.GetKeyDown=%s Input.GetKeyUp=%s "
         "Input.GetMouseButton=%s Input.GetMouseButtonDown=%s "
         "Input.GetMouseButtonUp=%s.",
@@ -478,6 +489,24 @@ MonoMethod *FindUnityMethodExact(MonoApi &mono, const char *namespc, const char 
     return nullptr;
 }
 
+MonoMethod *FindUnityMethodExactOrArity(MonoApi &mono, const char *namespc, const char *klass, const char *method,
+                                        const char *const *parameterTypes, int parameterCount) {
+    if (MonoMethod *resolved =
+            FindUnityMethodExact(mono, namespc, klass, method, parameterTypes, parameterCount)) {
+        return resolved;
+    }
+    return FindUnityMethod(mono, namespc, klass, method, parameterCount);
+}
+
+MonoClass *FindUnityClass(MonoApi &mono, const char *namespc, const char *klass) {
+    const char *images[] = {"UnityEngine.CoreModule.dll", "UnityEngine.dll", nullptr};
+    for (const char *image : images) {
+        if (MonoClass *resolved = mono.FindClass(image, namespc, klass))
+            return resolved;
+    }
+    return nullptr;
+}
+
 MonoMethod *FindUnityInputMethodExact(MonoApi &mono, const char *method, const char *const *parameterTypes,
                                       int parameterCount) {
     const char *images[] = {"UnityEngine.InputLegacyModule.dll", "UnityEngine.CoreModule.dll", "UnityEngine.dll",
@@ -519,6 +548,25 @@ const Il2CppMethod *FindIl2CppUnityMethodExact(Il2CppApi &il2cpp, const char *na
     return nullptr;
 }
 
+const Il2CppMethod *FindIl2CppUnityMethodExactOrArity(Il2CppApi &il2cpp, const char *namespc, const char *klass,
+                                                       const char *method, const char *const *parameterTypes,
+                                                       int parameterCount) {
+    if (const Il2CppMethod *resolved =
+            FindIl2CppUnityMethodExact(il2cpp, namespc, klass, method, parameterTypes, parameterCount)) {
+        return resolved;
+    }
+    return FindIl2CppUnityMethod(il2cpp, namespc, klass, method, parameterCount);
+}
+
+Il2CppClass *FindIl2CppUnityClass(Il2CppApi &il2cpp, const char *namespc, const char *klass) {
+    const char *images[] = {"UnityEngine.CoreModule.dll", "UnityEngine.dll"};
+    for (const char *image : images) {
+        if (Il2CppClass *resolved = il2cpp.FindClass(image, namespc, klass))
+            return resolved;
+    }
+    return nullptr;
+}
+
 const Il2CppMethod *FindIl2CppUnityInputMethodExact(Il2CppApi &il2cpp, const char *method,
                                                      const char *const *parameterTypes, int parameterCount) {
     const char *images[] = {"UnityEngine.InputLegacyModule.dll", "UnityEngine.CoreModule.dll", "UnityEngine.dll"};
@@ -537,19 +585,28 @@ const Il2CppMethod *FindIl2CppUnityInputMethodExact(Il2CppApi &il2cpp, const cha
 Il2CppSceneMethods ResolveIl2CppSceneMethods(Il2CppApi &il2cpp) {
     Il2CppSceneMethods methods{};
 
-    methods.getActiveScene = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine.SceneManagement", "SceneManager",
-                                                         "GetActiveScene", nullptr, 0);
+    methods.sceneClass = FindIl2CppUnityClass(il2cpp, "UnityEngine.SceneManagement", "Scene");
+    methods.getActiveScene = FindIl2CppUnityMethodExactOrArity(
+        il2cpp, "UnityEngine.SceneManagement", "SceneManager", "GetActiveScene", nullptr, 0);
     methods.internalSceneLoaded = FindIl2CppUnityMethod(il2cpp, "UnityEngine.SceneManagement", "SceneManager",
                                                         "Internal_SceneLoaded", 2);
     methods.internalActiveSceneChanged = FindIl2CppUnityMethod(
         il2cpp, "UnityEngine.SceneManagement", "SceneManager", "Internal_ActiveSceneChanged", 2);
     const char *int32[] = {"System.Int32"};
-    methods.isValidInternal = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine.SceneManagement", "Scene",
-                                                          "IsValidInternal", int32, 1);
-    methods.getNameInternal = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine.SceneManagement", "Scene",
-                                                          "GetNameInternal", int32, 1);
-    methods.getBuildIndexInternal = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine.SceneManagement", "Scene",
-                                                                "GetBuildIndexInternal", int32, 1);
+    methods.isValidInternal = FindIl2CppUnityMethodExactOrArity(
+        il2cpp, "UnityEngine.SceneManagement", "Scene", "IsValidInternal", int32, 1);
+    methods.getNameInternal = FindIl2CppUnityMethodExactOrArity(
+        il2cpp, "UnityEngine.SceneManagement", "Scene", "GetNameInternal", int32, 1);
+    methods.getBuildIndexInternal = FindIl2CppUnityMethodExactOrArity(
+        il2cpp, "UnityEngine.SceneManagement", "Scene", "GetBuildIndexInternal", int32, 1);
+    if (il2cpp.il2cpp_value_box) {
+        methods.getIsValid = FindIl2CppUnityMethodExactOrArity(
+            il2cpp, "UnityEngine.SceneManagement", "Scene", "get_isValid", nullptr, 0);
+        methods.getName = FindIl2CppUnityMethodExactOrArity(
+            il2cpp, "UnityEngine.SceneManagement", "Scene", "get_name", nullptr, 0);
+        methods.getBuildIndex = FindIl2CppUnityMethodExactOrArity(
+            il2cpp, "UnityEngine.SceneManagement", "Scene", "get_buildIndex", nullptr, 0);
+    }
 
     return methods;
 }
@@ -558,19 +615,19 @@ Il2CppCursorMethods ResolveIl2CppCursorMethods(Il2CppApi &il2cpp) {
     Il2CppCursorMethods methods{};
     const char *boolean[] = {"System.Boolean"};
     const char *cursorLockMode[] = {"UnityEngine.CursorLockMode"};
-    methods.getVisible = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "get_visible", nullptr, 0);
+    methods.getVisible = FindIl2CppUnityMethodExactOrArity(il2cpp, "UnityEngine", "Cursor", "get_visible", nullptr, 0);
     if (!methods.getVisible)
-        methods.getVisible = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "GetVisible", nullptr, 0);
-    methods.setVisible = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "set_visible", boolean, 1);
+        methods.getVisible = FindIl2CppUnityMethodExactOrArity(il2cpp, "UnityEngine", "Cursor", "GetVisible", nullptr, 0);
+    methods.setVisible = FindIl2CppUnityMethodExactOrArity(il2cpp, "UnityEngine", "Cursor", "set_visible", boolean, 1);
     if (!methods.setVisible)
-        methods.setVisible = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "SetVisible", boolean, 1);
-    methods.getLockState = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "get_lockState", nullptr, 0);
+        methods.setVisible = FindIl2CppUnityMethodExactOrArity(il2cpp, "UnityEngine", "Cursor", "SetVisible", boolean, 1);
+    methods.getLockState = FindIl2CppUnityMethodExactOrArity(il2cpp, "UnityEngine", "Cursor", "get_lockState", nullptr, 0);
     if (!methods.getLockState)
-        methods.getLockState = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "GetLockState", nullptr, 0);
-    methods.setLockState = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "set_lockState", cursorLockMode, 1);
+        methods.getLockState = FindIl2CppUnityMethodExactOrArity(il2cpp, "UnityEngine", "Cursor", "GetLockState", nullptr, 0);
+    methods.setLockState = FindIl2CppUnityMethodExactOrArity(il2cpp, "UnityEngine", "Cursor", "set_lockState", cursorLockMode, 1);
     if (!methods.setLockState)
-        methods.setLockState = FindIl2CppUnityMethodExact(il2cpp, "UnityEngine", "Cursor", "SetLockState",
-                                                          cursorLockMode, 1);
+        methods.setLockState = FindIl2CppUnityMethodExactOrArity(il2cpp, "UnityEngine", "Cursor", "SetLockState",
+                                                                 cursorLockMode, 1);
     return methods;
 }
 
@@ -825,17 +882,28 @@ URK_ObjectDestroyRequest CaptureIl2CppObjectDestroyRequest(Il2CppObject *object,
 
 MonoSceneMethods ResolveSceneMethods(MonoApi &mono) {
     MonoSceneMethods methods{};
-    methods.getActiveScene = FindUnityMethodExact(mono, "UnityEngine.SceneManagement", "SceneManager", "GetActiveScene",
-                                                  nullptr, 0);
+    methods.sceneClass = FindUnityClass(mono, "UnityEngine.SceneManagement", "Scene");
+    methods.getActiveScene = FindUnityMethodExactOrArity(
+        mono, "UnityEngine.SceneManagement", "SceneManager", "GetActiveScene", nullptr, 0);
     methods.internalSceneLoaded = FindUnityMethod(mono, "UnityEngine.SceneManagement", "SceneManager",
                                                   "Internal_SceneLoaded", 2);
     methods.internalActiveSceneChanged = FindUnityMethod(mono, "UnityEngine.SceneManagement", "SceneManager",
                                                          "Internal_ActiveSceneChanged", 2);
     const char *int32[] = {"System.Int32"};
-    methods.isValidInternal = FindUnityMethodExact(mono, "UnityEngine.SceneManagement", "Scene", "IsValidInternal", int32, 1);
-    methods.getNameInternal = FindUnityMethodExact(mono, "UnityEngine.SceneManagement", "Scene", "GetNameInternal", int32, 1);
-    methods.getBuildIndexInternal =
-        FindUnityMethodExact(mono, "UnityEngine.SceneManagement", "Scene", "GetBuildIndexInternal", int32, 1);
+    methods.isValidInternal = FindUnityMethodExactOrArity(
+        mono, "UnityEngine.SceneManagement", "Scene", "IsValidInternal", int32, 1);
+    methods.getNameInternal = FindUnityMethodExactOrArity(
+        mono, "UnityEngine.SceneManagement", "Scene", "GetNameInternal", int32, 1);
+    methods.getBuildIndexInternal = FindUnityMethodExactOrArity(
+        mono, "UnityEngine.SceneManagement", "Scene", "GetBuildIndexInternal", int32, 1);
+    if (mono.value_box) {
+        methods.getIsValid = FindUnityMethodExactOrArity(
+            mono, "UnityEngine.SceneManagement", "Scene", "get_isValid", nullptr, 0);
+        methods.getName = FindUnityMethodExactOrArity(
+            mono, "UnityEngine.SceneManagement", "Scene", "get_name", nullptr, 0);
+        methods.getBuildIndex = FindUnityMethodExactOrArity(
+            mono, "UnityEngine.SceneManagement", "Scene", "get_buildIndex", nullptr, 0);
+    }
 
     return methods;
 }
@@ -844,18 +912,18 @@ MonoCursorMethods ResolveCursorMethods(MonoApi &mono) {
     MonoCursorMethods methods{};
     const char *boolean[] = {"System.Boolean"};
     const char *cursorLockMode[] = {"UnityEngine.CursorLockMode"};
-    methods.getVisible = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "get_visible", nullptr, 0);
+    methods.getVisible = FindUnityMethodExactOrArity(mono, "UnityEngine", "Cursor", "get_visible", nullptr, 0);
     if (!methods.getVisible)
-        methods.getVisible = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "GetVisible", nullptr, 0);
-    methods.setVisible = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "set_visible", boolean, 1);
+        methods.getVisible = FindUnityMethodExactOrArity(mono, "UnityEngine", "Cursor", "GetVisible", nullptr, 0);
+    methods.setVisible = FindUnityMethodExactOrArity(mono, "UnityEngine", "Cursor", "set_visible", boolean, 1);
     if (!methods.setVisible)
-        methods.setVisible = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "SetVisible", boolean, 1);
-    methods.getLockState = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "get_lockState", nullptr, 0);
+        methods.setVisible = FindUnityMethodExactOrArity(mono, "UnityEngine", "Cursor", "SetVisible", boolean, 1);
+    methods.getLockState = FindUnityMethodExactOrArity(mono, "UnityEngine", "Cursor", "get_lockState", nullptr, 0);
     if (!methods.getLockState)
-        methods.getLockState = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "GetLockState", nullptr, 0);
-    methods.setLockState = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "set_lockState", cursorLockMode, 1);
+        methods.getLockState = FindUnityMethodExactOrArity(mono, "UnityEngine", "Cursor", "GetLockState", nullptr, 0);
+    methods.setLockState = FindUnityMethodExactOrArity(mono, "UnityEngine", "Cursor", "set_lockState", cursorLockMode, 1);
     if (!methods.setLockState)
-        methods.setLockState = FindUnityMethodExact(mono, "UnityEngine", "Cursor", "SetLockState", cursorLockMode, 1);
+        methods.setLockState = FindUnityMethodExactOrArity(mono, "UnityEngine", "Cursor", "SetLockState", cursorLockMode, 1);
     return methods;
 }
 
@@ -911,7 +979,7 @@ void FillSceneInfo(URK_SceneInfo *scene, int32_t handle, int32_t buildIndex, con
 
 bool PopulateMonoSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::string *reason,
                                  const char *invalidHandleReason, const char *invalidSceneReason) {
-    if (!scene || !g_mono || !g_sceneMethods.getNameInternal) {
+    if (!scene || !g_mono || (!g_sceneMethods.getNameInternal && !g_sceneMethods.getName)) {
         if (reason)
             *reason = "Mono scene methods are incomplete";
         return false;
@@ -920,6 +988,21 @@ bool PopulateMonoSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::stri
         if (reason)
             *reason = invalidHandleReason ? invalidHandleReason : "scene handle is invalid";
         return false;
+    }
+
+    MonoObject *boxedScene = nullptr;
+    if (!g_sceneMethods.getNameInternal || (!g_sceneMethods.isValidInternal && g_sceneMethods.getIsValid) ||
+        (!g_sceneMethods.getBuildIndexInternal && g_sceneMethods.getBuildIndex)) {
+        SceneValue value{handle};
+        MonoDomain *domain = Mono_PublishedDomain();
+        boxedScene = domain && g_sceneMethods.sceneClass && g_mono->value_box
+                         ? g_mono->value_box(domain, g_sceneMethods.sceneClass, &value)
+                         : nullptr;
+        if (!boxedScene) {
+            if (reason)
+                *reason = "Mono could not box the Scene value for property fallback access";
+            return false;
+        }
     }
 
     bool ok = false;
@@ -933,11 +1016,23 @@ bool PopulateMonoSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::stri
                 *reason = invalidSceneReason ? invalidSceneReason : "Scene.IsValidInternal rejected the scene handle";
             return false;
         }
+    } else if (g_sceneMethods.getIsValid) {
+        MonoObject *validObject =
+            InvokeMono(g_sceneMethods.getIsValid, boxedScene, nullptr, "Scene.get_isValid", &ok);
+        bool valid = false;
+        if (!ok || !ReadBoxedBool(validObject, &valid) || !valid) {
+            if (reason)
+                *reason = invalidSceneReason ? invalidSceneReason : "Scene.get_isValid rejected the scene";
+            return false;
+        }
     }
 
     void *params[] = {&handle};
 
-    MonoObject *nameObject = InvokeMono(g_sceneMethods.getNameInternal, nullptr, params, "Scene.GetNameInternal", &ok);
+    MonoObject *nameObject = g_sceneMethods.getNameInternal
+                                 ? InvokeMono(g_sceneMethods.getNameInternal, nullptr, params,
+                                              "Scene.GetNameInternal", &ok)
+                                 : InvokeMono(g_sceneMethods.getName, boxedScene, nullptr, "Scene.get_name", &ok);
     if (!ok) {
         if (reason)
             *reason = "Scene.GetNameInternal failed";
@@ -951,6 +1046,14 @@ bool PopulateMonoSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::stri
         if (!ok || !ReadBoxedInt32(buildIndexObject, &buildIndex)) {
             if (reason)
                 *reason = "Scene.GetBuildIndexInternal failed";
+            return false;
+        }
+    } else if (g_sceneMethods.getBuildIndex) {
+        MonoObject *buildIndexObject =
+            InvokeMono(g_sceneMethods.getBuildIndex, boxedScene, nullptr, "Scene.get_buildIndex", &ok);
+        if (!ok || !ReadBoxedInt32(buildIndexObject, &buildIndex)) {
+            if (reason)
+                *reason = "Scene.get_buildIndex failed";
             return false;
         }
     }
@@ -1000,7 +1103,7 @@ bool ReadMonoActiveScene(URK_SceneInfo *scene, std::string *reason) {
 
 bool PopulateIl2CppSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::string *reason,
                                    const char *invalidHandleReason, const char *invalidSceneReason) {
-    if (!scene || !g_il2cpp || !g_il2cppSceneMethods.getNameInternal) {
+    if (!scene || !g_il2cpp || (!g_il2cppSceneMethods.getNameInternal && !g_il2cppSceneMethods.getName)) {
         if (reason)
             *reason = "IL2CPP scene methods are incomplete";
         return false;
@@ -1009,6 +1112,21 @@ bool PopulateIl2CppSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::st
         if (reason)
             *reason = invalidHandleReason ? invalidHandleReason : "scene handle is invalid";
         return false;
+    }
+
+    Il2CppObject *boxedScene = nullptr;
+    if (!g_il2cppSceneMethods.getNameInternal ||
+        (!g_il2cppSceneMethods.isValidInternal && g_il2cppSceneMethods.getIsValid) ||
+        (!g_il2cppSceneMethods.getBuildIndexInternal && g_il2cppSceneMethods.getBuildIndex)) {
+        SceneValue value{handle};
+        boxedScene = g_il2cppSceneMethods.sceneClass && g_il2cpp->il2cpp_value_box
+                         ? g_il2cpp->il2cpp_value_box(g_il2cppSceneMethods.sceneClass, &value)
+                         : nullptr;
+        if (!boxedScene) {
+            if (reason)
+                *reason = "IL2CPP could not box the Scene value for property fallback access";
+            return false;
+        }
     }
 
     bool ok = false;
@@ -1023,12 +1141,24 @@ bool PopulateIl2CppSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::st
                 *reason = invalidSceneReason ? invalidSceneReason : "Scene.IsValidInternal rejected the scene handle";
             return false;
         }
+    } else if (g_il2cppSceneMethods.getIsValid) {
+        Il2CppObject *validObject = InvokeIl2Cpp(g_il2cppSceneMethods.getIsValid, boxedScene, nullptr,
+                                                 "Scene.get_isValid", &ok);
+        bool valid = false;
+        if (!ok || !ReadIl2CppBoxedBool(validObject, &valid) || !valid) {
+            if (reason)
+                *reason = invalidSceneReason ? invalidSceneReason : "Scene.get_isValid rejected the scene";
+            return false;
+        }
     }
 
     void *params[] = {&handle};
 
-    Il2CppObject *nameObject =
-        InvokeIl2Cpp(g_il2cppSceneMethods.getNameInternal, nullptr, params, "Scene.GetNameInternal", &ok);
+    Il2CppObject *nameObject = g_il2cppSceneMethods.getNameInternal
+                                  ? InvokeIl2Cpp(g_il2cppSceneMethods.getNameInternal, nullptr, params,
+                                                 "Scene.GetNameInternal", &ok)
+                                  : InvokeIl2Cpp(g_il2cppSceneMethods.getName, boxedScene, nullptr,
+                                                 "Scene.get_name", &ok);
     if (!ok) {
         if (reason)
             *reason = "Scene.GetNameInternal failed";
@@ -1042,6 +1172,14 @@ bool PopulateIl2CppSceneFromHandle(int32_t handle, URK_SceneInfo *scene, std::st
         if (!ok || !ReadIl2CppBoxedInt32(buildIndexObject, &buildIndex)) {
             if (reason)
                 *reason = "Scene.GetBuildIndexInternal failed";
+            return false;
+        }
+    } else if (g_il2cppSceneMethods.getBuildIndex) {
+        Il2CppObject *buildIndexObject = InvokeIl2Cpp(g_il2cppSceneMethods.getBuildIndex, boxedScene, nullptr,
+                                                      "Scene.get_buildIndex", &ok);
+        if (!ok || !ReadIl2CppBoxedInt32(buildIndexObject, &buildIndex)) {
+            if (reason)
+                *reason = "Scene.get_buildIndex failed";
             return false;
         }
     }
@@ -2556,6 +2694,27 @@ bool RuntimeEventsGenerationMatches(uint32_t generation) {
     return g_eventsGeneration.load(std::memory_order_acquire) == generation;
 }
 
+void LogLateActivationResult(const char *backend, uint64_t capabilities, bool mouseSuppressionReady) {
+    const bool mainThreadReady = (capabilities & URK_RUNTIME_CAP_MAIN_THREAD) != 0;
+    const bool graphicsReady = (capabilities & URK_RUNTIME_CAP_GRAPHICS_DEVICE_TYPE) != 0;
+    const bool sceneReady = (capabilities & URK_RUNTIME_CAP_SCENE_EVENTS) != 0;
+    const bool cursorReady = (capabilities & URK_RUNTIME_CAP_CURSOR_CONTROL) != 0;
+    const bool inputReady = (capabilities & URK_RUNTIME_CAP_INPUT) != 0;
+    if (mainThreadReady && graphicsReady && sceneReady && cursorReady && inputReady && mouseSuppressionReady)
+        return;
+
+    const char *format = mainThreadReady && graphicsReady
+                             ? "[runtime][events][%s][INFO] Late UnityEngine capability probing completed; "
+                               "core render services are ready and unavailable optional services will use native "
+                               "fallbacks where supported: main thread=%s graphics device=%s scene events=%s "
+                               "cursor control=%s legacy input=%s mouse suppression=%s."
+                             : "[runtime][events][%s][WARNING] Late UnityEngine capability probing stopped with "
+                               "required render services unavailable: main thread=%s graphics device=%s "
+                               "scene events=%s cursor control=%s legacy input=%s mouse suppression=%s.";
+    Log(format, backend ? backend : "unknown", BoolText(mainThreadReady), BoolText(graphicsReady),
+        BoolText(sceneReady), BoolText(cursorReady), BoolText(inputReady), BoolText(mouseSuppressionReady));
+}
+
 DWORD WINAPI MonoActivationWorkerProc(void *user) {
     auto *args = static_cast<MonoActivationWorkerArgs *>(user);
     MonoApi *mono = args ? args->mono : nullptr;
@@ -2598,19 +2757,7 @@ DWORD WINAPI MonoActivationWorkerProc(void *user) {
             capabilities = g_capabilities;
             mouseSuppressionReady = g_mouseInputSuppressionInstalled;
         }
-        const bool mainThreadReady = (capabilities & URK_RUNTIME_CAP_MAIN_THREAD) != 0;
-        const bool graphicsReady = (capabilities & URK_RUNTIME_CAP_GRAPHICS_DEVICE_TYPE) != 0;
-        const bool sceneReady = (capabilities & URK_RUNTIME_CAP_SCENE_EVENTS) != 0;
-        const bool cursorReady = (capabilities & URK_RUNTIME_CAP_CURSOR_CONTROL) != 0;
-        const bool inputReady = (capabilities & URK_RUNTIME_CAP_INPUT) != 0;
-        if (!mainThreadReady || !graphicsReady || !sceneReady || !cursorReady || !inputReady ||
-            !mouseSuppressionReady) {
-            Log("[runtime][events][Mono][WARNING] Late UnityEngine event "
-                "activation stopped: main thread=%s graphics device=%s "
-                "scene events=%s cursor control=%s input=%s mouse suppression=%s.",
-                BoolText(mainThreadReady), BoolText(graphicsReady), BoolText(sceneReady), BoolText(cursorReady),
-                BoolText(inputReady), BoolText(mouseSuppressionReady));
-        }
+        LogLateActivationResult("Mono", capabilities, mouseSuppressionReady);
     }
 
     {
@@ -2726,19 +2873,7 @@ DWORD WINAPI Il2CppActivationWorkerProc(void *user) {
             capabilities = g_capabilities;
             mouseSuppressionReady = g_mouseInputSuppressionInstalled;
         }
-        const bool mainThreadReady = (capabilities & URK_RUNTIME_CAP_MAIN_THREAD) != 0;
-        const bool graphicsReady = (capabilities & URK_RUNTIME_CAP_GRAPHICS_DEVICE_TYPE) != 0;
-        const bool sceneReady = (capabilities & URK_RUNTIME_CAP_SCENE_EVENTS) != 0;
-        const bool cursorReady = (capabilities & URK_RUNTIME_CAP_CURSOR_CONTROL) != 0;
-        const bool inputReady = (capabilities & URK_RUNTIME_CAP_INPUT) != 0;
-        if (!mainThreadReady || !graphicsReady || !sceneReady || !cursorReady || !inputReady ||
-            !mouseSuppressionReady) {
-            Log("[runtime][events][IL2CPP][WARNING] Late UnityEngine event "
-                "activation stopped: main thread=%s graphics device=%s "
-                "scene events=%s cursor control=%s input=%s mouse suppression=%s.",
-                BoolText(mainThreadReady), BoolText(graphicsReady), BoolText(sceneReady), BoolText(cursorReady),
-                BoolText(inputReady), BoolText(mouseSuppressionReady));
-        }
+        LogLateActivationResult("IL2CPP", capabilities, mouseSuppressionReady);
     }
 
     {
@@ -3590,4 +3725,9 @@ int32_t RuntimeEvents_GraphicsDeviceType() {
         default:
             return URK_GRAPHICS_DEVICE_UNKNOWN;
     }
+}
+
+int RuntimeEvents_IsMainThread() {
+    const DWORD mainThreadId = g_unityMainThreadId.load(std::memory_order_acquire);
+    return mainThreadId != 0 && mainThreadId == GetCurrentThreadId() ? 1 : 0;
 }

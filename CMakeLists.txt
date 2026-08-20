@@ -206,6 +206,7 @@ if (URK_BUILD_SDK_TOOL)
     if (WIN32)
         target_link_libraries(URKitUpdater PRIVATE bcrypt winhttp)
     endif()
+
 endif()
 
 if (NOT URK_BUILD_LOADER)

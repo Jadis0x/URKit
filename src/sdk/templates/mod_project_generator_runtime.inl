@@ -145,6 +145,11 @@ inline bool runtime_api_has_field(std::size_t fieldEnd) {
     const auto *ctx = context();
     return ctx && ctx->runtime && ctx->runtime->size >= fieldEnd;
 }
+inline bool is_main_thread() {
+    const auto *ctx = context();
+    return runtime_api_has_field(offsetof(RuntimeApi, is_main_thread) + sizeof(ctx->runtime->is_main_thread)) &&
+           ctx->runtime->is_main_thread && ctx->runtime->is_main_thread() != 0;
+}
 inline std::int32_t graphics_device_type() {
     const auto *ctx = context();
     return has_graphics_device() &&

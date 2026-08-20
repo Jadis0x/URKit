@@ -364,8 +364,9 @@ std::string Readme(const ModuleProjectOptions &options) {
         << "- `mod/lifecycle/mod_network.cpp`: HTTPS setup and policy.\n"
         << "- `mod/support/mod_log.cpp`: shared logging.\n"
         << "- `mod/config/mod_config.h` and `mod/ui/theme.h`: metadata and styling.\n\n"
-        << "Files under `sdk/`, `mod/generated/`, generated UI support, and the build profiles are refreshed by "
-           "the generator. User-owned files and new sources under `mod/` are preserved.\n\n"
+        << "Files under `sdk/`, `mod/generated/`, native hook support, and the build profiles are refreshed by "
+           "the generator. Files under `mod/ui/`, other user-owned files, and new sources under `mod/` are "
+           "preserved.\n\n"
         << "## MCP runtime tests\n\n"
         << "Generated projects include `sdk/dev_test.h`. Export `URK_DevTestCount`, `URK_DevTestDescribe`, and "
            "`URK_DevTestRun` from a user-owned source under `mod/` to make runtime tests discoverable through "
@@ -604,12 +605,12 @@ bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error)
         {"mod/lifecycle/mod_runtime.h", OutputFilePolicy::EditablePreserve, GameRuntimeHeader(), true, false},
         {"mod/lifecycle/mod_runtime.cpp", OutputFilePolicy::EditablePreserve, GameRuntimeSource(project), true, false},
         {"mod/ui/theme.h", OutputFilePolicy::EditablePreserve, ThemeModule(), true, true},
-        {"mod/ui/localization.h", OutputFilePolicy::GeneratedOverwrite, LocalizationModule(), true, true},
-        {"mod/ui/widgets.h", OutputFilePolicy::GeneratedOverwrite, WidgetsModule(), true, true},
-        {"mod/ui/tabs/about_tab.h", OutputFilePolicy::GeneratedOverwrite, AboutTabModule(), true, true},
-        {"mod/ui/tabs/config_tab.h", OutputFilePolicy::GeneratedOverwrite, ConfigTabModule(), true, true},
-        {"mod/ui/menu.h", OutputFilePolicy::GeneratedOverwrite, UiModule(), true, true},
-        {"mod/ui/highlight.h", OutputFilePolicy::GeneratedOverwrite, HighlightModule(), true, true},
+        {"mod/ui/localization.h", OutputFilePolicy::EditablePreserve, LocalizationModule(), true, true},
+        {"mod/ui/widgets.h", OutputFilePolicy::EditablePreserve, WidgetsModule(), true, true},
+        {"mod/ui/tabs/about_tab.h", OutputFilePolicy::EditablePreserve, AboutTabModule(), true, true},
+        {"mod/ui/tabs/config_tab.h", OutputFilePolicy::EditablePreserve, ConfigTabModule(), true, true},
+        {"mod/ui/menu.h", OutputFilePolicy::EditablePreserve, UiModule(), true, true},
+        {"mod/ui/highlight.h", OutputFilePolicy::EditablePreserve, HighlightModule(), true, true},
         {"mod/hooks/dx11_viewport_swap_chain.h", OutputFilePolicy::GeneratedOverwrite,
          Dx11ViewportSwapChainHeaderModule(), true, true},
         {"mod/hooks/dx11_viewport_swap_chain.cpp", OutputFilePolicy::GeneratedOverwrite,
@@ -618,6 +619,14 @@ bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error)
          true},
         {"mod/hooks/dx11_state_guard.cpp", OutputFilePolicy::GeneratedOverwrite, Dx11StateGuardSourceModule(), true,
          false},
+        {"mod/hooks/dx12_overlay_resources.h", OutputFilePolicy::GeneratedOverwrite,
+         Dx12OverlayResourcesHeaderModule(), true, true},
+        {"mod/hooks/dx12_overlay_resources.cpp", OutputFilePolicy::GeneratedOverwrite,
+         Dx12OverlayResourcesSourceModule(), true, false},
+        {"mod/hooks/dxgi_hook_discovery.h", OutputFilePolicy::GeneratedOverwrite,
+         DxgiHookDiscoveryHeaderModule(), true, true},
+        {"mod/hooks/dxgi_hook_discovery.cpp", OutputFilePolicy::GeneratedOverwrite,
+         DxgiHookDiscoverySourceModule(), true, false},
         {"mod/hooks/win32_input_coordinates.h", OutputFilePolicy::GeneratedOverwrite,
          Win32InputCoordinatesHeaderModule(), true, true},
         {"mod/hooks/win32_input_coordinates.cpp", OutputFilePolicy::GeneratedOverwrite,

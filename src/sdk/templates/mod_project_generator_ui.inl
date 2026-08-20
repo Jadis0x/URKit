@@ -144,6 +144,9 @@ inline ImFont *load_windows_font(ImGuiIO &io, const char *file_name, float size_
     const int written = std::snprintf(font_path, sizeof(font_path), "%s\\Fonts\\%s", windows_dir, file_name);
     if (written <= 0 || written >= static_cast<int>(sizeof(font_path)))
         return nullptr;
+    const DWORD attributes = GetFileAttributesA(font_path);
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+        return nullptr;
 
     ImFontConfig config{};
     config.OversampleH = 2;
@@ -883,8 +886,8 @@ inline bool begin_card(const char *title, const char *subtitle = nullptr) {
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, Theme::radius().lg);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(sp.card.x + 2.0f, sp.card.y + 2.0f));
-    const bool open = ImGui::BeginChild(title && title[0] ? title : "##card", ImVec2(0.0f, 0.0f), false,
-                                        ImGuiWindowFlags_AlwaysUseWindowPadding);
+    const bool open = ImGui::BeginChild(title && title[0] ? title : "##card", ImVec2(0.0f, 0.0f),
+                                        ImGuiChildFlags_AlwaysUseWindowPadding);
     if (open) {
         const ImVec2 c_pos = ImGui::GetWindowPos();
         const ImVec2 c_size = ImGui::GetWindowSize();
@@ -1731,7 +1734,7 @@ inline void render_menu() {
     ImGui::EndChild();
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, sp.content);
-    ImGui::BeginChild("##content", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_AlwaysUseWindowPadding);
+    ImGui::BeginChild("##content", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding);
     ImGui::PushFont(Theme::heading_font());
     ImGui::PushStyleColor(ImGuiCol_Text, p.text_primary);
     ImGui::TextUnformatted(Localization::translate(active_tab() == Tab::Config ? "menu.config" : "menu.about"));
@@ -3161,6 +3164,696 @@ Dx11OutputMergerStateGuard::~Dx11OutputMergerStateGuard() {
 )URK";
 }
 
+std::string Dx12OverlayResourcesHeaderModule() {
+    return R"URK(#pragma once
+
+#include <array>
+#include <cstdint>
+#include <vector>
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <backends/imgui_impl_dx12.h>
+#include <d3d12.h>
+#include <dxgi1_4.h>
+
+namespace ModRenderHook {
+
+enum class Dx12BeginFrameStatus {
+    ready,
+    gpu_busy,
+    unavailable,
+    reset_failed,
+};
+
+struct Dx12FrameSubmission {
+    ID3D12GraphicsCommandList *commandList{};
+    ID3D12Resource *backBuffer{};
+    D3D12_CPU_DESCRIPTOR_HANDLE renderTarget{};
+    UINT frameIndex{};
+};
+
+class Dx12OverlayResources final {
+  public:
+    using DiagnosticSink = void (*)(const char *message);
+
+    Dx12OverlayResources() = default;
+    ~Dx12OverlayResources();
+
+    Dx12OverlayResources(const Dx12OverlayResources &) = delete;
+    Dx12OverlayResources &operator=(const Dx12OverlayResources &) = delete;
+
+    void set_diagnostic_sink(DiagnosticSink sink) noexcept;
+    [[nodiscard]] bool capture_command_queue(ID3D12CommandQueue *queue) noexcept;
+    [[nodiscard]] bool has_command_queue() const noexcept;
+    [[nodiscard]] bool create(IDXGISwapChain *swapChain) noexcept;
+    [[nodiscard]] bool wait_for_idle() noexcept;
+    void release_device_objects() noexcept;
+    void shutdown() noexcept;
+
+    [[nodiscard]] Dx12BeginFrameStatus begin_frame(Dx12FrameSubmission *submission) noexcept;
+    [[nodiscard]] bool submit_frame(const Dx12FrameSubmission &submission) noexcept;
+    [[nodiscard]] bool complete_frame(const Dx12FrameSubmission &submission) noexcept;
+
+    [[nodiscard]] ID3D12Device *device() const noexcept;
+    [[nodiscard]] ID3D12CommandQueue *command_queue() const noexcept;
+    [[nodiscard]] ID3D12DescriptorHeap *srv_heap() const noexcept;
+    [[nodiscard]] DXGI_FORMAT format() const noexcept;
+    [[nodiscard]] int frame_count() const noexcept;
+
+    static void allocate_srv_descriptor(ImGui_ImplDX12_InitInfo *, D3D12_CPU_DESCRIPTOR_HANDLE *cpuHandle,
+                                        D3D12_GPU_DESCRIPTOR_HANDLE *gpuHandle);
+    static void free_srv_descriptor(ImGui_ImplDX12_InitInfo *, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle);
+
+  private:
+    struct FrameContext {
+        ID3D12CommandAllocator *allocator{};
+        ID3D12Resource *backBuffer{};
+        UINT64 fenceValue{};
+    };
+
+    static constexpr UINT kSrvDescriptorCapacity = 256;
+    static Dx12OverlayResources *descriptorOwner_;
+
+    [[noreturn]] void descriptor_failure(const char *message) const;
+    void report(const char *message) const noexcept;
+
+    DiagnosticSink diagnosticSink_{};
+    ID3D12Device *device_{};
+    ID3D12CommandQueue *commandQueue_{};
+    IDXGISwapChain3 *swapChain_{};
+    ID3D12DescriptorHeap *rtvHeap_{};
+    ID3D12DescriptorHeap *srvHeap_{};
+    ID3D12GraphicsCommandList *commandList_{};
+    ID3D12Fence *fence_{};
+    HANDLE fenceEvent_{};
+    UINT rtvDescriptorSize_{};
+    UINT srvDescriptorSize_{};
+    UINT64 nextFenceValue_{1};
+    DXGI_FORMAT format_{DXGI_FORMAT_UNKNOWN};
+    bool synchronizationLost_{};
+    std::array<bool, kSrvDescriptorCapacity> srvDescriptors_{};
+    std::vector<FrameContext> frames_;
+};
+
+} // namespace ModRenderHook
+)URK";
+}
+
+std::string Dx12OverlayResourcesSourceModule() {
+    return R"URK(#include "dx12_overlay_resources.h"
+
+#include <algorithm>
+#include <exception>
+
+namespace ModRenderHook {
+
+Dx12OverlayResources *Dx12OverlayResources::descriptorOwner_ = nullptr;
+
+Dx12OverlayResources::~Dx12OverlayResources() {
+    shutdown();
+}
+
+void Dx12OverlayResources::set_diagnostic_sink(DiagnosticSink sink) noexcept {
+    diagnosticSink_ = sink;
+}
+
+void Dx12OverlayResources::report(const char *message) const noexcept {
+    if (diagnosticSink_)
+        diagnosticSink_(message);
+}
+
+[[noreturn]] void Dx12OverlayResources::descriptor_failure(const char *message) const {
+    report(message);
+    std::terminate();
+}
+
+bool Dx12OverlayResources::capture_command_queue(ID3D12CommandQueue *queue) noexcept {
+    if (!queue || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT || commandQueue_)
+        return false;
+    queue->AddRef();
+    commandQueue_ = queue;
+    return true;
+}
+
+bool Dx12OverlayResources::has_command_queue() const noexcept {
+    return commandQueue_ != nullptr;
+}
+
+bool Dx12OverlayResources::create(IDXGISwapChain *swapChain) noexcept {
+    if (!swapChain || !commandQueue_ || device_ || !frames_.empty())
+        return false;
+
+    if (FAILED(swapChain->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void **>(&device_))) || !device_ ||
+        FAILED(swapChain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&swapChain_))) ||
+        !swapChain_) {
+        report("DX12 swap chain, device, or command queue unavailable; UI resources were not created.");
+        release_device_objects();
+        return false;
+    }
+
+    DXGI_SWAP_CHAIN_DESC descriptor{};
+    if (FAILED(swapChain->GetDesc(&descriptor)) || descriptor.BufferCount == 0 ||
+        descriptor.BufferDesc.Format == DXGI_FORMAT_UNKNOWN) {
+        report("DX12 swap chain description is incomplete; UI resources were not created.");
+        release_device_objects();
+        return false;
+    }
+    format_ = descriptor.BufferDesc.Format;
+    synchronizationLost_ = false;
+    rtvDescriptorSize_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    srvDescriptorSize_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvDescriptor{};
+    rtvDescriptor.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvDescriptor.NumDescriptors = descriptor.BufferCount;
+    if (FAILED(device_->CreateDescriptorHeap(&rtvDescriptor, __uuidof(ID3D12DescriptorHeap),
+                                              reinterpret_cast<void **>(&rtvHeap_))) ||
+        !rtvHeap_) {
+        report("DX12 RTV descriptor heap creation failed.");
+        release_device_objects();
+        return false;
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC srvDescriptor{};
+    srvDescriptor.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvDescriptor.NumDescriptors = kSrvDescriptorCapacity;
+    srvDescriptor.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    if (FAILED(device_->CreateDescriptorHeap(&srvDescriptor, __uuidof(ID3D12DescriptorHeap),
+                                              reinterpret_cast<void **>(&srvHeap_))) ||
+        !srvHeap_) {
+        report("DX12 shader-visible descriptor heap creation failed.");
+        release_device_objects();
+        return false;
+    }
+
+    frames_.resize(descriptor.BufferCount);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
+    for (UINT index = 0; index < descriptor.BufferCount; ++index) {
+        FrameContext &frame = frames_[index];
+        if (FAILED(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                   __uuidof(ID3D12CommandAllocator),
+                                                   reinterpret_cast<void **>(&frame.allocator))) ||
+            !frame.allocator ||
+            FAILED(swapChain_->GetBuffer(index, __uuidof(ID3D12Resource),
+                                         reinterpret_cast<void **>(&frame.backBuffer))) ||
+            !frame.backBuffer) {
+            report("DX12 frame resource creation failed.");
+            release_device_objects();
+            return false;
+        }
+        device_->CreateRenderTargetView(frame.backBuffer, nullptr, rtv);
+        rtv.ptr += rtvDescriptorSize_;
+    }
+
+    if (FAILED(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, frames_.front().allocator, nullptr,
+                                          __uuidof(ID3D12GraphicsCommandList),
+                                          reinterpret_cast<void **>(&commandList_))) ||
+        !commandList_ || FAILED(commandList_->Close()) ||
+        FAILED(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence),
+                                    reinterpret_cast<void **>(&fence_))) ||
+        !fence_) {
+        report("DX12 command-list or fence creation failed.");
+        release_device_objects();
+        return false;
+    }
+
+    fenceEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!fenceEvent_) {
+        report("DX12 fence event creation failed.");
+        release_device_objects();
+        return false;
+    }
+
+    descriptorOwner_ = this;
+    return true;
+}
+
+bool Dx12OverlayResources::wait_for_idle() noexcept {
+    if (synchronizationLost_)
+        return false;
+    if (!fence_ || !fenceEvent_)
+        return true;
+    const UINT64 lastSubmitted = nextFenceValue_ > 1 ? nextFenceValue_ - 1 : 0;
+    if (lastSubmitted == 0 || fence_->GetCompletedValue() >= lastSubmitted)
+        return true;
+    if (FAILED(fence_->SetEventOnCompletion(lastSubmitted, fenceEvent_))) {
+        report("DX12 fence event registration failed while waiting for overlay resources.");
+        return false;
+    }
+    if (WaitForSingleObject(fenceEvent_, INFINITE) != WAIT_OBJECT_0) {
+        report("DX12 fence wait failed while draining overlay resources.");
+        return false;
+    }
+    return true;
+}
+
+void Dx12OverlayResources::release_device_objects() noexcept {
+    for (FrameContext &frame : frames_) {
+        if (frame.backBuffer)
+            frame.backBuffer->Release();
+        if (frame.allocator)
+            frame.allocator->Release();
+    }
+    frames_.clear();
+    if (fenceEvent_) {
+        CloseHandle(fenceEvent_);
+        fenceEvent_ = nullptr;
+    }
+    if (fence_) {
+        fence_->Release();
+        fence_ = nullptr;
+    }
+    if (commandList_) {
+        commandList_->Release();
+        commandList_ = nullptr;
+    }
+    if (srvHeap_) {
+        srvHeap_->Release();
+        srvHeap_ = nullptr;
+    }
+    if (rtvHeap_) {
+        rtvHeap_->Release();
+        rtvHeap_ = nullptr;
+    }
+    if (swapChain_) {
+        swapChain_->Release();
+        swapChain_ = nullptr;
+    }
+    if (device_) {
+        device_->Release();
+        device_ = nullptr;
+    }
+    rtvDescriptorSize_ = 0;
+    srvDescriptorSize_ = 0;
+    nextFenceValue_ = 1;
+    format_ = DXGI_FORMAT_UNKNOWN;
+    synchronizationLost_ = false;
+    srvDescriptors_.fill(false);
+}
+
+void Dx12OverlayResources::shutdown() noexcept {
+    if (device_ || !frames_.empty())
+        (void)wait_for_idle();
+    release_device_objects();
+    if (commandQueue_) {
+        commandQueue_->Release();
+        commandQueue_ = nullptr;
+    }
+    if (descriptorOwner_ == this)
+        descriptorOwner_ = nullptr;
+}
+
+Dx12BeginFrameStatus Dx12OverlayResources::begin_frame(Dx12FrameSubmission *submission) noexcept {
+    if (submission)
+        *submission = {};
+    if (!submission || synchronizationLost_ || !swapChain_ || !commandList_ || !fence_ || frames_.empty())
+        return Dx12BeginFrameStatus::unavailable;
+
+    const UINT frameIndex = swapChain_->GetCurrentBackBufferIndex();
+    if (frameIndex >= frames_.size())
+        return Dx12BeginFrameStatus::unavailable;
+    FrameContext &frame = frames_[frameIndex];
+    if (frame.fenceValue != 0 && fence_->GetCompletedValue() < frame.fenceValue)
+        return Dx12BeginFrameStatus::gpu_busy;
+    if (FAILED(frame.allocator->Reset()) || FAILED(commandList_->Reset(frame.allocator, nullptr)))
+        return Dx12BeginFrameStatus::reset_failed;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += static_cast<SIZE_T>(frameIndex) * rtvDescriptorSize_;
+    *submission = {commandList_, frame.backBuffer, rtv, frameIndex};
+    return Dx12BeginFrameStatus::ready;
+}
+
+bool Dx12OverlayResources::submit_frame(const Dx12FrameSubmission &submission) noexcept {
+    if (!commandQueue_ || !submission.commandList || submission.frameIndex >= frames_.size() ||
+        FAILED(submission.commandList->Close())) {
+        return false;
+    }
+    ID3D12CommandList *commandLists[] = {submission.commandList};
+    commandQueue_->ExecuteCommandLists(1, commandLists);
+    return true;
+}
+
+bool Dx12OverlayResources::complete_frame(const Dx12FrameSubmission &submission) noexcept {
+    if (!commandQueue_ || !fence_ || submission.frameIndex >= frames_.size())
+        return false;
+    const UINT64 fenceValue = nextFenceValue_++;
+    if (FAILED(commandQueue_->Signal(fence_, fenceValue))) {
+        synchronizationLost_ = true;
+        report("DX12 overlay fence signal failed; frame resources will not be reused.");
+        return false;
+    }
+    frames_[submission.frameIndex].fenceValue = fenceValue;
+    return true;
+}
+
+ID3D12Device *Dx12OverlayResources::device() const noexcept {
+    return device_;
+}
+
+ID3D12CommandQueue *Dx12OverlayResources::command_queue() const noexcept {
+    return commandQueue_;
+}
+
+ID3D12DescriptorHeap *Dx12OverlayResources::srv_heap() const noexcept {
+    return srvHeap_;
+}
+
+DXGI_FORMAT Dx12OverlayResources::format() const noexcept {
+    return format_;
+}
+
+int Dx12OverlayResources::frame_count() const noexcept {
+    return static_cast<int>(frames_.size());
+}
+
+void Dx12OverlayResources::allocate_srv_descriptor(ImGui_ImplDX12_InitInfo *,
+                                                    D3D12_CPU_DESCRIPTOR_HANDLE *cpuHandle,
+                                                    D3D12_GPU_DESCRIPTOR_HANDLE *gpuHandle) {
+    Dx12OverlayResources *owner = descriptorOwner_;
+    if (!owner || !cpuHandle || !gpuHandle || !owner->srvHeap_ || !owner->srvDescriptorSize_)
+        owner ? owner->descriptor_failure("DX12 ImGui SRV descriptor allocation received invalid state.")
+              : std::terminate();
+
+    for (UINT index = 0; index < kSrvDescriptorCapacity; ++index) {
+        if (owner->srvDescriptors_[index])
+            continue;
+        owner->srvDescriptors_[index] = true;
+        *cpuHandle = owner->srvHeap_->GetCPUDescriptorHandleForHeapStart();
+        *gpuHandle = owner->srvHeap_->GetGPUDescriptorHandleForHeapStart();
+        cpuHandle->ptr += static_cast<SIZE_T>(index) * owner->srvDescriptorSize_;
+        gpuHandle->ptr += static_cast<UINT64>(index) * owner->srvDescriptorSize_;
+        return;
+    }
+    owner->descriptor_failure("DX12 ImGui exhausted its 256-entry shader-visible SRV descriptor heap.");
+}
+
+void Dx12OverlayResources::free_srv_descriptor(ImGui_ImplDX12_InitInfo *, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+                                                D3D12_GPU_DESCRIPTOR_HANDLE) {
+    Dx12OverlayResources *owner = descriptorOwner_;
+    if (!owner || !owner->srvHeap_ || !owner->srvDescriptorSize_)
+        owner ? owner->descriptor_failure("DX12 ImGui SRV descriptor release received invalid state.")
+              : std::terminate();
+
+    const SIZE_T first = owner->srvHeap_->GetCPUDescriptorHandleForHeapStart().ptr;
+    if (cpuHandle.ptr < first)
+        owner->descriptor_failure("DX12 ImGui attempted to release an invalid SRV descriptor.");
+    const SIZE_T offset = cpuHandle.ptr - first;
+    if (offset % owner->srvDescriptorSize_ != 0)
+        owner->descriptor_failure("DX12 ImGui attempted to release an unaligned SRV descriptor.");
+    const SIZE_T index = offset / owner->srvDescriptorSize_;
+    if (index >= kSrvDescriptorCapacity || !owner->srvDescriptors_[index])
+        owner->descriptor_failure("DX12 ImGui attempted to release an unknown SRV descriptor.");
+    owner->srvDescriptors_[index] = false;
+}
+
+} // namespace ModRenderHook
+)URK";
+}
+
+std::string DxgiHookDiscoveryHeaderModule() {
+    return R"URK(#pragma once
+
+namespace ModRenderHook {
+
+struct DxgiVTableTargets {
+    void *present{};
+    void *present1{};
+    void *resizeBuffers{};
+};
+
+using DxgiDiscoveryDiagnosticSink = void (*)(const char *message);
+
+[[nodiscard]] DxgiVTableTargets discover_dxgi_hook_targets(bool preferDx12,
+                                                            DxgiDiscoveryDiagnosticSink diagnosticSink);
+[[nodiscard]] void *discover_dx12_execute_command_lists_target(DxgiDiscoveryDiagnosticSink diagnosticSink);
+
+} // namespace ModRenderHook
+)URK";
+}
+
+std::string DxgiHookDiscoverySourceModule() {
+    return R"URK(#include "dxgi_hook_discovery.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <d3d11.h>
+#include <d3d12.h>
+#include <dxgi1_4.h>
+#include <iterator>
+
+namespace ModRenderHook {
+namespace {
+
+void report(DxgiDiscoveryDiagnosticSink sink, const char *message) {
+    if (sink)
+        sink(message);
+}
+
+[[nodiscard]] bool readable_range(const void *pointer, std::size_t bytes) {
+    MEMORY_BASIC_INFORMATION memory{};
+    if (!pointer || bytes == 0 || VirtualQuery(pointer, &memory, sizeof(memory)) != sizeof(memory) ||
+        memory.State != MEM_COMMIT || (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+        return false;
+    }
+    const auto base = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
+    const auto address = reinterpret_cast<std::uintptr_t>(pointer);
+    return address >= base && bytes <= (base + memory.RegionSize) - address;
+}
+
+[[nodiscard]] bool executable(const void *pointer) {
+    MEMORY_BASIC_INFORMATION memory{};
+    if (!pointer || VirtualQuery(pointer, &memory, sizeof(memory)) != sizeof(memory) ||
+        memory.State != MEM_COMMIT || (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+        return false;
+    }
+    const DWORD protection = memory.Protect & 0xff;
+    return protection == PAGE_EXECUTE || protection == PAGE_EXECUTE_READ ||
+           protection == PAGE_EXECUTE_READWRITE || protection == PAGE_EXECUTE_WRITECOPY;
+}
+
+[[nodiscard]] bool capture_targets(IDXGISwapChain *swapChain, const char *probeName,
+                                   DxgiVTableTargets *targets, DxgiDiscoveryDiagnosticSink sink) {
+    if (!swapChain || !targets || !readable_range(swapChain, sizeof(void *))) {
+        report(sink, "DXGI probe did not return a readable swap chain.");
+        return false;
+    }
+    void **vtable = *reinterpret_cast<void ***>(swapChain);
+    if (!readable_range(vtable, sizeof(void *) * 23)) {
+        report(sink, "DXGI probe swap-chain vtable is unreadable; UI not installed.");
+        return false;
+    }
+    targets->present = executable(vtable[8]) ? vtable[8] : nullptr;
+    targets->present1 = executable(vtable[22]) ? vtable[22] : nullptr;
+    targets->resizeBuffers = executable(vtable[13]) ? vtable[13] : nullptr;
+    if ((targets->present || targets->present1) && targets->resizeBuffers)
+        return true;
+
+    char text[160]{};
+    std::snprintf(text, sizeof(text), "%s probe found non-executable swap-chain hook targets; UI not installed.",
+                  probeName ? probeName : "DXGI");
+    report(sink, text);
+    return false;
+}
+
+class ProbeWindow final {
+  public:
+    explicit ProbeWindow(bool preferDx12) {
+        std::snprintf(className_, sizeof(className_), "URK_%s_Probe_%lu_%lu_%lu", preferDx12 ? "DX12" : "DX11",
+                      GetCurrentProcessId(), GetCurrentThreadId(), GetTickCount());
+        windowClass_ = {sizeof(WNDCLASSEXA), CS_CLASSDC, DefWindowProcA, 0, 0, GetModuleHandleA(nullptr),
+                        nullptr, nullptr, nullptr, nullptr, className_, nullptr};
+        registered_ = RegisterClassExA(&windowClass_) != 0;
+        if (registered_) {
+            window_ = CreateWindowA(className_, className_, WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, nullptr, nullptr,
+                                    windowClass_.hInstance, nullptr);
+        }
+    }
+
+    ~ProbeWindow() {
+        if (window_)
+            DestroyWindow(window_);
+        if (registered_)
+            UnregisterClassA(className_, windowClass_.hInstance);
+    }
+
+    [[nodiscard]] HWND get() const noexcept { return window_; }
+    [[nodiscard]] bool registered() const noexcept { return registered_; }
+
+  private:
+    char className_[96]{};
+    WNDCLASSEXA windowClass_{};
+    HWND window_{};
+    bool registered_{};
+};
+
+} // namespace
+
+DxgiVTableTargets discover_dxgi_hook_targets(bool preferDx12, DxgiDiscoveryDiagnosticSink sink) {
+    DxgiVTableTargets targets{};
+    ProbeWindow probe(preferDx12);
+    if (!probe.registered()) {
+        report(sink, "DXGI probe window class registration failed; UI not installed.");
+        return targets;
+    }
+    if (!probe.get()) {
+        report(sink, "DXGI probe window creation failed; UI not installed.");
+        return targets;
+    }
+
+    if (preferDx12) {
+        ID3D12Device *device = nullptr;
+        ID3D12CommandQueue *queue = nullptr;
+        IDXGIFactory4 *factory = nullptr;
+        IDXGISwapChain1 *swapChain1 = nullptr;
+        IDXGISwapChain *swapChain = nullptr;
+        HRESULT result = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
+                                           reinterpret_cast<void **>(&device));
+        if (SUCCEEDED(result) && device) {
+            D3D12_COMMAND_QUEUE_DESC queueDescriptor{};
+            queueDescriptor.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+            result = device->CreateCommandQueue(&queueDescriptor, __uuidof(ID3D12CommandQueue),
+                                                reinterpret_cast<void **>(&queue));
+        }
+        if (SUCCEEDED(result) && queue)
+            result = CreateDXGIFactory1(__uuidof(IDXGIFactory4), reinterpret_cast<void **>(&factory));
+        if (SUCCEEDED(result) && factory) {
+            DXGI_SWAP_CHAIN_DESC1 descriptor{};
+            descriptor.Width = 100;
+            descriptor.Height = 100;
+            descriptor.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            descriptor.SampleDesc.Count = 1;
+            descriptor.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+            descriptor.BufferCount = 2;
+            descriptor.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            result = factory->CreateSwapChainForHwnd(queue, probe.get(), &descriptor, nullptr, nullptr, &swapChain1);
+        }
+        if (SUCCEEDED(result) && swapChain1)
+            result = swapChain1->QueryInterface(__uuidof(IDXGISwapChain), reinterpret_cast<void **>(&swapChain));
+        if (SUCCEEDED(result) && swapChain) {
+            (void)capture_targets(swapChain, "DX12", &targets, sink);
+        } else {
+            char text[160]{};
+            std::snprintf(text, sizeof(text), "DX12 probe swap-chain creation failed (hr=0x%08X); UI not installed.",
+                          static_cast<unsigned>(result));
+            report(sink, text);
+        }
+        if (swapChain)
+            swapChain->Release();
+        if (swapChain1)
+            swapChain1->Release();
+        if (factory)
+            factory->Release();
+        if (queue)
+            queue->Release();
+        if (device)
+            device->Release();
+        return targets;
+    }
+
+    DXGI_SWAP_CHAIN_DESC descriptor{};
+    descriptor.BufferCount = 1;
+    descriptor.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    descriptor.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    descriptor.OutputWindow = probe.get();
+    descriptor.SampleDesc.Count = 1;
+    descriptor.Windowed = TRUE;
+    descriptor.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    constexpr D3D_FEATURE_LEVEL featureLevels[] = {
+        D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
+    constexpr D3D_DRIVER_TYPE driverTypes[] = {D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
+
+    ID3D11Device *device = nullptr;
+    ID3D11DeviceContext *context = nullptr;
+    IDXGISwapChain *swapChain = nullptr;
+    D3D_FEATURE_LEVEL createdLevel{};
+    HRESULT result = E_FAIL;
+    for (D3D_DRIVER_TYPE driverType : driverTypes) {
+        result = D3D11CreateDeviceAndSwapChain(nullptr, driverType, nullptr, 0, featureLevels,
+                                              static_cast<UINT>(std::size(featureLevels)), D3D11_SDK_VERSION,
+                                              &descriptor, &swapChain, &device, &createdLevel, &context);
+        if (SUCCEEDED(result) && swapChain)
+            break;
+        if (swapChain) {
+            swapChain->Release();
+            swapChain = nullptr;
+        }
+        if (context) {
+            context->Release();
+            context = nullptr;
+        }
+        if (device) {
+            device->Release();
+            device = nullptr;
+        }
+    }
+    if (SUCCEEDED(result) && swapChain) {
+        (void)capture_targets(swapChain, "DX11", &targets, sink);
+    } else {
+        char text[160]{};
+        std::snprintf(text, sizeof(text),
+                      "DXGI probe device creation failed (hr=0x%08X); DX11/DX12 overlay unavailable.",
+                      static_cast<unsigned>(result));
+        report(sink, text);
+    }
+    if (swapChain)
+        swapChain->Release();
+    if (context)
+        context->Release();
+    if (device)
+        device->Release();
+    return targets;
+}
+
+void *discover_dx12_execute_command_lists_target(DxgiDiscoveryDiagnosticSink sink) {
+    ID3D12Device *device = nullptr;
+    if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
+                                 reinterpret_cast<void **>(&device))) ||
+        !device) {
+        report(sink, "DX12 probe device creation failed; DX12 overlay will remain unavailable.");
+        return nullptr;
+    }
+    D3D12_COMMAND_QUEUE_DESC descriptor{};
+    descriptor.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ID3D12CommandQueue *queue = nullptr;
+    const HRESULT result =
+        device->CreateCommandQueue(&descriptor, __uuidof(ID3D12CommandQueue), reinterpret_cast<void **>(&queue));
+    void *target = nullptr;
+    if (SUCCEEDED(result) && queue && readable_range(queue, sizeof(void *))) {
+        void **vtable = *reinterpret_cast<void ***>(queue);
+        if (readable_range(vtable, sizeof(void *) * 11) && executable(vtable[10])) {
+            target = vtable[10];
+        } else {
+            report(sink, "DX12 ExecuteCommandLists target is unreadable or non-executable.");
+        }
+    } else {
+        report(sink, "DX12 probe command queue creation failed; DX12 overlay will remain unavailable.");
+    }
+    if (queue)
+        queue->Release();
+    device->Release();
+    return target;
+}
+
+} // namespace ModRenderHook
+)URK";
+}
+
 std::string Win32InputCoordinatesHeaderModule() {
     return R"URK(#pragma once
 
@@ -3329,6 +4022,7 @@ bool uninstall();
 std::string Win32ViewportPolicyHeaderModule() {
     return R"URK(#pragma once
 #include <span>
+#include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -3355,8 +4049,23 @@ struct Win32ViewportTopology {
     LONG_PTR extendedStyle{};
 };
 
-[[nodiscard]] Win32ViewportPolicyResult enforce_overlay_viewport_policy(std::span<const HWND> windows,
-                                                                         HWND gameWindow) noexcept;
+class Win32ViewportPolicy final {
+  public:
+    [[nodiscard]] Win32ViewportPolicyResult apply(std::span<const HWND> windows, HWND gameWindow);
+    void reset() noexcept;
+
+  private:
+    struct ConfiguredWindow {
+        HWND window{};
+        HWND owner{};
+    };
+
+    [[nodiscard]] bool is_configured(HWND window, HWND owner) const noexcept;
+    void retain_live_windows(std::span<const HWND> windows);
+
+    std::vector<ConfiguredWindow> configuredWindows_;
+};
+
 [[nodiscard]] Win32ViewportTopology query_viewport_topology(HWND window) noexcept;
 } // namespace ModRenderHook
 )URK";
@@ -3365,13 +4074,35 @@ struct Win32ViewportTopology {
 std::string Win32ViewportPolicySourceModule() {
     return R"URK(#include "win32_viewport_policy.h"
 
+#include <algorithm>
+
 namespace ModRenderHook {
-Win32ViewportPolicyResult enforce_overlay_viewport_policy(std::span<const HWND> windows, HWND gameWindow) noexcept {
+namespace {
+
+[[nodiscard]] bool contains_window(std::span<const HWND> windows, HWND candidate) {
+    return std::find(windows.begin(), windows.end(), candidate) != windows.end();
+}
+
+} // namespace
+
+bool Win32ViewportPolicy::is_configured(HWND window, HWND owner) const noexcept {
+    return std::any_of(configuredWindows_.begin(), configuredWindows_.end(), [window, owner](const auto &configured) {
+        return configured.window == window && configured.owner == owner;
+    });
+}
+
+void Win32ViewportPolicy::retain_live_windows(std::span<const HWND> windows) {
+    std::erase_if(configuredWindows_, [windows](const ConfiguredWindow &configured) {
+        return !configured.window || !IsWindow(configured.window) || !contains_window(windows, configured.window);
+    });
+}
+
+Win32ViewportPolicyResult Win32ViewportPolicy::apply(std::span<const HWND> windows, HWND gameWindow) {
+    retain_live_windows(windows);
     Win32ViewportPolicyResult firstFailure{};
-    const HWND zOrder = gameWindow && GetForegroundWindow() == gameWindow ? HWND_TOPMOST : HWND_NOTOPMOST;
 
     for (const HWND window : windows) {
-        if (!window || !IsWindow(window))
+        if (!window || !IsWindow(window) || is_configured(window, gameWindow))
             continue;
 
         SetLastError(ERROR_SUCCESS);
@@ -3385,6 +4116,7 @@ Win32ViewportPolicyResult enforce_overlay_viewport_policy(std::span<const HWND> 
 
         const LONG_PTR desiredStyle =
             (currentStyle | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
+        bool frameChanged = false;
         if (desiredStyle != currentStyle) {
             SetLastError(ERROR_SUCCESS);
             const LONG_PTR previous = SetWindowLongPtrW(window, GWL_EXSTYLE, desiredStyle);
@@ -3394,16 +4126,36 @@ Win32ViewportPolicyResult enforce_overlay_viewport_policy(std::span<const HWND> 
                     firstFailure = {window, "SetWindowLongPtrW(GWL_EXSTYLE)", error};
                 continue;
             }
+            frameChanged = true;
         }
 
-        if (!SetWindowPos(window, zOrder, 0, 0, 0, 0,
-                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
+        if (gameWindow && GetWindow(window, GW_OWNER) != gameWindow) {
+            SetLastError(ERROR_SUCCESS);
+            const LONG_PTR previousOwner =
+                SetWindowLongPtrW(window, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(gameWindow));
             error = GetLastError();
-            if (firstFailure)
-                firstFailure = {window, "SetWindowPos(z-order)", error};
+            if (!previousOwner && error != ERROR_SUCCESS) {
+                if (firstFailure)
+                    firstFailure = {window, "SetWindowLongPtrW(GWLP_HWNDPARENT)", error};
+                continue;
+            }
         }
+
+        if (frameChanged && !SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER |
+                                              SWP_FRAMECHANGED)) {
+            if (firstFailure)
+                firstFailure = {window, "SetWindowPos(SWP_FRAMECHANGED)", GetLastError()};
+            continue;
+        }
+
+        configuredWindows_.push_back({window, gameWindow});
     }
     return firstFailure;
+}
+
+void Win32ViewportPolicy::reset() noexcept {
+    configuredWindows_.clear();
 }
 
 Win32ViewportTopology query_viewport_topology(HWND window) noexcept {
@@ -3446,7 +4198,6 @@ std::string RenderHookSourceModule() {
 #include <deque>
 #include <dxgi.h>
 #include <dxgi1_4.h>
-#include <exception>
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <limits>
@@ -3467,6 +4218,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT mes
 
 #include "dx11_viewport_swap_chain.h"
 #include "dx11_state_guard.h"
+#include "dx12_overlay_resources.h"
+#include "dxgi_hook_discovery.h"
 #include "sdk/hook_api.h"
 #include "sdk/runtime_api.h"
 #include "ui/highlight.h"
@@ -3488,12 +4241,6 @@ enum class GraphicsBackend {
     dx11,
     dx12,
     opengl,
-};
-
-struct DxgiVTableTargets {
-    void *present{};
-    void *present1{};
-    void *resize_buffers{};
 };
 
 enum class InputEventKind {
@@ -3543,25 +4290,8 @@ inline ID3D11Device *g_device = nullptr;
 inline ID3D11DeviceContext *g_context = nullptr;
 inline ID3D11RenderTargetView *g_render_target = nullptr;
 inline IDXGISwapChain *g_active_swap_chain = nullptr;
-inline ID3D12Device *g_dx12_device = nullptr;
-inline ID3D12CommandQueue *g_dx12_command_queue = nullptr;
-inline ID3D12DescriptorHeap *g_dx12_rtv_heap = nullptr;
-inline ID3D12DescriptorHeap *g_dx12_srv_heap = nullptr;
-inline ID3D12GraphicsCommandList *g_dx12_command_list = nullptr;
-inline ID3D12Fence *g_dx12_fence = nullptr;
-inline HANDLE g_dx12_fence_event = nullptr;
-inline UINT g_dx12_rtv_descriptor_size = 0;
-inline UINT g_dx12_srv_descriptor_size = 0;
-inline UINT64 g_dx12_next_fence_value = 1;
-inline constexpr UINT kDx12SrvDescriptorCapacity = 64;
-inline std::array<bool, kDx12SrvDescriptorCapacity> g_dx12_srv_descriptors{};
-struct Dx12FrameContext {
-    ID3D12CommandAllocator *allocator{};
-    ID3D12Resource *resource{};
-    UINT64 fence_value{};
-};
-inline std::vector<Dx12FrameContext> g_dx12_frames;
-inline DXGI_FORMAT g_dx12_format = DXGI_FORMAT_UNKNOWN;
+inline Dx12OverlayResources g_dx12_resources;
+inline std::atomic_bool g_dx12_queue_captured{false};
 inline HGLRC g_gl_context = nullptr;
 inline GraphicsBackend g_backend = GraphicsBackend::none;
 inline bool g_imgui_ready = false;
@@ -3580,6 +4310,7 @@ inline std::mutex g_install_mutex;
 inline std::mutex g_input_mutex;
 inline std::deque<InputEvent> g_input_events;
 inline std::vector<HWND> g_platform_windows;
+inline Win32ViewportPolicy g_platform_window_policy;
 inline bool g_platform_window_topology_logged = false;
 inline ULONGLONG g_platform_message_warning_tick = 0;
 inline ULONGLONG g_platform_window_policy_warning_tick = 0;
@@ -3615,7 +4346,8 @@ inline DXGI_FORMAT g_back_buffer_format = DXGI_FORMAT_UNKNOWN;
 inline bool g_linear_color_space_support_known = false;
 inline bool g_linear_color_space_supported = false;
 inline bool g_render_target_diagnostics_logged = false;
-inline bool g_dx12_queue_wait_logged = false;
+inline std::uint64_t g_dx12_busy_frame_skips = 0;
+inline ULONGLONG g_dx12_busy_diagnostic_tick = 0;
 inline const URK::ModContext *g_mod_context = nullptr;
 inline bool g_install_callback_registered = false;
 inline bool g_install_complete = false;
@@ -3678,47 +4410,6 @@ inline void log(const char *text) {
     const URK::ModContext *ctx = URK::context();
     if (ctx && ctx->Log)
         ctx->Log("[%s][ui] %s", ModConfig::display_name, text ? text : "");
-}
-
-[[noreturn]] inline void fail_dx12_srv_descriptor(const char *reason) {
-    log(reason);
-    std::terminate();
-}
-
-inline void dx12_allocate_srv_descriptor(ImGui_ImplDX12_InitInfo *, D3D12_CPU_DESCRIPTOR_HANDLE *cpu_handle,
-                                         D3D12_GPU_DESCRIPTOR_HANDLE *gpu_handle) {
-    if (!cpu_handle || !gpu_handle || !g_dx12_srv_heap || !g_dx12_srv_descriptor_size)
-        fail_dx12_srv_descriptor("DX12 ImGui SRV descriptor allocation received an "
-                                 "invalid heap or handle.");
-
-    for (UINT index = 0; index < kDx12SrvDescriptorCapacity; ++index) {
-        if (g_dx12_srv_descriptors[index])
-            continue;
-        g_dx12_srv_descriptors[index] = true;
-        *cpu_handle = g_dx12_srv_heap->GetCPUDescriptorHandleForHeapStart();
-        *gpu_handle = g_dx12_srv_heap->GetGPUDescriptorHandleForHeapStart();
-        cpu_handle->ptr += static_cast<SIZE_T>(index) * g_dx12_srv_descriptor_size;
-        gpu_handle->ptr += static_cast<UINT64>(index) * g_dx12_srv_descriptor_size;
-        return;
-    }
-    fail_dx12_srv_descriptor("DX12 ImGui exhausted its 64-entry shader-visible SRV descriptor heap.");
-}
-
-inline void dx12_free_srv_descriptor(ImGui_ImplDX12_InitInfo *, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle,
-                                     D3D12_GPU_DESCRIPTOR_HANDLE) {
-    if (!g_dx12_srv_heap || !g_dx12_srv_descriptor_size)
-        fail_dx12_srv_descriptor("DX12 ImGui SRV descriptor release received an invalid heap.");
-
-    const SIZE_T first = g_dx12_srv_heap->GetCPUDescriptorHandleForHeapStart().ptr;
-    if (cpu_handle.ptr < first)
-        fail_dx12_srv_descriptor("DX12 ImGui attempted to release an invalid SRV descriptor.");
-    const SIZE_T offset = cpu_handle.ptr - first;
-    if (offset % g_dx12_srv_descriptor_size != 0)
-        fail_dx12_srv_descriptor("DX12 ImGui attempted to release an unaligned SRV descriptor.");
-    const SIZE_T index = offset / g_dx12_srv_descriptor_size;
-    if (index >= kDx12SrvDescriptorCapacity || !g_dx12_srv_descriptors[index])
-        fail_dx12_srv_descriptor("DX12 ImGui attempted to release an unknown SRV descriptor.");
-    g_dx12_srv_descriptors[index] = false;
 }
 
 inline UINT input_relay_message() {
@@ -3904,8 +4595,7 @@ inline void collect_platform_windows() {
 }
 
 inline void apply_platform_window_policy() {
-    collect_platform_windows();
-    const Win32ViewportPolicyResult result = enforce_overlay_viewport_policy(g_platform_windows, g_hwnd);
+    const Win32ViewportPolicyResult result = g_platform_window_policy.apply(g_platform_windows, g_hwnd);
     const ULONGLONG now = GetTickCount64();
     if (!result && now - g_platform_window_policy_warning_tick >= 2000) {
         char text[224]{};
@@ -3918,8 +4608,7 @@ inline void apply_platform_window_policy() {
 }
 
 inline void pump_platform_window_messages() {
-    collect_platform_windows();
-    const WindowMessagePumpResult result = pump_owned_window_messages(g_platform_windows);
+    const WindowMessagePumpResult result = pump_owned_window_messages(g_platform_windows, 128);
     const ULONGLONG now = GetTickCount64();
     if ((result.foreignThreadWindows != 0 || result.backlogRemaining) &&
         now - g_platform_message_warning_tick >= 2000) {
@@ -3936,7 +4625,6 @@ inline void pump_platform_window_messages() {
 inline void validate_platform_window_topology() {
     if (g_platform_window_topology_logged)
         return;
-    collect_platform_windows();
     if (g_platform_windows.empty())
         return;
 
@@ -3957,22 +4645,6 @@ inline void validate_platform_window_topology() {
                       : "no");
     log(text);
     g_platform_window_topology_logged = true;
-}
-
-inline bool executable(const void *ptr) {
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (!ptr || VirtualQuery(ptr, &mbi, sizeof(mbi)) != sizeof(mbi) || mbi.State != MEM_COMMIT) {
-        return false;
-    }
-    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))
-        return false;
-    const DWORD protection = mbi.Protect & 0xff;
-    return protection == PAGE_EXECUTE || protection == PAGE_EXECUTE_READ || protection == PAGE_EXECUTE_READWRITE ||
-           protection == PAGE_EXECUTE_WRITECOPY;
-}
-
-inline bool valid_hook_target(const void *ptr) {
-    return executable(ptr);
 }
 
 inline bool is_srgb_format(DXGI_FORMAT format) {
@@ -4123,9 +4795,9 @@ inline void log_font_diagnostics(const char *renderer_name, const char *sampler_
         return;
     logged = true;
 
-    const float font_size = ImGui::GetFontSize();
+    const float font_size = ModUI::Theme::font_size_px();
     char text[512]{};
-    std::snprintf(text, sizeof(text), "%s font source=%s (%s) CJK=%s size=%.1fpx oversample=3x2 sampler=%s.",
+    std::snprintf(text, sizeof(text), "%s font source=%s (%s) CJK=%s size=%.1fpx oversample=2x1 sampler=%s.",
                   renderer_name ? renderer_name : "ImGui", ModUI::Theme::loaded_font_name(),
                   ModUI::Theme::using_ttf_font() ? "TTF" : "ImGui default", ModUI::Theme::cjk_font_support(), font_size,
                   sampler_filter ? sampler_filter : "linear");
@@ -4169,45 +4841,6 @@ inline void release_device_objects() {
         g_device->Release();
         g_device = nullptr;
     }
-}
-
-inline void release_dx12_objects() {
-    for (Dx12FrameContext &frame : g_dx12_frames) {
-        if (frame.resource)
-            frame.resource->Release();
-        if (frame.allocator)
-            frame.allocator->Release();
-    }
-    g_dx12_frames.clear();
-    if (g_dx12_fence_event) {
-        CloseHandle(g_dx12_fence_event);
-        g_dx12_fence_event = nullptr;
-    }
-    if (g_dx12_fence) {
-        g_dx12_fence->Release();
-        g_dx12_fence = nullptr;
-    }
-    if (g_dx12_command_list) {
-        g_dx12_command_list->Release();
-        g_dx12_command_list = nullptr;
-    }
-    if (g_dx12_srv_heap) {
-        g_dx12_srv_heap->Release();
-        g_dx12_srv_heap = nullptr;
-    }
-    if (g_dx12_rtv_heap) {
-        g_dx12_rtv_heap->Release();
-        g_dx12_rtv_heap = nullptr;
-    }
-    if (g_dx12_device) {
-        g_dx12_device->Release();
-        g_dx12_device = nullptr;
-    }
-    g_dx12_rtv_descriptor_size = 0;
-    g_dx12_srv_descriptor_size = 0;
-    g_dx12_srv_descriptors.fill(false);
-    g_dx12_next_fence_value = 1;
-    g_dx12_format = DXGI_FORMAT_UNKNOWN;
 }
 
 inline bool install_window_message_handler() {
@@ -4826,6 +5459,7 @@ inline void shutdown_imgui() {
     g_native_cursor_requested.store(-1, std::memory_order_release);
     g_native_cursor_applied.store(-1, std::memory_order_release);
     g_platform_windows.clear();
+    g_platform_window_policy.reset();
     g_platform_window_topology_logged = false;
     g_platform_message_warning_tick = 0;
     g_platform_window_policy_warning_tick = 0;
@@ -4834,11 +5468,10 @@ inline void shutdown_imgui() {
         g_active_swap_chain = nullptr;
     }
     release_device_objects();
-    release_dx12_objects();
-    if (g_dx12_command_queue) {
-        g_dx12_command_queue->Release();
-        g_dx12_command_queue = nullptr;
-    }
+    g_dx12_resources.shutdown();
+    g_dx12_queue_captured.store(false, std::memory_order_release);
+    g_dx12_busy_frame_skips = 0;
+    g_dx12_busy_diagnostic_tick = 0;
     g_gl_context = nullptr;
 }
 
@@ -5162,7 +5795,10 @@ inline bool init_dx11_imgui(IDXGISwapChain *swap_chain) {
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
-    io.ConfigViewportsNoDefaultParent = true;
+    // Keep detached viewports owned by the game window. This preserves normal
+    // minimize/Alt-Tab/z-order behavior in windowed mode without per-frame
+    // TOPMOST toggling, while still allowing windows on another monitor.
+    io.ConfigViewportsNoDefaultParent = false;
     log_render_target_diagnostics(desc.BufferDesc.Format);
     apply_swap_chain_color_space(desc.BufferDesc.Format);
     ModUI::initialize_style();
@@ -5236,93 +5872,14 @@ inline bool init_dx11_imgui(IDXGISwapChain *swap_chain) {
 }
 
 inline bool create_dx12_device_objects(IDXGISwapChain *swap_chain) {
-    IDXGISwapChain3 *swap_chain3 = nullptr;
-    if (!swap_chain || !g_dx12_device || !g_dx12_command_queue ||
-        FAILED(swap_chain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&swap_chain3))) ||
-        !swap_chain3) {
-        log("DX12 swap chain or command queue unavailable; UI disabled.");
-        return false;
-    }
-
-    DXGI_SWAP_CHAIN_DESC desc{};
-    if (!query_swap_chain_desc(swap_chain, &desc) || desc.BufferCount == 0) {
-        swap_chain3->Release();
-        log("DX12 swap chain description unavailable; UI disabled.");
-        return false;
-    }
-    g_dx12_format = desc.BufferDesc.Format;
-    g_dx12_rtv_descriptor_size = g_dx12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    g_dx12_srv_descriptor_size =
-        g_dx12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    D3D12_DESCRIPTOR_HEAP_DESC rtv_desc{};
-    rtv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtv_desc.NumDescriptors = desc.BufferCount;
-    if (FAILED(g_dx12_device->CreateDescriptorHeap(&rtv_desc, __uuidof(ID3D12DescriptorHeap),
-                                                   reinterpret_cast<void **>(&g_dx12_rtv_heap))) ||
-        !g_dx12_rtv_heap) {
-        swap_chain3->Release();
-        log("DX12 RTV descriptor heap creation failed; UI disabled.");
-        return false;
-    }
-
-    D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
-    srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = kDx12SrvDescriptorCapacity;
-    srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    if (FAILED(g_dx12_device->CreateDescriptorHeap(&srv_desc, __uuidof(ID3D12DescriptorHeap),
-                                                   reinterpret_cast<void **>(&g_dx12_srv_heap))) ||
-        !g_dx12_srv_heap) {
-        swap_chain3->Release();
-        log("DX12 shader-visible descriptor heap creation failed; UI disabled.");
-        return false;
-    }
-
-    g_dx12_frames.resize(desc.BufferCount);
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_dx12_rtv_heap->GetCPUDescriptorHandleForHeapStart();
-    for (UINT index = 0; index < desc.BufferCount; ++index) {
-        Dx12FrameContext &frame = g_dx12_frames[index];
-        if (FAILED(g_dx12_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                         __uuidof(ID3D12CommandAllocator),
-                                                         reinterpret_cast<void **>(&frame.allocator))) ||
-            !frame.allocator ||
-            FAILED(
-                swap_chain3->GetBuffer(index, __uuidof(ID3D12Resource), reinterpret_cast<void **>(&frame.resource))) ||
-            !frame.resource) {
-            swap_chain3->Release();
-            log("DX12 frame resource creation failed; UI disabled.");
-            return false;
-        }
-        g_dx12_device->CreateRenderTargetView(frame.resource, nullptr, rtv);
-        rtv.ptr += g_dx12_rtv_descriptor_size;
-    }
-    if (FAILED(g_dx12_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_dx12_frames[0].allocator, nullptr,
-                                                __uuidof(ID3D12GraphicsCommandList),
-                                                reinterpret_cast<void **>(&g_dx12_command_list))) ||
-        !g_dx12_command_list || FAILED(g_dx12_command_list->Close()) ||
-        FAILED(g_dx12_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence),
-                                          reinterpret_cast<void **>(&g_dx12_fence))) ||
-        !g_dx12_fence) {
-        swap_chain3->Release();
-        log("DX12 command-list or fence creation failed; UI disabled.");
-        return false;
-    }
-    g_dx12_fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!g_dx12_fence_event) {
-        swap_chain3->Release();
-        log("DX12 fence event creation failed; UI disabled.");
-        return false;
-    }
-    swap_chain3->Release();
-    return true;
+    g_dx12_resources.set_diagnostic_sink(&log);
+    return g_dx12_resources.create(swap_chain);
 }
 
 inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
     if (g_imgui_ready)
         return g_backend == GraphicsBackend::dx12;
-    if (!g_dx12_command_queue ||
-        FAILED(swap_chain->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void **>(&g_dx12_device))) ||
-        !g_dx12_device) {
+    if (!g_dx12_resources.has_command_queue()) {
         log("DX12 Present arrived before a graphics command queue was captured; UI "
             "will retry.");
         return false;
@@ -5330,12 +5887,12 @@ inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
     DXGI_SWAP_CHAIN_DESC desc{};
     if (!query_swap_chain_desc(swap_chain, &desc)) {
         log("DX12 output window unavailable; UI disabled.");
-        release_dx12_objects();
+        g_dx12_resources.release_device_objects();
         return false;
     }
     g_hwnd = desc.OutputWindow ? desc.OutputWindow : find_main_window();
     if (!g_hwnd || !create_dx12_device_objects(swap_chain)) {
-        release_dx12_objects();
+        g_dx12_resources.release_device_objects();
         return false;
     }
     IMGUI_CHECKVERSION();
@@ -5343,21 +5900,21 @@ inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |=
         ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
-    io.ConfigViewportsNoDefaultParent = true;
+    io.ConfigViewportsNoDefaultParent = false;
     ModUI::initialize_style();
     ImGui_ImplDX12_InitInfo dx12_init_info{};
-    dx12_init_info.Device = g_dx12_device;
-    dx12_init_info.CommandQueue = g_dx12_command_queue;
-    dx12_init_info.NumFramesInFlight = static_cast<int>(g_dx12_frames.size());
-    dx12_init_info.RTVFormat = g_dx12_format;
-    dx12_init_info.SrvDescriptorHeap = g_dx12_srv_heap;
-    dx12_init_info.SrvDescriptorAllocFn = &dx12_allocate_srv_descriptor;
-    dx12_init_info.SrvDescriptorFreeFn = &dx12_free_srv_descriptor;
+    dx12_init_info.Device = g_dx12_resources.device();
+    dx12_init_info.CommandQueue = g_dx12_resources.command_queue();
+    dx12_init_info.NumFramesInFlight = g_dx12_resources.frame_count();
+    dx12_init_info.RTVFormat = g_dx12_resources.format();
+    dx12_init_info.SrvDescriptorHeap = g_dx12_resources.srv_heap();
+    dx12_init_info.SrvDescriptorAllocFn = &Dx12OverlayResources::allocate_srv_descriptor;
+    dx12_init_info.SrvDescriptorFreeFn = &Dx12OverlayResources::free_srv_descriptor;
     if (!ImGui_ImplWin32_Init(g_hwnd) || !ImGui_ImplDX12_Init(&dx12_init_info)) {
         log("DX12 ImGui backend initialization failed; UI disabled.");
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
-        release_dx12_objects();
+        g_dx12_resources.release_device_objects();
         return false;
     }
     if (!install_platform_renderer_isolation()) {
@@ -5366,7 +5923,7 @@ inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
         ImGui_ImplDX12_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
-        release_dx12_objects();
+        g_dx12_resources.release_device_objects();
         g_hwnd = nullptr;
         return false;
     }
@@ -5376,7 +5933,7 @@ inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
         g_platform_renderer_callbacks = {};
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
-        release_dx12_objects();
+        g_dx12_resources.release_device_objects();
         g_hwnd = nullptr;
         return false;
     }
@@ -5411,34 +5968,40 @@ inline void render_platform_windows() {
         return;
     PlatformRendererGuard platformGuard{};
     ImGui::UpdatePlatformWindows();
+    collect_platform_windows();
     apply_platform_window_policy();
     pump_platform_window_messages();
     validate_platform_window_topology();
-    ImGui::RenderPlatformWindowsDefault();
+    if (!g_platform_windows.empty())
+        ImGui::RenderPlatformWindowsDefault();
 }
 
 inline void render_dx12_frame(IDXGISwapChain *swap_chain) {
-    IDXGISwapChain3 *swap_chain3 = nullptr;
-    if (!g_dx12_command_queue || !g_dx12_command_list || !g_dx12_fence ||
-        FAILED(swap_chain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&swap_chain3))) ||
-        !swap_chain3)
-        return;
-    const UINT frame_index = swap_chain3->GetCurrentBackBufferIndex();
-    swap_chain3->Release();
-    if (frame_index >= g_dx12_frames.size())
-        return;
-    Dx12FrameContext &frame = g_dx12_frames[frame_index];
-    if (frame.fence_value && g_dx12_fence->GetCompletedValue() < frame.fence_value) {
-        if (FAILED(g_dx12_fence->SetEventOnCompletion(frame.fence_value, g_dx12_fence_event)) ||
-            WaitForSingleObject(g_dx12_fence_event, INFINITE) != WAIT_OBJECT_0) {
-            log("DX12 frame fence wait failed; UI frame skipped.");
-            return;
+    (void)swap_chain;
+    Dx12FrameSubmission submission{};
+    const Dx12BeginFrameStatus beginStatus = g_dx12_resources.begin_frame(&submission);
+    if (beginStatus == Dx12BeginFrameStatus::gpu_busy) {
+        ++g_dx12_busy_frame_skips;
+        const ULONGLONG now = GetTickCount64();
+        if (now - g_dx12_busy_diagnostic_tick >= 5000) {
+            char text[192]{};
+            std::snprintf(text, sizeof(text),
+                          "DX12 overlay skipped %llu frame(s) while its command allocator was still in GPU use; "
+                          "the game render thread was not blocked.",
+                          static_cast<unsigned long long>(g_dx12_busy_frame_skips));
+            log(text);
+            g_dx12_busy_frame_skips = 0;
+            g_dx12_busy_diagnostic_tick = now;
         }
+        return;
     }
-    if (FAILED(frame.allocator->Reset()) || FAILED(g_dx12_command_list->Reset(frame.allocator, nullptr))) {
+    if (beginStatus == Dx12BeginFrameStatus::reset_failed) {
         log("DX12 command-list reset failed; UI frame skipped.");
         return;
     }
+    if (beginStatus != Dx12BeginFrameStatus::ready)
+        return;
+
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     drain_input_events();
@@ -5450,30 +6013,25 @@ inline void render_dx12_frame(IDXGISwapChain *swap_chain) {
     ImGui::Render();
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = frame.resource;
+    barrier.Transition.pResource = submission.backBuffer;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    g_dx12_command_list->ResourceBarrier(1, &barrier);
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_dx12_rtv_heap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>(frame_index) * g_dx12_rtv_descriptor_size;
-    g_dx12_command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-    ID3D12DescriptorHeap *heaps[] = {g_dx12_srv_heap};
-    g_dx12_command_list->SetDescriptorHeaps(1, heaps);
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_dx12_command_list);
+    submission.commandList->ResourceBarrier(1, &barrier);
+    submission.commandList->OMSetRenderTargets(1, &submission.renderTarget, FALSE, nullptr);
+    ID3D12DescriptorHeap *heaps[] = {g_dx12_resources.srv_heap()};
+    submission.commandList->SetDescriptorHeaps(1, heaps);
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), submission.commandList);
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    g_dx12_command_list->ResourceBarrier(1, &barrier);
-    if (FAILED(g_dx12_command_list->Close())) {
-        log("DX12 command-list close failed; UI frame skipped.");
+    submission.commandList->ResourceBarrier(1, &barrier);
+    if (!g_dx12_resources.submit_frame(submission)) {
+        log("DX12 overlay command submission failed; UI frame synchronization is unavailable.");
         return;
     }
-    ID3D12CommandList *command_lists[] = {g_dx12_command_list};
-    g_dx12_command_queue->ExecuteCommandLists(1, command_lists);
-    frame.fence_value = g_dx12_next_fence_value++;
-    if (FAILED(g_dx12_command_queue->Signal(g_dx12_fence, frame.fence_value)))
-        log("DX12 fence signal failed; UI frame synchronization is unavailable.");
     render_platform_windows();
+    if (!g_dx12_resources.complete_frame(submission))
+        log("DX12 overlay completion fence failed; frame resources will not be reused.");
 }
 
 inline void render_frame(IDXGISwapChain *swap_chain) {
@@ -5596,23 +6154,22 @@ inline HRESULT __stdcall detour_resize_buffers(IDXGISwapChain *swap_chain, UINT 
         return g_resize_buffers ? g_resize_buffers(swap_chain, buffer_count, width, height, format, flags)
                                 : DXGI_ERROR_INVALID_CALL;
     }
+    if (g_backend == GraphicsBackend::dx12 && !g_dx12_resources.wait_for_idle()) {
+        log("DX12 ResizeBuffers postponed because overlay GPU work could not be drained safely.");
+        return DXGI_ERROR_WAS_STILL_DRAWING;
+    }
     if (g_imgui_ready && g_backend == GraphicsBackend::dx11)
         ImGui_ImplDX11_InvalidateDeviceObjects();
     if (g_imgui_ready && g_backend == GraphicsBackend::dx12)
         ImGui_ImplDX12_InvalidateDeviceObjects();
     if (g_backend == GraphicsBackend::dx11)
         release_render_target();
-    if (g_backend == GraphicsBackend::dx12)
-        release_dx12_objects();
+    if (g_backend == GraphicsBackend::dx12) {
+        g_dx12_resources.release_device_objects();
+    }
     const HRESULT result = g_resize_buffers ? g_resize_buffers(swap_chain, buffer_count, width, height, format, flags)
                                             : DXGI_ERROR_INVALID_CALL;
     if (SUCCEEDED(result) && g_imgui_ready && g_backend == GraphicsBackend::dx12) {
-        if (!g_dx12_device &&
-            FAILED(swap_chain->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void **>(&g_dx12_device)))) {
-            log("DX12 device reacquisition failed after ResizeBuffers; UI resources "
-                "unavailable.");
-            return result;
-        }
         if (create_dx12_device_objects(swap_chain)) {
             ImGui_ImplDX12_CreateDeviceObjects();
             log("DX12 swap chain resized; UI resources recreated.");
@@ -5629,8 +6186,9 @@ inline HRESULT __stdcall detour_resize_buffers(IDXGISwapChain *swap_chain, UINT 
                 "retrying on next Present.");
         }
     } else if (FAILED(result)) {
-        log("DX11 ResizeBuffers failed; UI render target will be recreated on next "
-            "Present.");
+        log(g_backend == GraphicsBackend::dx12
+                ? "DX12 ResizeBuffers failed; UI resources will be recreated on the next successful resize."
+                : "DX11 ResizeBuffers failed; UI render target will be recreated on the next Present.");
     }
     return result;
 }
@@ -5642,11 +6200,11 @@ inline void __stdcall detour_execute_command_lists(ID3D12CommandQueue *command_q
             g_execute_command_lists(command_queue, count, command_lists);
         return;
     }
-    if (command_queue && command_queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT && !g_dx12_command_queue) {
+    if (command_queue && command_queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT &&
+        !g_dx12_queue_captured.load(std::memory_order_acquire)) {
         std::lock_guard<std::recursive_mutex> lock(g_imgui_mutex);
-        if (!g_dx12_command_queue) {
-            command_queue->AddRef();
-            g_dx12_command_queue = command_queue;
+        if (g_dx12_resources.capture_command_queue(command_queue)) {
+            g_dx12_queue_captured.store(true, std::memory_order_release);
             log("DX12 graphics command queue captured.");
         }
     }
@@ -5725,213 +6283,6 @@ inline BOOL WINAPI detour_wgl_swap_buffers(HDC device_context) {
     return g_wgl_swap_buffers ? g_wgl_swap_buffers(device_context) : FALSE;
 }
 
-inline bool capture_dxgi_targets(IDXGISwapChain *swap_chain, const char *probe_name, DxgiVTableTargets *targets) {
-    if (!swap_chain || !targets || !readable_range(swap_chain, sizeof(void *))) {
-        log("DXGI probe did not return a readable swap chain.");
-        return false;
-    }
-    void **vtable = *reinterpret_cast<void ***>(swap_chain);
-    if (!readable_range(vtable, sizeof(void *) * 23)) {
-        log("DXGI probe swap-chain vtable is unreadable; UI not installed.");
-        return false;
-    }
-    targets->present = valid_hook_target(vtable[8]) ? vtable[8] : nullptr;
-    targets->present1 = valid_hook_target(vtable[22]) ? vtable[22] : nullptr;
-    targets->resize_buffers = valid_hook_target(vtable[13]) ? vtable[13] : nullptr;
-    if ((targets->present || targets->present1) && targets->resize_buffers)
-        return true;
-    char text[160]{};
-    std::snprintf(text, sizeof(text),
-                  "%s probe found non-executable swap-chain hook targets; UI not "
-                  "installed.",
-                  probe_name ? probe_name : "DXGI");
-    log(text);
-    return false;
-}
-
-inline DxgiVTableTargets discover_dxgi_targets(bool prefer_dx12) {
-    DxgiVTableTargets targets{};
-    char class_name[96]{};
-    std::snprintf(class_name, sizeof(class_name), "URK_%s_Probe_%lu_%lu_%lu", prefer_dx12 ? "DX12" : "DX11",
-                  GetCurrentProcessId(), GetCurrentThreadId(), GetTickCount());
-    WNDCLASSEXA window_class{sizeof(WNDCLASSEXA),
-                             CS_CLASSDC,
-                             DefWindowProcA,
-                             0,
-                             0,
-                             GetModuleHandleA(nullptr),
-                             nullptr,
-                             nullptr,
-                             nullptr,
-                             nullptr,
-                             class_name,
-                             nullptr};
-    if (!RegisterClassExA(&window_class)) {
-        log("DX11 probe window class registration failed; UI not installed.");
-        return targets;
-    }
-
-    HWND hwnd = CreateWindowA(window_class.lpszClassName, window_class.lpszClassName, WS_OVERLAPPEDWINDOW, 0, 0, 100,
-                              100, nullptr, nullptr, window_class.hInstance, nullptr);
-    if (!hwnd) {
-        log("DXGI probe window creation failed; UI not installed.");
-        UnregisterClassA(window_class.lpszClassName, window_class.hInstance);
-        return targets;
-    }
-
-    if (prefer_dx12) {
-        ID3D12Device *device = nullptr;
-        ID3D12CommandQueue *queue = nullptr;
-        IDXGIFactory4 *factory = nullptr;
-        IDXGISwapChain1 *swap_chain1 = nullptr;
-        IDXGISwapChain *swap_chain = nullptr;
-        HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
-                                       reinterpret_cast<void **>(&device));
-        if (SUCCEEDED(hr) && device) {
-            D3D12_COMMAND_QUEUE_DESC queue_desc{};
-            queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-            hr = device->CreateCommandQueue(&queue_desc, __uuidof(ID3D12CommandQueue),
-                                            reinterpret_cast<void **>(&queue));
-        }
-        if (SUCCEEDED(hr) && queue)
-            hr = CreateDXGIFactory1(__uuidof(IDXGIFactory4), reinterpret_cast<void **>(&factory));
-        if (SUCCEEDED(hr) && factory) {
-            DXGI_SWAP_CHAIN_DESC1 swap_desc{};
-            swap_desc.Width = 100;
-            swap_desc.Height = 100;
-            swap_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            swap_desc.SampleDesc.Count = 1;
-            swap_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-            swap_desc.BufferCount = 2;
-            swap_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-            hr = factory->CreateSwapChainForHwnd(queue, hwnd, &swap_desc, nullptr, nullptr, &swap_chain1);
-        }
-        if (SUCCEEDED(hr) && swap_chain1)
-            hr = swap_chain1->QueryInterface(__uuidof(IDXGISwapChain), reinterpret_cast<void **>(&swap_chain));
-        if (SUCCEEDED(hr) && swap_chain)
-            capture_dxgi_targets(swap_chain, "DX12", &targets);
-        else {
-            char text[160]{};
-            std::snprintf(text, sizeof(text),
-                          "DX12 probe swap-chain creation failed (hr=0x%08X); UI not "
-                          "installed.",
-                          static_cast<unsigned>(hr));
-            log(text);
-        }
-        if (swap_chain)
-            swap_chain->Release();
-        if (swap_chain1)
-            swap_chain1->Release();
-        if (factory)
-            factory->Release();
-        if (queue)
-            queue->Release();
-        if (device)
-            device->Release();
-        DestroyWindow(hwnd);
-        UnregisterClassA(window_class.lpszClassName, window_class.hInstance);
-        return targets;
-    }
-
-    DXGI_SWAP_CHAIN_DESC swap_desc{};
-    swap_desc.BufferCount = 1;
-    swap_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    swap_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_desc.OutputWindow = hwnd;
-    swap_desc.SampleDesc.Count = 1;
-    swap_desc.Windowed = TRUE;
-    swap_desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-    constexpr D3D_FEATURE_LEVEL feature_levels[] = {
-        D3D_FEATURE_LEVEL_11_0,
-        D3D_FEATURE_LEVEL_10_1,
-        D3D_FEATURE_LEVEL_10_0,
-    };
-    constexpr D3D_DRIVER_TYPE driver_types[] = {
-        D3D_DRIVER_TYPE_HARDWARE,
-        D3D_DRIVER_TYPE_WARP,
-    };
-
-    ID3D11Device *device = nullptr;
-    ID3D11DeviceContext *context = nullptr;
-    IDXGISwapChain *swap_chain = nullptr;
-    D3D_FEATURE_LEVEL created_level{};
-    HRESULT hr = E_FAIL;
-    for (D3D_DRIVER_TYPE driver_type : driver_types) {
-        hr = D3D11CreateDeviceAndSwapChain(nullptr, driver_type, nullptr, 0, feature_levels,
-                                           static_cast<UINT>(sizeof(feature_levels) / sizeof(feature_levels[0])),
-                                           D3D11_SDK_VERSION, &swap_desc, &swap_chain, &device, &created_level,
-                                           &context);
-        if (SUCCEEDED(hr) && swap_chain)
-            break;
-        if (swap_chain) {
-            swap_chain->Release();
-            swap_chain = nullptr;
-        }
-        if (context) {
-            context->Release();
-            context = nullptr;
-        }
-        if (device) {
-            device->Release();
-            device = nullptr;
-        }
-    }
-
-    if (SUCCEEDED(hr) && swap_chain) {
-        capture_dxgi_targets(swap_chain, "DX11", &targets);
-    } else {
-        char text[160]{};
-        std::snprintf(text, sizeof(text),
-                      "DXGI probe device creation failed (hr=0x%08X); DX11/DX12 "
-                      "overlay unavailable.",
-                      static_cast<unsigned>(hr));
-        log(text);
-    }
-
-    if (swap_chain)
-        swap_chain->Release();
-    if (context)
-        context->Release();
-    if (device)
-        device->Release();
-    DestroyWindow(hwnd);
-    UnregisterClassA(window_class.lpszClassName, window_class.hInstance);
-    return targets;
-}
-
-inline void *discover_dx12_execute_command_lists_target() {
-    ID3D12Device *device = nullptr;
-    if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
-                                 reinterpret_cast<void **>(&device))) ||
-        !device) {
-        log("DX12 probe device creation failed; DX12 overlay will remain "
-            "unavailable.");
-        return nullptr;
-    }
-    D3D12_COMMAND_QUEUE_DESC queue_desc{};
-    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    ID3D12CommandQueue *queue = nullptr;
-    const HRESULT result =
-        device->CreateCommandQueue(&queue_desc, __uuidof(ID3D12CommandQueue), reinterpret_cast<void **>(&queue));
-    void *target = nullptr;
-    if (SUCCEEDED(result) && queue && readable_range(queue, sizeof(void *))) {
-        void **vtable = *reinterpret_cast<void ***>(queue);
-        if (readable_range(vtable, sizeof(void *) * 11) && valid_hook_target(vtable[10])) {
-            target = vtable[10];
-        } else {
-            log("DX12 ExecuteCommandLists target is unreadable or non-executable.");
-        }
-    } else {
-        log("DX12 probe command queue creation failed; DX12 overlay will remain "
-            "unavailable.");
-    }
-    if (queue)
-        queue->Release();
-    device->Release();
-    return target;
-}
-
 inline bool install() {
     std::lock_guard<std::mutex> install_lock(g_install_mutex);
     g_shutting_down.store(false, std::memory_order_release);
@@ -5965,11 +6316,11 @@ inline bool install() {
             "OpenGL presentation hooks.");
 
     if ((want_dx11 || want_dx12) && !g_dxgi_targets_discovered) {
-        g_cached_dxgi_targets = discover_dxgi_targets(want_dx12);
+        g_cached_dxgi_targets = discover_dxgi_hook_targets(want_dx12, &log);
         g_dxgi_targets_discovered = true;
     }
     const DxgiVTableTargets targets = g_cached_dxgi_targets;
-    if ((want_dx11 || want_dx12) && (targets.present || targets.present1) && targets.resize_buffers) {
+    if ((want_dx11 || want_dx12) && (targets.present || targets.present1) && targets.resizeBuffers) {
         if (targets.present) {
             g_present = reinterpret_cast<PresentFn>(targets.present);
             if (!URK::hooks::attach_ex(reinterpret_cast<void **>(&g_present), reinterpret_cast<void *>(&detour_present),
@@ -5994,7 +6345,7 @@ inline bool install() {
     }
 
     if (g_present_hooked || g_present1_hooked) {
-        g_resize_buffers = reinterpret_cast<ResizeBuffersFn>(targets.resize_buffers);
+        g_resize_buffers = reinterpret_cast<ResizeBuffersFn>(targets.resizeBuffers);
         if (URK::hooks::attach_ex(reinterpret_cast<void **>(&g_resize_buffers),
                                   reinterpret_cast<void *>(&detour_resize_buffers), URK::hook_backend_auto)) {
             g_resize_hooked = true;
@@ -6013,13 +6364,13 @@ inline bool install() {
                 g_present_hooked = false;
             }
         }
-    } else if ((want_dx11 || want_dx12) && ((!targets.present && !targets.present1) || !targets.resize_buffers)) {
+    } else if ((want_dx11 || want_dx12) && ((!targets.present && !targets.present1) || !targets.resizeBuffers)) {
         log("DXGI Present, Present1, or ResizeBuffers unavailable; D3D overlay "
             "unavailable.");
     }
 
     if (want_dx12 && (g_present_hooked || g_present1_hooked)) {
-        void *execute_target = discover_dx12_execute_command_lists_target();
+        void *execute_target = discover_dx12_execute_command_lists_target(&log);
         if (!execute_target) {
             log("DX12 ExecuteCommandLists unavailable; DX12 overlay unavailable.");
         } else {

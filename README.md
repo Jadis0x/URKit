@@ -89,8 +89,10 @@ projects copy the resulting DLL to the selected game's `Mods` directory.
 | `mod/config/mod_config.h` | Mod identity and settings. |
 | `mod/ui/theme.h` | UI styling. |
 
-Files under `sdk/`, `mod/generated/`, and generated UI support are refreshed by
-the generator. Keep custom code in separate files under `mod/`.
+Files under `sdk/`, `mod/generated/`, and the native hook support are refreshed
+by the generator. Files under `mod/ui/` are created once and then preserved, so
+menu and widget changes survive SDK updates. Keep unrelated features in separate
+files under `mod/` so generated infrastructure remains replaceable.
 
 ## Update an existing project
 

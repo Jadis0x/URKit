@@ -28,3 +28,4 @@ int RuntimeEvents_InputGetMouseButton(int32_t button);
 int RuntimeEvents_InputGetMouseButtonDown(int32_t button);
 int RuntimeEvents_InputGetMouseButtonUp(int32_t button);
 int32_t RuntimeEvents_GraphicsDeviceType();
+int RuntimeEvents_IsMainThread();

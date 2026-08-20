@@ -141,6 +141,10 @@ int Runtime_SteamId64(char *output, size_t outputSize) {
     return 1;
 }
 
+int Runtime_IsMainThread() {
+    return RuntimeEvents_IsMainThread();
+}
+
 const URK_RuntimeApi g_runtimeApi = {
     URK_RUNTIME_API_VERSION,
     sizeof(URK_RuntimeApi),
@@ -164,6 +168,7 @@ const URK_RuntimeApi g_runtimeApi = {
     &WindowMessage_CallOriginal,
     &Runtime_MenuCursorSetOpenOwned,
     &Runtime_MenuMouseCaptureSetOwned,
+    &Runtime_IsMainThread,
 };
 
 const URK_NetworkApi g_networkApi = {

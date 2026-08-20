@@ -1084,6 +1084,15 @@ inline const char *last_error() {
 inline void clear_error() {
     detail::clear_error();
 }
+inline bool is_main_thread() {
+    return URK::is_main_thread();
+}
+inline bool require_main_thread(std::string_view operation = "Unity operation") {
+    if (is_main_thread())
+        return true;
+    detail::set_error(std::string(operation) + " must run on the Unity main thread");
+    return false;
+}
 
 inline constexpr std::array<std::string_view, 16> common_type_images{
     "UnityEngine.CoreModule.dll",
@@ -1518,6 +1527,9 @@ struct Object {
     template <class Ret = void, class... Args>
     Ret CallExact(std::string_view methodName, const std::vector<const char *> &parameterTypeNames,
                   Args &&...args) const;
+    template <class... Args>
+    bool TryCallExact(std::string_view methodName, const std::vector<const char *> &parameterTypeNames,
+                      Args &&...args) const;
     template <class Ret = void, class... Args>
     Ret InvokeGeneric(std::string_view methodName, const std::vector<TypeObject> &genericTypes, Args &&...args) const;
     template <class T = Object>
@@ -5035,6 +5047,13 @@ Ret Object::CallExact(std::string_view methodName, const std::vector<const char 
 template <class Ret, class... Args>
 Ret Object::CallExact(std::string_view methodName, const std::vector<const char *> &parameterTypeNames,
                       Args &&...args) const {
+    detail::clear_error();
+    if (parameterTypeNames.size() != sizeof...(Args)) {
+        detail::set_error(std::string("Unity Object::CallExact failed: argument count does not match ") +
+                          detail::signature_text(methodName, parameterTypeNames) + "; received=" +
+                          std::to_string(sizeof...(Args)));
+        return detail::from_result<Ret>(nullptr);
+    }
     auto pack = std::tuple<detail::Arg<std::remove_cvref_t<Args>>...>(
         detail::Arg<std::remove_cvref_t<Args>>(std::forward<Args>(args))...);
     std::array<void *, sizeof...(Args)> argv{};
@@ -5042,7 +5061,6 @@ Ret Object::CallExact(std::string_view methodName, const std::vector<const char 
     bool argsValid = true;
     std::apply([&](auto &...a) { ((argsValid = argsValid && a.valid, argv[i++] = a.ptr), ...); }, pack);
     if (!argsValid) {
-        detail::clear_error();
         detail::set_error(std::string("Unity Object::CallExact failed: managed "
                                       "string argument allocation failed in ") +
                           std::string(methodName));
@@ -5060,6 +5078,12 @@ Ret Object::CallExact(std::string_view methodName, const std::vector<const char 
         }
     }
     return CallExact<Ret>(methodName, parameterTypeNames, argv.empty() ? nullptr : argv.data());
+}
+template <class... Args>
+bool Object::TryCallExact(std::string_view methodName, const std::vector<const char *> &parameterTypeNames,
+                          Args &&...args) const {
+    CallExact<void>(methodName, parameterTypeNames, std::forward<Args>(args)...);
+    return detail::fallback_error() == nullptr;
 }
 namespace detail {
 inline TypeRef reflection_type_ref(std::string_view typeName) {
@@ -5451,6 +5475,13 @@ std::vector<T> Object::CallArrayExact(std::string_view methodName, const std::ve
 template <class T, class... Args>
 std::vector<T> Object::CallArrayExact(std::string_view methodName, const std::vector<const char *> &parameterTypeNames,
                                       Args &&...args) const {
+    detail::clear_error();
+    if (parameterTypeNames.size() != sizeof...(Args)) {
+        detail::set_error(std::string("Unity Object::CallArrayExact failed: argument count does not match ") +
+                          detail::signature_text(methodName, parameterTypeNames) + "; received=" +
+                          std::to_string(sizeof...(Args)));
+        return {};
+    }
     auto pack = std::tuple<detail::Arg<std::remove_cvref_t<Args>>...>(
         detail::Arg<std::remove_cvref_t<Args>>(std::forward<Args>(args))...);
     std::array<void *, sizeof...(Args)> argv{};
@@ -5458,7 +5489,6 @@ std::vector<T> Object::CallArrayExact(std::string_view methodName, const std::ve
     bool argsValid = true;
     std::apply([&](auto &...a) { ((argsValid = argsValid && a.valid, argv[i++] = a.ptr), ...); }, pack);
     if (!argsValid) {
-        detail::clear_error();
         detail::set_error(std::string("Unity Object::CallArrayExact failed: managed string "
                                       "argument allocation failed in ") +
                           std::string(methodName));
@@ -5474,6 +5504,12 @@ Object::CallArrayExactRooted(std::string_view methodName, const std::vector<cons
     detail::clear_error();
     if (!handle_) {
         detail::set_error("Unity Object::CallArrayExactRooted failed: target object is null");
+        return {};
+    }
+    if (parameterTypeNames.size() != sizeof...(Args)) {
+        detail::set_error(std::string("Unity Object::CallArrayExactRooted failed: argument count does not match ") +
+                          detail::signature_text(methodName, parameterTypeNames) + "; received=" +
+                          std::to_string(sizeof...(Args)));
         return {};
     }
     const void *klass = detail::Backend::object_get_class(handle_);
@@ -6087,7 +6123,7 @@ bool SetArrayElement(const ValueInfo &array, std::size_t index, const ValueInfo 
 void DumpFields(TypeRef type, DiagnosticSink sink = nullptr);
 void DumpMethods(TypeRef type, DiagnosticSink sink = nullptr);
 void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr);
-}
+} // namespace Inspect
 }
 
 // URK_UNITY_ALIASES_BEGIN
@@ -6217,6 +6253,12 @@ inline const char *last_error() {
 }
 inline void clear_error() {
     URK::Unity::clear_error();
+}
+inline bool is_main_thread() {
+    return URK::Unity::is_main_thread();
+}
+inline bool require_main_thread(std::string_view operation = "Unity operation") {
+    return URK::Unity::require_main_thread(operation);
 }
 inline CanvasRoot CreateOverlayCanvas(std::string_view name, bool addRaycaster = true) {
     return URK::Unity::CreateOverlayCanvas(name, addRaycaster);
@@ -8360,18 +8402,22 @@ inline void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr) {
     return nullptr;
 }
 )URKUNITY";
-    if (const auto pos = text.find(genericInspect); pos != std::string::npos)
-        text.replace(pos, genericInspect.size(), replacementInspect);
-    if (const auto pos = text.find(genericFindMethod); pos != std::string::npos)
-        text.replace(pos, genericFindMethod.size(), replacementFindMethod);
-    if (const auto pos = text.find(genericFindExact); pos != std::string::npos)
-        text.replace(pos, genericFindExact.size(), replacementFindExact);
-    if (const auto pos = text.find(genericFieldStaticGet); pos != std::string::npos)
-        text.replace(pos, genericFieldStaticGet.size(), replacementFieldStaticGet);
-    if (const auto pos = text.find(genericFieldStaticSet); pos != std::string::npos)
-        text.replace(pos, genericFieldStaticSet.size(), replacementFieldStaticSet);
-    if (const auto pos = text.find(genericFindField); pos != std::string::npos)
-        text.replace(pos, genericFindField.size(), replacementFindField);
+    const auto replaceRequired = [&text](std::string_view needle, std::string_view replacement,
+                                         const char *description) {
+        const auto position = text.find(needle);
+        if (position == std::string::npos)
+            throw std::runtime_error(std::string("Unity SDK generation could not replace ") + description);
+        if (text.find(needle, position + needle.size()) != std::string::npos)
+            throw std::runtime_error(std::string("Unity SDK generation found duplicate replacement target for ") +
+                                     description);
+        text.replace(position, needle.size(), replacement);
+    };
+    replaceRequired(genericInspect, replacementInspect, "the Inspect implementation");
+    replaceRequired(genericFindMethod, replacementFindMethod, "method lookup");
+    replaceRequired(genericFindExact, replacementFindExact, "exact method lookup");
+    replaceRequired(genericFieldStaticGet, replacementFieldStaticGet, "static field reads");
+    replaceRequired(genericFieldStaticSet, replacementFieldStaticSet, "static field writes");
+    replaceRequired(genericFindField, replacementFindField, "field lookup");
     return text;
 }
 
