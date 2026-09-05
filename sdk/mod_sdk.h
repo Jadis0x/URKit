@@ -6,11 +6,12 @@
 extern "C" {
 #endif
 
-#define URK_SDK_VERSION 31
+#define URK_SDK_VERSION 32
 #define URK_MONO_API_VERSION 8
 #define URK_RUNTIME_API_VERSION 10
 #define URK_IL2CPP_API_VERSION 7
 #define URK_NETWORK_API_VERSION 1
+#define URK_HOOK_API_VERSION 1
 
 #define URK_SCENE_NAME_MAX 128
 #define URK_OBJECT_NAME_MAX 128
@@ -46,7 +47,8 @@ typedef enum URK_RuntimeCapabilityFlags {
     URK_RUNTIME_CAP_INPUT = 1ull << 9,
     URK_RUNTIME_CAP_GRAPHICS_DEVICE_TYPE = 1ull << 10,
     URK_RUNTIME_CAP_OBJECT_DESTROY_REQUEST_EVENTS = 1ull << 11,
-    URK_RUNTIME_CAP_STEAM_IDENTITY = 1ull << 12
+    URK_RUNTIME_CAP_STEAM_IDENTITY = 1ull << 12,
+    URK_RUNTIME_CAP_MID_HOOKS = 1ull << 13
 } URK_RuntimeCapabilityFlags;
 
 typedef enum URK_RuntimeModuleKind {
@@ -743,6 +745,74 @@ typedef struct URK_HookOptions {
     uint32_t flags;
 } URK_HookOptions;
 
+typedef union URK_HookXmmRegister {
+    uint8_t u8[16];
+    uint16_t u16[8];
+    uint32_t u32[4];
+    uint64_t u64[2];
+    float f32[4];
+    double f64[2];
+} URK_HookXmmRegister;
+
+/*
+ * Mid-function hook register context (x64). The loader copies the live
+ * register file in before the callback and copies it back out afterwards, so
+ * writes to these fields change execution when the target resumes.
+ */
+typedef struct URK_HookRegisters {
+    uint32_t size;
+    uint32_t reserved;
+    URK_HookXmmRegister xmm[16];
+    uintptr_t rflags;
+    uintptr_t r15;
+    uintptr_t r14;
+    uintptr_t r13;
+    uintptr_t r12;
+    uintptr_t r11;
+    uintptr_t r10;
+    uintptr_t r9;
+    uintptr_t r8;
+    uintptr_t rdi;
+    uintptr_t rsi;
+    uintptr_t rdx;
+    uintptr_t rcx;
+    uintptr_t rbx;
+    uintptr_t rax;
+    uintptr_t rbp;
+    /* Stack pointer at the hook site. Read-only: writes are ignored. */
+    uintptr_t rsp;
+    /* Stack pointer used when execution resumes. Write this instead of rsp. */
+    uintptr_t trampoline_rsp;
+    /*
+     * On entry this points at a trampoline holding the instruction(s) the hook
+     * displaced, not at the hooked address. Write it to redirect control flow.
+     */
+    uintptr_t rip;
+} URK_HookRegisters;
+
+typedef void (*URK_MidHookCallbackFn)(URK_HookRegisters *registers, void *userData);
+
+typedef struct URK_MidHookOptions {
+    uint32_t size;
+    uint32_t flags;
+    void *userData;
+} URK_MidHookOptions;
+
+typedef struct URK_MidHookHandle URK_MidHookHandle;
+
+typedef struct URK_HookApi {
+    uint32_t version;
+    uint32_t size;
+    /*
+     * Installs a mid-function hook at an arbitrary instruction boundary.
+     * Returns NULL when the address is not hookable or the pool is exhausted.
+     */
+    URK_MidHookHandle *(*mid_attach)(void *target, URK_MidHookCallbackFn callback,
+                                      const URK_MidHookOptions *options);
+    int (*mid_detach)(URK_MidHookHandle *hook);
+    int (*mid_set_enabled)(URK_MidHookHandle *hook, int enabled);
+} URK_HookApi;
+
 typedef struct URK_ModContext {
     int version;
     void (*Log)(const char *fmt, ...);
@@ -764,7 +834,13 @@ typedef struct URK_ModContext {
     uintptr_t unityPlayerModuleBase;
     uintptr_t gameAssemblyModuleBase;
     const URK_NetworkApi *network;
+    const URK_HookApi *hooks;
 } URK_ModContext;
+
+static_assert(offsetof(URK_HookApi, mid_attach) > offsetof(URK_HookApi, size),
+              "URK_HookApi must stay append-only.");
+static_assert(offsetof(URK_ModContext, hooks) > offsetof(URK_ModContext, network),
+              "URK_ModContext hook API pointer must stay appended.");
 
 /* Required initialization export. Loaders reject a module when it is missing
  * or returns zero. */
@@ -780,6 +856,11 @@ using RuntimeModuleKind = URK_RuntimeModuleKind;
 using CursorLockState = URK_CursorLockState;
 using CursorState = URK_CursorState;
 using GraphicsDeviceType = URK_GraphicsDeviceType;
+using HookApi = URK_HookApi;
+using HookRegisters = URK_HookRegisters;
+using MidHookCallbackFn = URK_MidHookCallbackFn;
+using MidHookHandle = URK_MidHookHandle;
+using MidHookOptions = URK_MidHookOptions;
 using NetworkApi = URK_NetworkApi;
 using NetworkHeader = URK_NetworkHeader;
 using NetworkHttpMethod = URK_NetworkHttpMethod;

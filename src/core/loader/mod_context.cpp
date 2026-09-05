@@ -40,6 +40,16 @@ int Ctx_HookDetachEx(void **o, void *d) {
 int Ctx_HookBackendAvailable(uint32_t backend) {
     return Hook_BackendAvailable(backend) ? 1 : 0;
 }
+URK_MidHookHandle *Ctx_MidHookAttach(void *target, URK_MidHookCallbackFn callback,
+                                     const URK_MidHookOptions *options) {
+    return Hook_MidAttach(target, callback, options);
+}
+int Ctx_MidHookDetach(URK_MidHookHandle *hook) {
+    return Hook_MidDetach(hook) ? 1 : 0;
+}
+int Ctx_MidHookSetEnabled(URK_MidHookHandle *hook, int enabled) {
+    return Hook_MidSetEnabled(hook, enabled != 0) ? 1 : 0;
+}
 int Ctx_MainThreadUnregister(void (*callback)()) {
     return MainThread_Unregister(callback);
 }
@@ -177,6 +187,14 @@ const URK_NetworkApi g_networkApi = {
     &Ctx_NetworkJsonRequest,
 };
 
+const URK_HookApi g_hookApi = {
+    URK_HOOK_API_VERSION,
+    sizeof(URK_HookApi),
+    &Ctx_MidHookAttach,
+    &Ctx_MidHookDetach,
+    &Ctx_MidHookSetEnabled,
+};
+
 bool HasCompatibleIl2CppApi(uint32_t runtimeBackend, const URK_Il2CppApi *api) {
     const size_t requiredSize = offsetof(URK_Il2CppApi, last_error) + sizeof(api->last_error);
     return runtimeBackend == URK_RUNTIME_BACKEND_IL2CPP && api && api->version >= URK_IL2CPP_API_VERSION &&
@@ -200,6 +218,8 @@ URK_ModContext &ModContext_Build(const Config &, const ModContextBuildOptions &o
     }
     if (NetworkHttp_Available())
         capabilities |= URK_RUNTIME_CAP_NETWORK;
+    if (Hook_MidAvailable())
+        capabilities |= URK_RUNTIME_CAP_MID_HOOKS;
     g_modContext.version = URK_SDK_VERSION;
     g_modContext.Log = &Ctx_Log;
     g_modContext.HookAttach = &Ctx_HookAttach;
@@ -220,6 +240,7 @@ URK_ModContext &ModContext_Build(const Config &, const ModContextBuildOptions &o
     g_modContext.unityPlayerModuleBase = options.modules.unityPlayerModuleBase;
     g_modContext.gameAssemblyModuleBase = options.modules.gameAssemblyModuleBase;
     g_modContext.network = NetworkHttp_Available() ? &g_networkApi : nullptr;
+    g_modContext.hooks = &g_hookApi;
 
     return g_modContext;
 }

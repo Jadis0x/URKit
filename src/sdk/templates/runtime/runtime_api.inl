@@ -9,8 +9,13 @@ std::string ModSdkModule() {
 
 namespace URK {
 using GetModInfoFn = ::URK_GetModInfoFn;
+using HookApi = ::URK_HookApi;
 using HookBackend = ::URK_HookBackend;
 using HookOptions = ::URK_HookOptions;
+using HookRegisters = ::URK_HookRegisters;
+using MidHookCallbackFn = ::URK_MidHookCallbackFn;
+using MidHookHandle = ::URK_MidHookHandle;
+using MidHookOptions = ::URK_MidHookOptions;
 using Il2CppApi = ::URK_Il2CppApi;
 using ModContext = ::URK_ModContext;
 using ModInfo = ::URK_ModInfo;
@@ -41,6 +46,7 @@ inline constexpr RuntimeBackend runtime_backend_il2cpp = URK_RUNTIME_BACKEND_IL2
 
 inline constexpr HookBackend hook_backend_auto = URK_HOOK_BACKEND_AUTO;
 inline constexpr HookBackend hook_backend_detours = URK_HOOK_BACKEND_DETOURS;
+inline constexpr HookBackend hook_backend_safetyhook = URK_HOOK_BACKEND_SAFETYHOOK;
 
 inline constexpr std::uint64_t runtime_cap_none = URK_RUNTIME_CAP_NONE;
 inline constexpr std::uint64_t runtime_cap_mono_api = URK_RUNTIME_CAP_MONO_API;
@@ -55,6 +61,7 @@ inline constexpr std::uint64_t runtime_cap_graphics_device = URK_RUNTIME_CAP_GRA
 inline constexpr std::uint64_t runtime_cap_object_destroy_request_events =
     URK_RUNTIME_CAP_OBJECT_DESTROY_REQUEST_EVENTS;
 inline constexpr std::uint64_t runtime_cap_steam_identity = URK_RUNTIME_CAP_STEAM_IDENTITY;
+inline constexpr std::uint64_t runtime_cap_mid_hooks = URK_RUNTIME_CAP_MID_HOOKS;
 inline constexpr std::int32_t graphics_device_unknown = URK_GRAPHICS_DEVICE_UNKNOWN;
 inline constexpr std::int32_t graphics_device_direct3d11 = URK_GRAPHICS_DEVICE_D3D11;
 inline constexpr std::int32_t graphics_device_direct3d12 = URK_GRAPHICS_DEVICE_D3D12;

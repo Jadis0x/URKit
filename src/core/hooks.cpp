@@ -25,3 +25,19 @@ bool Hook_DetachEx(void **ppOriginal, void *pDetour) {
 bool Hook_BackendAvailable(uint32_t backend) {
     return HookManager_BackendAvailable(backend) != 0;
 }
+
+bool Hook_MidAvailable() {
+    return HookManager_MidHooksAvailable() != 0;
+}
+
+URK_MidHookHandle *Hook_MidAttach(void *target, URK_MidHookCallbackFn callback, const URK_MidHookOptions *options) {
+    return HookManager_MidAttach(target, callback, options);
+}
+
+bool Hook_MidDetach(URK_MidHookHandle *hook) {
+    return HookManager_MidDetach(hook) != 0;
+}
+
+bool Hook_MidSetEnabled(URK_MidHookHandle *hook, bool enabled) {
+    return HookManager_MidSetEnabled(hook, enabled ? 1 : 0) != 0;
+}

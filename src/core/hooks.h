@@ -11,3 +11,11 @@ bool Hook_AttachEx(void **ppOriginal, void *pDetour, const URK_HookOptions *opti
 bool Hook_DetachEx(void **ppOriginal, void *pDetour);
 
 bool Hook_BackendAvailable(uint32_t backend);
+
+bool Hook_MidAvailable();
+
+URK_MidHookHandle *Hook_MidAttach(void *target, URK_MidHookCallbackFn callback, const URK_MidHookOptions *options);
+
+bool Hook_MidDetach(URK_MidHookHandle *hook);
+
+bool Hook_MidSetEnabled(URK_MidHookHandle *hook, bool enabled);

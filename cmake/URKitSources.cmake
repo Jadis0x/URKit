@@ -30,6 +30,7 @@ set(URK_CORE_SRC
     ${URK_SRC_DIR}/core/config_public.cpp
     ${URK_SRC_DIR}/core/hooks.cpp
     ${URK_SRC_DIR}/core/hook_manager.cpp
+    ${URK_SRC_DIR}/core/safetyhook_backend.cpp
     ${URK_SRC_DIR}/core/loader.cpp
     ${URK_SRC_DIR}/core/loader/loader_paths.cpp
     ${URK_SRC_DIR}/core/loader/loader_selection.cpp
@@ -190,6 +191,7 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/core/callback_guard.h
     ${URK_SRC_DIR}/core/hooks.h
     ${URK_SRC_DIR}/core/hook_manager.h
+    ${URK_SRC_DIR}/core/safetyhook_backend.h
     ${URK_SRC_DIR}/core/loader.h
     ${URK_SRC_DIR}/core/loader/loader_paths.h
     ${URK_SRC_DIR}/core/loader/loader_selection.h

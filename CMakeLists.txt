@@ -35,6 +35,7 @@ include(FetchContent)
 option(URK_BUILD_LOADER "Build the Windows loader DLLs" ${WIN32})
 option(URK_BUILD_SDK_TOOL "Build the standalone SDK/project generation tool" ON)
 option(URK_WITH_CURL "Enable libcurl-backed HTTPS JSON requests" ON)
+option(URK_WITH_SAFETYHOOK "Enable the SafetyHook backend and mid-function hooks" ON)
 option(URK_HARDEN_RELEASE "Enable release hardening for loader DLLs" ON)
 option(URK_BUILD_PUBLIC_RELEASE_STAGE "Add the prebuilt release staging target" OFF)
 option(URK_BUILD_DEV_MCP "Build the local URKit mod-development MCP server and runtime bridge" ${WIN32})
@@ -225,6 +226,45 @@ FetchContent_Declare(detours
 )
 FetchContent_MakeAvailable(detours)
 
+# SafetyHook supplies the mid-function hook engine; its headers use
+# std::expected, so consumers of them must compile as C++23.
+if (URK_WITH_SAFETYHOOK)
+    set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
+    set(SAFETYHOOK_BUILD_TEST OFF CACHE BOOL "" FORCE)
+    set(SAFETYHOOK_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(SAFETYHOOK_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(SAFETYHOOK_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(safetyhook
+        GIT_REPOSITORY https://github.com/cursey/safetyhook.git
+        GIT_TAG        v0.7.0
+    )
+    FetchContent_MakeAvailable(safetyhook)
+
+    if (NOT TARGET safetyhook)
+        message(FATAL_ERROR "safetyhook target was not created by FetchContent")
+    endif()
+    target_compile_features(safetyhook PUBLIC cxx_std_23)
+    if (MSVC)
+        target_compile_options(safetyhook PRIVATE /W0)
+    endif()
+    urk_disable_vs_vcpkg_integration(safetyhook)
+
+    if (BUILD_TESTING)
+        add_executable(urk_safetyhook_backend_tests
+            tests/safetyhook_backend_tests.cpp
+            src/core/safetyhook_backend.cpp
+        )
+        target_include_directories(urk_safetyhook_backend_tests PRIVATE src/core sdk)
+        target_compile_features(urk_safetyhook_backend_tests PRIVATE cxx_std_23)
+        target_compile_definitions(urk_safetyhook_backend_tests PRIVATE
+            URK_WITH_SAFETYHOOK=1 WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(urk_safetyhook_backend_tests PRIVATE safetyhook)
+        urk_disable_vs_vcpkg_integration(urk_safetyhook_backend_tests)
+        add_test(NAME urkit_safetyhook_backend COMMAND urk_safetyhook_backend_tests)
+    endif()
+endif()
+
 if (URK_WITH_CURL)
     set(URK_SAVED_BUILD_TESTING ${BUILD_TESTING})
     set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
@@ -281,7 +321,11 @@ endif()
 urk_disable_vs_vcpkg_integration(detours)
 
 function(urk_configure_runtime_compilation target)
-    target_compile_features(${target} PRIVATE cxx_std_20)
+    if (URK_WITH_SAFETYHOOK)
+        target_compile_features(${target} PRIVATE cxx_std_23)
+    else()
+        target_compile_features(${target} PRIVATE cxx_std_20)
+    endif()
     target_include_directories(${target} PRIVATE ${URK_INCLUDE_DIRS})
     target_compile_definitions(${target} PRIVATE
         WIN32_LEAN_AND_MEAN
@@ -292,6 +336,9 @@ function(urk_configure_runtime_compilation target)
 
     if (URK_WITH_CURL)
         target_compile_definitions(${target} PRIVATE URK_WITH_CURL=1 CURL_STATICLIB)
+    endif()
+    if (URK_WITH_SAFETYHOOK)
+        target_compile_definitions(${target} PRIVATE URK_WITH_SAFETYHOOK=1)
     endif()
     if (MSVC)
         target_compile_options(${target} PRIVATE
@@ -319,6 +366,9 @@ target_link_libraries(URKitRuntimeObjects PRIVATE detours)
 if (URK_WITH_CURL)
     target_link_libraries(URKitRuntimeObjects PRIVATE ${URK_CURL_TARGET})
 endif()
+if (URK_WITH_SAFETYHOOK)
+    target_link_libraries(URKitRuntimeObjects PRIVATE safetyhook)
+endif()
 
 function(add_urk_proxy target output proxy_source definition_file)
     add_library(${target} SHARED
@@ -338,6 +388,9 @@ function(add_urk_proxy target output proxy_source definition_file)
     target_link_libraries(${target} PRIVATE detours crypt32 gdiplus ole32 version comdlg32 shell32)
     if (URK_WITH_CURL)
         target_link_libraries(${target} PRIVATE ${URK_CURL_TARGET})
+    endif()
+    if (URK_WITH_SAFETYHOOK)
+        target_link_libraries(${target} PRIVATE safetyhook)
     endif()
 
     if (MSVC)
@@ -381,6 +434,9 @@ function(add_urk_injected_loader target output)
     target_compile_definitions(${target} PRIVATE URK_INJECTED_LOADER=1)
     if (URK_WITH_CURL)
         target_link_libraries(${target} PRIVATE ${URK_CURL_TARGET})
+    endif()
+    if (URK_WITH_SAFETYHOOK)
+        target_link_libraries(${target} PRIVATE safetyhook)
     endif()
 
     if (MSVC)

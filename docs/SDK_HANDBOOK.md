@@ -2289,6 +2289,114 @@ void uninstall() {
 fails, detach the earlier ones. Make `install()` idempotent. If detach fails,
 do not clear state and claim success; unloading the DLL may not be safe.
 
+### Pick a hook backend
+
+`URK_HOOK_BACKEND_DETOURS` is the default and handles function entry points.
+`URK_HOOK_BACKEND_SAFETYHOOK` is available for targets Detours cannot rewrite;
+select it with `URK::hooks::attach_ex(&original, detour,
+URK::hook_backend_safetyhook)` after checking
+`URK::hooks::backend_available(URK::hook_backend_safetyhook)`.
+
+All hooks on one target share a single backend. The first hook fixes the
+backend, and a later attach that names a different one is rejected. Hooks on
+the same target chain in attach order: each detour calls the trampoline it was
+handed, which reaches the previously attached detour and eventually the
+original code. A second mod hooking the same function does not fail.
+
+### Hook in the middle of a function
+
+Some targets have no usable entry point: an inlined body, a hybrid native
+backend, or a branch you only want to observe halfway through. A mid-function
+hook attaches to an arbitrary instruction boundary and hands the callback the
+whole register file.
+
+```cpp
+#include "sdk/hook_api.h"
+
+namespace {
+
+URK::hooks::MidHook g_damage_clamp;
+
+void on_damage(URK_HookRegisters* regs, void* user) {
+  auto* state = static_cast<ModState*>(user);
+  // xmm0 holds the incoming damage float at this address.
+  if (regs->xmm[0].f32[0] > state->cap)
+    regs->xmm[0].f32[0] = state->cap;
+}
+
+} // namespace
+
+bool attach(const URK_ModContext* context) {
+  if (!URK::hooks::mid_available())
+    return false;
+  return g_damage_clamp.attach(reinterpret_cast<void*>(target_address), &on_damage, &g_state);
+}
+```
+
+Rules that matter:
+
+- Check `URK::hooks::mid_available()` first. It reports false on a loader built
+  without SafetyHook, and on a loader older than SDK 32.
+- Writes to the register struct are copied back, so the callback can change
+  `rax`, `rcx`, the `xmm` bytes, and `rip`.
+- `rsp` is read-only. To move the stack, write `trampoline_rsp` and make sure
+  the address you want to resume at sits on top of it.
+- On entry `rip` points at a trampoline holding the displaced instruction(s),
+  not at the address you hooked.
+- The callback runs on whatever thread hit the address, and it runs on every
+  hit. Keep it short and do not block; queue work to the main thread instead.
+- `URK::hooks::MidHook` detaches in its destructor. The loader also releases
+  any mid hook owned by a mod module when that module unloads.
+- The loader has a fixed pool of 128 mid hook slots for the whole process.
+
+A mid hook can also read managed instance state without a separate managed
+call: combine `this` from a GPR with `field_offset`. This was tested against a
+small real IL2CPP build with a method shaped like this:
+
+```csharp
+public class SimpleHookTest : MonoBehaviour {
+  public int score = 0;
+
+  void SpawnTarget() {
+    GameObject target = GameObject.CreatePrimitive(PrimitiveType.Cube);
+    // ...
+  }
+}
+```
+
+`score` is a sibling field on the same instance, not a local inside
+`SpawnTarget`; a mid hook cannot read a local the method hasn't computed yet at
+the address it is attached to. The mid hook was placed at `SpawnTarget`'s
+entry, where `this` is already valid:
+
+```cpp
+void on_spawn(URK_HookRegisters* regs, void*) {
+  auto* self = reinterpret_cast<uint8_t*>(regs->rcx); // instance methods pass `this` in rcx
+  int score = *reinterpret_cast<int*>(self + URK::il2cpp::field_offset(g_score_field));
+  ModLog::info("score at spawn: %d", score);
+}
+
+g_mid.attach(URK::il2cpp::method_pointer(spawn_target_method), &on_spawn);
+```
+
+It fired on every call and read the live score correctly:
+
+```text
+[SafetyHook mid] SpawnTarget() call #1 this=000001DA7FCEF740 score=0 rip=00007FF8F6DF01A2
+[SafetyHook mid] SpawnTarget() call #2 this=000001DA7FCEF740 score=10 rip=00007FF8F6DF01A2
+[SafetyHook mid] SpawnTarget() call #3 this=000001DA7FCEF740 score=10 rip=00007FF8F6DF01A2
+```
+
+`this` stays the same (one `SimpleHookTest` instance in the scene), `score`
+moves as the player scores, and `rip` is constant because the hook always
+resumes at the same trampoline address. A separate inline
+hook (`URK_HOOK_BACKEND_SAFETYHOOK`) on a small unrelated method attached and
+ran fine too. One caveat found in this same test: inline-hooking
+`SpawnTarget` itself (a larger method with many embedded constants and calls)
+with the SafetyHook backend made the game misbehave after a while, while
+mid-hooking that same method did not. Prefer Detours or a mid hook on methods
+like that until this is root-caused.
+
 ## 15. Persist settings
 
 Small constants and runtime settings can live under `mod_config.h`. Resolve a

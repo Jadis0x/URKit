@@ -58,6 +58,83 @@ template <class T> inline T as(void *value) {
     return reinterpret_cast<T>(value);
 }
 
+inline bool mid_available() {
+    const URK::ModContext *ctx = URK::context();
+    return ctx && URK::has_runtime_capability(URK::runtime_cap_mid_hooks) &&
+           ctx->size >= offsetof(URK::ModContext, hooks) + sizeof(ctx->hooks) && ctx->hooks &&
+           ctx->hooks->size >= offsetof(URK::HookApi, mid_attach) + sizeof(ctx->hooks->mid_attach) &&
+           ctx->hooks->mid_attach;
+}
+inline URK::MidHookHandle *mid_attach(void *target, URK::MidHookCallbackFn callback, void *user_data = nullptr) {
+    if (!target || !callback || !mid_available())
+        return nullptr;
+    URK_MidHookOptions options{};
+    options.size = sizeof(options);
+    options.flags = 0;
+    options.userData = user_data;
+    return URK::context()->hooks->mid_attach(target, callback, &options);
+}
+inline bool mid_detach(URK::MidHookHandle *hook) {
+    const URK::ModContext *ctx = URK::context();
+    if (!hook || !mid_available() ||
+        ctx->hooks->size < offsetof(URK::HookApi, mid_detach) + sizeof(ctx->hooks->mid_detach) ||
+        !ctx->hooks->mid_detach)
+        return false;
+    return ctx->hooks->mid_detach(hook) != 0;
+}
+inline bool mid_set_enabled(URK::MidHookHandle *hook, bool enabled) {
+    const URK::ModContext *ctx = URK::context();
+    if (!hook || !mid_available() ||
+        ctx->hooks->size < offsetof(URK::HookApi, mid_set_enabled) + sizeof(ctx->hooks->mid_set_enabled) ||
+        !ctx->hooks->mid_set_enabled)
+        return false;
+    return ctx->hooks->mid_set_enabled(hook, enabled ? 1 : 0) != 0;
+}
+
+class MidHook {
+  public:
+    MidHook() = default;
+    MidHook(const MidHook &) = delete;
+    MidHook &operator=(const MidHook &) = delete;
+    MidHook(MidHook &&other) noexcept : handle_(other.handle_) {
+        other.handle_ = nullptr;
+    }
+    MidHook &operator=(MidHook &&other) noexcept {
+        if (this != &other) {
+            reset();
+            handle_ = other.handle_;
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+    ~MidHook() {
+        reset();
+    }
+    bool attach(void *target, URK::MidHookCallbackFn callback, void *user_data = nullptr) {
+        reset();
+        handle_ = URK::hooks::mid_attach(target, callback, user_data);
+        return handle_ != nullptr;
+    }
+    bool set_enabled(bool enabled) {
+        return handle_ && URK::hooks::mid_set_enabled(handle_, enabled);
+    }
+    void reset() {
+        if (handle_) {
+            URK::hooks::mid_detach(handle_);
+            handle_ = nullptr;
+        }
+    }
+    bool valid() const {
+        return handle_ != nullptr;
+    }
+    explicit operator bool() const {
+        return valid();
+    }
+
+  private:
+    URK::MidHookHandle *handle_ = nullptr;
+};
+
 class HookSet {
   public:
     static constexpr std::size_t max_entries = 64;
