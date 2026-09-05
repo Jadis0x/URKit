@@ -144,6 +144,9 @@ inline void render_controls(const char *hotkey) {
     section_label(ModUI::Localization::translate("config.controls"));
     ModUI::Widgets::toggle(ModUI::Localization::translate("config.show_menu"), &ModConfig::show_menu);
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    ModUI::Widgets::toggle(ModUI::Localization::translate("config.detached_viewports"),
+                           &ModConfig::enable_detached_viewports);
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
     ModUI::Widgets::key_value(ModUI::Localization::translate("config.toggle_key"), hotkey);
 }
 

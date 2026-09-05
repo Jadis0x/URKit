@@ -62,6 +62,10 @@ namespace {
     return std::find(windows.begin(), windows.end(), candidate) != windows.end();
 }
 
+[[nodiscard]] bool same_thread(HWND left, HWND right) {
+    return left && right && GetWindowThreadProcessId(left, nullptr) == GetWindowThreadProcessId(right, nullptr);
+}
+
 } // namespace
 
 bool Win32ViewportPolicy::is_configured(HWND window, HWND owner) const noexcept {
@@ -81,7 +85,9 @@ Win32ViewportPolicyResult Win32ViewportPolicy::apply(std::span<const HWND> windo
     Win32ViewportPolicyResult firstFailure{};
 
     for (const HWND window : windows) {
-        if (!window || !IsWindow(window) || is_configured(window, gameWindow))
+        // cross-thread owner deadlocks the engine; stay ownerless + topmost instead
+        const HWND owner = same_thread(window, gameWindow) ? gameWindow : nullptr;
+        if (!window || !IsWindow(window) || is_configured(window, owner))
             continue;
 
         SetLastError(ERROR_SUCCESS);
@@ -108,10 +114,10 @@ Win32ViewportPolicyResult Win32ViewportPolicy::apply(std::span<const HWND> windo
             frameChanged = true;
         }
 
-        if (gameWindow && GetWindow(window, GW_OWNER) != gameWindow) {
+        if (owner && GetWindow(window, GW_OWNER) != owner) {
             SetLastError(ERROR_SUCCESS);
             const LONG_PTR previousOwner =
-                SetWindowLongPtrW(window, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(gameWindow));
+                SetWindowLongPtrW(window, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner));
             error = GetLastError();
             if (!previousOwner && error != ERROR_SUCCESS) {
                 if (firstFailure)
@@ -120,15 +126,19 @@ Win32ViewportPolicyResult Win32ViewportPolicy::apply(std::span<const HWND> windo
             }
         }
 
-        if (frameChanged && !SetWindowPos(window, nullptr, 0, 0, 0, 0,
-                                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER |
-                                              SWP_FRAMECHANGED)) {
+        UINT positionFlags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        if (owner)
+            positionFlags |= SWP_NOZORDER;
+        if (frameChanged)
+            positionFlags |= SWP_FRAMECHANGED;
+        if ((frameChanged || !owner) &&
+            !SetWindowPos(window, owner ? nullptr : HWND_TOPMOST, 0, 0, 0, 0, positionFlags)) {
             if (firstFailure)
-                firstFailure = {window, "SetWindowPos(SWP_FRAMECHANGED)", GetLastError()};
+                firstFailure = {window, "SetWindowPos", GetLastError()};
             continue;
         }
 
-        configuredWindows_.push_back({window, gameWindow});
+        configuredWindows_.push_back({window, owner});
     }
     return firstFailure;
 }

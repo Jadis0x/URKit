@@ -42,6 +42,7 @@ inline const Dictionary &english() {
         {"config.show_menu", "Show menu"},
         {"config.toggle_key", "Toggle key"},
         {"config.localization", "Localization"},
+        {"config.detached_viewports", "Detached windows"},
         {"config.enable_localization", "Enable localization"},
         {"config.language", "Language"},
         {"widget.enabled", "Enabled"},
@@ -399,6 +400,7 @@ std::string EnglishLocaleModule() {
   "config.show_menu": "Show menu",
   "config.toggle_key": "Toggle key",
   "config.localization": "Localization",
+  "config.detached_viewports": "Detached windows",
   "config.enable_localization": "Enable localization",
   "config.language": "Language",
   "widget.enabled": "Enabled",
@@ -417,6 +419,7 @@ std::string TurkishLocaleModule() {
   "menu.about": "Hakkında", "menu.config": "Ayarlar",
   "config.controls": "Kontroller",
   "config.show_menu": "Menüyü göster", "config.toggle_key": "Menü tuşu", "config.language": "Dil",
+  "config.detached_viewports": "Ayrık pencereler",
   "config.localization": "Yerelleştirme", "config.enable_localization": "Yerelleştirmeyi etkinleştir",
   "widget.enabled": "Açık", "widget.disabled": "Kapalı",
   "example.key_code": "Tuş kodu: {code}"
@@ -433,6 +436,7 @@ std::string JapaneseLocaleModule() {
   "menu.about": "概要", "menu.config": "設定",
   "config.controls": "操作",
   "config.show_menu": "メニューを表示", "config.toggle_key": "メニューキー", "config.language": "言語",
+  "config.detached_viewports": "分離ウィンドウ",
   "config.localization": "ローカライゼーション", "config.enable_localization": "ローカライゼーションを有効化",
   "widget.enabled": "有効", "widget.disabled": "無効",
   "example.key_code": "キーコード: {code}"
@@ -449,6 +453,7 @@ std::string ChineseLocaleModule() {
   "menu.about": "关于", "menu.config": "设置",
   "config.controls": "控制",
   "config.show_menu": "显示菜单", "config.toggle_key": "菜单按键", "config.language": "语言",
+  "config.detached_viewports": "分离窗口",
   "config.localization": "本地化", "config.enable_localization": "启用本地化",
   "widget.enabled": "已启用", "widget.disabled": "已禁用",
   "example.key_code": "按键代码: {code}"
@@ -465,6 +470,7 @@ std::string RussianLocaleModule() {
   "menu.about": "О моде", "menu.config": "Настройки",
   "config.controls": "Управление",
   "config.show_menu": "Показать меню", "config.toggle_key": "Клавиша меню", "config.language": "Язык",
+  "config.detached_viewports": "Отдельные окна",
   "config.localization": "Локализация", "config.enable_localization": "Включить локализацию",
   "widget.enabled": "Вкл.", "widget.disabled": "Выкл.",
   "example.key_code": "Код клавиши: {code}"
@@ -481,6 +487,7 @@ std::string UkrainianLocaleModule() {
   "menu.about": "Про мод", "menu.config": "Налаштування",
   "config.controls": "Керування",
   "config.show_menu": "Показати меню", "config.toggle_key": "Клавіша меню", "config.language": "Мова",
+  "config.detached_viewports": "Окремі вікна",
   "config.localization": "Локалізація", "config.enable_localization": "Увімкнути локалізацію",
   "widget.enabled": "Увімк.", "widget.disabled": "Вимк.",
   "example.key_code": "Код клавіші: {code}"
@@ -497,6 +504,7 @@ std::string SpanishLocaleModule() {
   "menu.about": "Acerca de", "menu.config": "Configuración",
   "config.controls": "Controles",
   "config.show_menu": "Mostrar menú", "config.toggle_key": "Tecla del menú", "config.language": "Idioma",
+  "config.detached_viewports": "Ventanas separadas",
   "config.localization": "Localización", "config.enable_localization": "Habilitar localización",
   "widget.enabled": "Activado", "widget.disabled": "Desactivado",
   "example.key_code": "Código de tecla: {code}"
@@ -513,6 +521,7 @@ std::string FrenchLocaleModule() {
   "menu.about": "À propos", "menu.config": "Configuration",
   "config.controls": "Contrôles",
   "config.show_menu": "Afficher le menu", "config.toggle_key": "Touche du menu", "config.language": "Langue",
+  "config.detached_viewports": "Fenêtres détachées",
   "config.localization": "Localisation", "config.enable_localization": "Activer la localisation",
   "widget.enabled": "Activé", "widget.disabled": "Désactivé",
   "example.key_code": "Code de touche : {code}"

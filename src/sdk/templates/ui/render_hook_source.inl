@@ -140,6 +140,21 @@ inline std::vector<HWND> g_platform_windows;
 inline Win32ViewportPolicy g_platform_window_policy;
 inline bool g_platform_window_topology_logged = false;
 inline ULONGLONG g_platform_message_warning_tick = 0;
+inline std::uint32_t g_platform_messages_dispatched = 0;
+
+// rolling cost of the detached-viewport block, logged every few seconds
+struct ViewportFrameCost {
+    double update = 0.0;
+    double policy = 0.0;
+    double pump = 0.0;
+    double present = 0.0;
+    double worstTotal = 0.0;
+    std::uint32_t frames = 0;
+    std::uint32_t dispatched = 0;
+    std::size_t viewports = 0;
+};
+inline ViewportFrameCost g_viewport_cost{};
+inline ULONGLONG g_viewport_cost_tick = 0;
 inline ULONGLONG g_platform_window_policy_warning_tick = 0;
 inline std::array<bool, 5> g_wndproc_mouse_down{};
 inline std::array<KeyboardButtonState, 256> g_physical_keyboard{};
@@ -175,6 +190,7 @@ inline bool g_linear_color_space_supported = false;
 inline bool g_render_target_diagnostics_logged = false;
 inline std::uint64_t g_dx12_busy_frame_skips = 0;
 inline ULONGLONG g_dx12_busy_diagnostic_tick = 0;
+inline ULONGLONG g_dx12_rebuild_tick = 0;
 inline const URK::ModContext *g_mod_context = nullptr;
 inline bool g_install_callback_registered = false;
 inline bool g_install_complete = false;
@@ -183,6 +199,8 @@ inline std::uint32_t g_graphics_probe_attempts = 0;
 inline constexpr std::uint32_t kMaxGraphicsProbeAttempts = 120;
 inline DxgiVTableTargets g_cached_dxgi_targets{};
 inline bool g_dxgi_targets_discovered = false;
+inline std::uint32_t g_dxgi_discovery_attempts = 0;
+inline constexpr std::uint32_t kMaxDxgiDiscoveryAttempts = 3;
 
 struct PlatformRendererCallbacks {
     void (*create_window)(ImGuiViewport *) = nullptr;
@@ -436,6 +454,7 @@ inline void apply_platform_window_policy() {
 
 inline void pump_platform_window_messages() {
     const WindowMessagePumpResult result = pump_owned_window_messages(g_platform_windows, 128);
+    g_platform_messages_dispatched += result.dispatched;
     const ULONGLONG now = GetTickCount64();
     if ((result.foreignThreadWindows != 0 || result.backlogRemaining) &&
         now - g_platform_message_warning_tick >= 2000) {
@@ -461,9 +480,11 @@ inline void validate_platform_window_topology() {
     char text[320]{};
     std::snprintf(text, sizeof(text),
                   "Detached viewport topology: hwnd=%p owner=%p windowThread=%lu "
-                  "renderThread=%lu ownerless=%s threadOwned=%s noActivate=%s taskbarHidden=%s.",
+                  "renderThread=%lu gameWindowThread=%lu ownerless=%s threadOwned=%s noActivate=%s "
+                  "taskbarHidden=%s.",
                   static_cast<void *>(window), static_cast<void *>(topology.owner),
                   static_cast<unsigned long>(topology.windowThread), static_cast<unsigned long>(renderThread),
+                  static_cast<unsigned long>(g_hwnd ? GetWindowThreadProcessId(g_hwnd, nullptr) : 0),
                   !topology.owner ? "yes" : "no", topology.windowThread == renderThread ? "yes" : "no",
                   (topology.extendedStyle & WS_EX_NOACTIVATE) != 0 ? "yes" : "no",
                   (topology.extendedStyle & WS_EX_TOOLWINDOW) != 0 &&
@@ -649,6 +670,24 @@ inline HWND find_main_window() {
         },
         reinterpret_cast<LPARAM>(&state));
     return state.hwnd;
+}
+
+// owning a cross-thread viewport by the game window deadlocks Unity
+inline bool game_window_on_present_thread() {
+    if (!g_hwnd)
+        return false;
+    const DWORD windowThread = GetWindowThreadProcessId(g_hwnd, nullptr);
+    return windowThread != 0 && windowThread == GetCurrentThreadId();
+}
+
+inline void log_detached_viewport_parenting() {
+    char text[224]{};
+    std::snprintf(text, sizeof(text),
+                  "Detached viewports enabled: gameWindowThread=%lu presentThread=%lu parenting=%s.",
+                  static_cast<unsigned long>(g_hwnd ? GetWindowThreadProcessId(g_hwnd, nullptr) : 0),
+                  static_cast<unsigned long>(GetCurrentThreadId()),
+                  game_window_on_present_thread() ? "owned-by-game-window" : "ownerless-topmost");
+    log(text);
 }
 
 inline void release_render_target() {
@@ -1257,6 +1296,26 @@ inline void sync_menu_state() {
     }
 }
 
+// backends register at init; config just flips the flag ImGui reads per frame
+inline void sync_detached_viewports() {
+    if (!g_platform_renderer_callbacks.installed)
+        return;
+    ImGuiIO &io = ImGui::GetIO();
+    const bool active = (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+    if (ModConfig::enable_detached_viewports == active)
+        return;
+    if (ModConfig::enable_detached_viewports) {
+        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        log("Detached viewports enabled by configuration.");
+        return;
+    }
+    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+    g_platform_windows.clear();
+    g_platform_window_policy.reset();
+    g_platform_window_topology_logged = false;
+    log("Detached viewports disabled by configuration; windows merge back into the game window.");
+}
+
 inline void shutdown_imgui() {
     if (!request_window_input_state(false))
         log("Failed to restore game input during ImGui shutdown.");
@@ -1290,6 +1349,9 @@ inline void shutdown_imgui() {
     g_platform_window_topology_logged = false;
     g_platform_message_warning_tick = 0;
     g_platform_window_policy_warning_tick = 0;
+    g_platform_messages_dispatched = 0;
+    g_viewport_cost = {};
+    g_viewport_cost_tick = 0;
     if (g_active_swap_chain) {
         g_active_swap_chain->Release();
         g_active_swap_chain = nullptr;
@@ -1299,6 +1361,7 @@ inline void shutdown_imgui() {
     g_dx12_queue_captured.store(false, std::memory_order_release);
     g_dx12_busy_frame_skips = 0;
     g_dx12_busy_diagnostic_tick = 0;
+    g_dx12_rebuild_tick = 0;
     g_gl_context = nullptr;
 }
 
@@ -1620,12 +1683,11 @@ inline bool init_dx11_imgui(IDXGISwapChain *swap_chain) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
-    // Keep detached viewports owned by the game window. This preserves normal
-    // minimize/Alt-Tab/z-order behavior in windowed mode without per-frame
-    // TOPMOST toggling, while still allowing windows on another monitor.
-    io.ConfigViewportsNoDefaultParent = false;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_DockingEnable |
+                      ImGuiConfigFlags_ViewportsEnable;
+    // owned by the game window only when that window lives on this thread
+    io.ConfigViewportsNoDefaultParent = !game_window_on_present_thread();
+    log_detached_viewport_parenting();
     log_render_target_diagnostics(desc.BufferDesc.Format);
     apply_swap_chain_color_space(desc.BufferDesc.Format);
     ModUI::initialize_style();
@@ -1725,9 +1787,10 @@ inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
-    io.ConfigFlags |=
-        ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
-    io.ConfigViewportsNoDefaultParent = false;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_DockingEnable |
+                      ImGuiConfigFlags_ViewportsEnable;
+    io.ConfigViewportsNoDefaultParent = !game_window_on_present_thread();
+    log_detached_viewport_parenting();
     ModUI::initialize_style();
     ImGui_ImplDX12_InitInfo dx12_init_info{};
     dx12_init_info.Device = g_dx12_resources.device();
@@ -1790,21 +1853,90 @@ inline bool init_imgui(IDXGISwapChain *swap_chain) {
     return is_dx11 ? init_dx11_imgui(swap_chain) : init_dx12_imgui(swap_chain);
 }
 
+inline double elapsed_ms(LONGLONG from, LONGLONG to) {
+    static const LONGLONG frequency = [] {
+        LARGE_INTEGER value{};
+        QueryPerformanceFrequency(&value);
+        return value.QuadPart;
+    }();
+    return frequency ? static_cast<double>(to - from) * 1000.0 / static_cast<double>(frequency) : 0.0;
+}
+
+inline LONGLONG performance_counter() {
+    LARGE_INTEGER value{};
+    QueryPerformanceCounter(&value);
+    return value.QuadPart;
+}
+
+inline void report_viewport_cost() {
+    const ULONGLONG now = GetTickCount64();
+    if (g_viewport_cost_tick == 0) {
+        g_viewport_cost_tick = now;
+        return;
+    }
+    if (g_viewport_cost.frames == 0 || now - g_viewport_cost_tick < 5000)
+        return;
+    const double frames = static_cast<double>(g_viewport_cost.frames);
+    const double total = g_viewport_cost.update + g_viewport_cost.policy + g_viewport_cost.pump +
+                         g_viewport_cost.present;
+    char text[320]{};
+    std::snprintf(text, sizeof(text),
+                  "Detached viewport cost over %u frames (viewports=%zu, messages=%u): update=%.3f policy=%.3f "
+                  "pump=%.3f present=%.3f avg-total=%.3f worst-total=%.3f ms.",
+                  g_viewport_cost.frames, g_viewport_cost.viewports, g_viewport_cost.dispatched,
+                  g_viewport_cost.update / frames, g_viewport_cost.policy / frames, g_viewport_cost.pump / frames,
+                  g_viewport_cost.present / frames, total / frames, g_viewport_cost.worstTotal);
+    log(text);
+    g_viewport_cost = {};
+    g_platform_messages_dispatched = 0;
+    g_viewport_cost_tick = now;
+}
+
 inline void render_platform_windows() {
     if ((ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) == 0)
         return;
     PlatformRendererGuard platformGuard{};
+    const LONGLONG started = performance_counter();
     ImGui::UpdatePlatformWindows();
+    const LONGLONG afterUpdate = performance_counter();
     collect_platform_windows();
     apply_platform_window_policy();
+    const LONGLONG afterPolicy = performance_counter();
     pump_platform_window_messages();
+    const LONGLONG afterPump = performance_counter();
     validate_platform_window_topology();
     if (!g_platform_windows.empty())
         ImGui::RenderPlatformWindowsDefault();
+    const LONGLONG finished = performance_counter();
+
+    if (g_platform_windows.empty())
+        return;
+    const double total = elapsed_ms(started, finished);
+    g_viewport_cost.update += elapsed_ms(started, afterUpdate);
+    g_viewport_cost.policy += elapsed_ms(afterUpdate, afterPolicy);
+    g_viewport_cost.pump += elapsed_ms(afterPolicy, afterPump);
+    g_viewport_cost.present += elapsed_ms(afterPump, finished);
+    if (total > g_viewport_cost.worstTotal)
+        g_viewport_cost.worstTotal = total;
+    if (g_platform_windows.size() > g_viewport_cost.viewports)
+        g_viewport_cost.viewports = g_platform_windows.size();
+    g_viewport_cost.dispatched = g_platform_messages_dispatched;
+    ++g_viewport_cost.frames;
+    report_viewport_cost();
 }
 
 inline void render_dx12_frame(IDXGISwapChain *swap_chain) {
-    (void)swap_chain;
+    if (!g_dx12_resources.has_device_objects()) {
+        // ResizeBuffers drops these; rebuild here
+        const ULONGLONG now = GetTickCount64();
+        if (now - g_dx12_rebuild_tick < 1000)
+            return;
+        g_dx12_rebuild_tick = now;
+        if (!create_dx12_device_objects(swap_chain))
+            return;
+        ImGui_ImplDX12_CreateDeviceObjects();
+        log("DX12 overlay resources rebuilt after a swap-chain resize.");
+    }
     Dx12FrameSubmission submission{};
     const Dx12BeginFrameStatus beginStatus = g_dx12_resources.begin_frame(&submission);
     if (beginStatus == Dx12BeginFrameStatus::gpu_busy) {
@@ -1886,6 +2018,7 @@ inline void render_frame(IDXGISwapChain *swap_chain) {
         return;
     apply_pending_menu_toggle();
     sync_menu_state();
+    sync_detached_viewports();
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -1927,7 +2060,10 @@ inline HRESULT __stdcall detour_present(IDXGISwapChain *swap_chain, UINT sync_in
     }
     if (!swap_chain || (flags & DXGI_PRESENT_TEST) != 0)
         return g_present ? g_present(swap_chain, sync_interval, flags) : DXGI_ERROR_INVALID_CALL;
-    if (g_imgui_ready && !is_active_game_swap_chain(swap_chain))
+
+    // guard covers the identity check too; it reads g_active_swap_chain
+    RenderFrameGuard frame_guard{};
+    if (!frame_guard.active || (g_imgui_ready && !is_active_game_swap_chain(swap_chain)))
         return g_present ? g_present(swap_chain, sync_interval, flags) : DXGI_ERROR_INVALID_CALL;
 
     render_frame(swap_chain);
@@ -1959,7 +2095,9 @@ inline HRESULT __stdcall detour_present1(IDXGISwapChain1 *swap_chain, UINT sync_
     }
     if (!swap_chain || (flags & DXGI_PRESENT_TEST) != 0)
         return g_present1 ? g_present1(swap_chain, sync_interval, flags, parameters) : DXGI_ERROR_INVALID_CALL;
-    if (g_imgui_ready && !is_active_game_swap_chain(swap_chain))
+
+    RenderFrameGuard frame_guard{};
+    if (!frame_guard.active || (g_imgui_ready && !is_active_game_swap_chain(swap_chain)))
         return g_present1 ? g_present1(swap_chain, sync_interval, flags, parameters) : DXGI_ERROR_INVALID_CALL;
 
     render_frame(swap_chain);
@@ -1972,18 +2110,20 @@ inline HRESULT __stdcall detour_resize_buffers(IDXGISwapChain *swap_chain, UINT 
         return g_resize_buffers ? g_resize_buffers(swap_chain, buffer_count, width, height, format, flags)
                                 : DXGI_ERROR_INVALID_CALL;
     }
+    RenderFrameGuard frame_guard{};
+    if (!frame_guard.active) {
+        return g_resize_buffers ? g_resize_buffers(swap_chain, buffer_count, width, height, format, flags)
+                                : DXGI_ERROR_INVALID_CALL;
+    }
     std::lock_guard<std::recursive_mutex> lock(g_imgui_mutex);
     if (g_imgui_ready && !is_active_game_swap_chain(swap_chain)) {
         return g_resize_buffers ? g_resize_buffers(swap_chain, buffer_count, width, height, format, flags)
                                 : DXGI_ERROR_INVALID_CALL;
     }
-    if (g_shutting_down.load(std::memory_order_acquire)) {
-        return g_resize_buffers ? g_resize_buffers(swap_chain, buffer_count, width, height, format, flags)
-                                : DXGI_ERROR_INVALID_CALL;
-    }
     if (g_backend == GraphicsBackend::dx12 && !g_dx12_resources.wait_for_idle()) {
-        log("DX12 ResizeBuffers postponed because overlay GPU work could not be drained safely.");
-        return DXGI_ERROR_WAS_STILL_DRAWING;
+        // never fail the game's resize; release clears the lost fence state
+        log("DX12 overlay GPU work could not be drained before ResizeBuffers; overlay resources are "
+            "released and rebuilt on the next Present.");
     }
     if (g_imgui_ready && g_backend == GraphicsBackend::dx11)
         ImGui_ImplDX11_InvalidateDeviceObjects();
@@ -2089,6 +2229,7 @@ inline void render_opengl_frame(HDC device_context) {
         return;
     apply_pending_menu_toggle();
     sync_menu_state();
+    sync_detached_viewports();
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplWin32_NewFrame();
     drain_input_events();
@@ -2142,9 +2283,24 @@ inline bool install() {
         log("Unity graphics device type is unavailable; probing native DXGI and "
             "OpenGL presentation hooks.");
 
-    if ((want_dx11 || want_dx12) && !g_dxgi_targets_discovered) {
-        g_cached_dxgi_targets = discover_dxgi_hook_targets(want_dx12, &log);
-        g_dxgi_targets_discovered = true;
+    if ((want_dx11 || want_dx12) && !g_dxgi_targets_discovered &&
+        g_dxgi_discovery_attempts < kMaxDxgiDiscoveryAttempts) {
+        ++g_dxgi_discovery_attempts;
+        const auto complete = [](const DxgiVTableTargets &candidate) {
+            return (candidate.present || candidate.present1) && candidate.resizeBuffers;
+        };
+        DxgiVTableTargets discovered = discover_dxgi_hook_targets(want_dx12, &log);
+        if (!complete(discovered) && want_dx12 && want_dx11) {
+            // DX12 probe found no vtable; DX11 games still need one
+            log("DX12 DXGI probe produced no usable swap-chain targets; retrying with a "
+                "DX11 probe.");
+            discovered = discover_dxgi_hook_targets(false, &log);
+        }
+        // don't cache an empty probe, or it blocks every later attempt
+        if (complete(discovered)) {
+            g_cached_dxgi_targets = discovered;
+            g_dxgi_targets_discovered = true;
+        }
     }
     const DxgiVTableTargets targets = g_cached_dxgi_targets;
     if ((want_dx11 || want_dx12) && (targets.present || targets.present1) && targets.resizeBuffers) {
@@ -2432,6 +2588,9 @@ bool uninstall() {
     g_install_complete = false;
     g_install_failed = false;
     g_graphics_probe_attempts = 0;
+    g_cached_dxgi_targets = {};
+    g_dxgi_targets_discovered = false;
+    g_dxgi_discovery_attempts = 0;
     g_mod_context = nullptr;
     return true;
 }

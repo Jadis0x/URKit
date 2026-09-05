@@ -19,6 +19,8 @@ std::string ConfigModule(const ModuleProjectOptions &options) {
         << "// English is used as the fixed language when localization support is not generated.\n"
         << "inline bool enable_localization = " << (options.enableLocalization ? "true" : "false") << ";\n"
         << "inline constexpr const char* default_language = \"en\";\n"
+        << "// Lets ImGui windows move to another monitor.\n"
+        << "inline bool enable_detached_viewports = false;\n"
         << "inline bool enable_unity_log_hook = true;\n"
         << "// Win32 virtual-key code used by the generated ImGui WndProc toggle.\n"
         << "// Default: VK_TAB (0x09). Change this value to customize the menu key.\n"

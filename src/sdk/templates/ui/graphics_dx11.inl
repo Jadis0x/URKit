@@ -45,6 +45,30 @@ namespace {
     return effect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || effect == DXGI_SWAP_EFFECT_FLIP_DISCARD;
 }
 
+[[nodiscard]] bool is_flip_model_format(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Flip-model rejects sRGB back buffers; the game gets that color space from its RTV.
+[[nodiscard]] DXGI_FORMAT flip_model_format(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+            return DXGI_FORMAT_B8G8R8A8_UNORM;
+        default:
+            return is_flip_model_format(format) ? format : DXGI_FORMAT_UNKNOWN;
+    }
+}
+
 } // namespace
 
 std::optional<Dx11ViewportSwapChainConfig> make_dx11_viewport_swap_chain_config(
@@ -57,10 +81,23 @@ std::optional<Dx11ViewportSwapChainConfig> make_dx11_viewport_swap_chain_config(
     config.flipModel = is_flip_model(gameDescriptor.SwapEffect);
 
     DXGI_SWAP_CHAIN_DESC &viewport = config.descriptor;
+    DXGI_SWAP_EFFECT swapEffect = gameDescriptor.SwapEffect;
+    DXGI_FORMAT format = gameDescriptor.BufferDesc.Format;
+    if (config.flipModel) {
+        const DXGI_FORMAT flipFormat = flip_model_format(format);
+        if (flipFormat != DXGI_FORMAT_UNKNOWN) {
+            format = flipFormat;
+        } else {
+            // No flip-model equivalent: bitblt takes the format unchanged.
+            config.flipModel = false;
+            swapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        }
+    }
+
     viewport.BufferDesc.Width = 0;
     viewport.BufferDesc.Height = 0;
     viewport.BufferDesc.RefreshRate = {0, 1};
-    viewport.BufferDesc.Format = gameDescriptor.BufferDesc.Format;
+    viewport.BufferDesc.Format = format;
     viewport.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
     viewport.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
     viewport.SampleDesc = {1, 0};
@@ -69,7 +106,7 @@ std::optional<Dx11ViewportSwapChainConfig> make_dx11_viewport_swap_chain_config(
                                             : (std::clamp)(gameDescriptor.BufferCount, 1u, 16u);
     viewport.OutputWindow = nullptr;
     viewport.Windowed = TRUE;
-    viewport.SwapEffect = gameDescriptor.SwapEffect;
+    viewport.SwapEffect = swapEffect;
     viewport.Flags = 0;
     return config;
 }
