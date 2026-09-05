@@ -678,9 +678,14 @@ detail::FindObjectsUsingRooted(TypeRef owner, std::string_view methodName, std::
         return {};
     }
     void *array = InvokeStatic<void *>(owner, methodName, TypeObject{type}, std::forward<ExtraArgs>(extraArgs)...);
+    // FindObjectsOfType is the pre-2022.2 spelling, FindObjectsByType the newer one.
+    // Neither exists in every Unity version, so fall back across the rename both ways.
     if (!array && methodName == "FindObjectsOfType" && sizeof...(ExtraArgs) == 0) {
         clear_error();
         array = InvokeStatic<void *>(owner, "FindObjectsByType", TypeObject{type}, FindObjectsSortMode::None);
+    } else if (!array && methodName == "FindObjectsByType") {
+        clear_error();
+        array = InvokeStatic<void *>(owner, "FindObjectsOfType", TypeObject{type});
     }
     return RootedObjectArray<T>::from_managed_array(array, "Unity rooted object finding");
 }

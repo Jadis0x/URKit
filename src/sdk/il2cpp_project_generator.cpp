@@ -1365,6 +1365,19 @@ inline bool address_in_module(void *address, const char *module_name) {
     const auto *ptr = reinterpret_cast<const unsigned char *>(address);
     return ptr >= base && ptr < (base + nt->OptionalHeader.SizeOfImage);
 }
+// An icall may legitimately live outside GameAssembly.dll: Unity moves builtins
+// between modules across versions, and native plugins register their own. Require
+// executable code inside some mapped image rather than a fixed module list.
+inline bool address_in_any_module(void *address) {
+    if (!address)
+        return false;
+    HMODULE owner = nullptr;
+    if (!::GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              reinterpret_cast<LPCSTR>(address), &owner)) {
+        return false;
+    }
+    return owner != nullptr;
+}
 inline bool is_valid_icall_target(void *target) {
     if (!target)
         return false;
@@ -1374,7 +1387,7 @@ inline bool is_valid_icall_target(void *target) {
     if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
         !is_executable_protection(mbi.Protect))
         return false;
-    return address_in_module(target, "GameAssembly.dll") || address_in_module(target, "UnityPlayer.dll");
+    return address_in_any_module(target);
 }
 inline std::unordered_map<std::string, void *> &icall_cache() {
     static std::unordered_map<std::string, void *> cache;

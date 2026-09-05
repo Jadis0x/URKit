@@ -26,4 +26,7 @@ bool DownloadAndRestart(const AvailableUpdate &update, std::string *error);
 bool ApplyDownloadedUpdate(const std::filesystem::path &source, const std::filesystem::path &target,
                            const std::string &expectedSha256, uint32_t waitForProcessId, std::string *error);
 
+// Best effort: drop the sibling helper binary a previous self-update left behind.
+void RemoveStaleSelfUpdateHelper() noexcept;
+
 } // namespace UrkUpdater

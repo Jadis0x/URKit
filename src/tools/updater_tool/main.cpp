@@ -620,6 +620,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         return helperExitCode;
     if (TryRunSelfUpdateHelper(&helperExitCode))
         return helperExitCode;
+    UrkUpdater::RemoveStaleSelfUpdateHelper();
     std::string error;
     bool showHelp = false;
     const std::optional<CommandLineOptions> options = ParseCommandLine(&error, &showHelp);

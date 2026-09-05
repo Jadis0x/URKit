@@ -2,6 +2,7 @@
 
 #include "hook_manager.h"
 #include "il2cpp_export_policy.h"
+#include "unity_name_matching.h"
 #include "logger.h"
 #include "runtime_wait.h"
 
@@ -29,10 +30,14 @@ constexpr std::size_t kMaxManagedStringUtf8Bytes = 4u * 1024u * 1024u;
 constexpr std::int32_t kMaxManagedStringUtf16Units = 1024 * 1024;
 
 std::string JoinTypes(const char *const *types, int count);
-std::string Lower(std::string s);
-std::string BaseName(std::string s);
-std::string StripDll(std::string s);
-std::string NormalizeTypeName(std::string type);
+
+using URK::UnityNames::ImageNameMatches;
+using URK::UnityNames::BaseName;
+using URK::UnityNames::ImageNameVariants;
+using URK::UnityNames::Lower;
+using URK::UnityNames::NormalizeTypeName;
+using URK::UnityNames::StripDll;
+using URK::UnityNames::TypeNameMatches;
 
 bool Empty(const char *s) {
     return !s || !s[0];
@@ -276,98 +281,6 @@ std::string ManagedMethodIdentity(const URK_Il2CppManagedMethodDesc &desc) {
     return out;
 }
 
-std::string Lower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return s;
-}
-
-std::string BaseName(std::string s) {
-    const size_t slash = s.find_last_of("/\\");
-    if (slash != std::string::npos)
-        s.erase(0, slash + 1);
-    return s;
-}
-
-std::string StripDll(std::string s) {
-    if (s.size() > 4 && Lower(s.substr(s.size() - 4)) == ".dll")
-        s.resize(s.size() - 4);
-    return s;
-}
-
-std::vector<std::string> ImageNameVariants(const char *value) {
-    std::vector<std::string> variants;
-    if (Empty(value))
-        return variants;
-    const std::string original = Lower(value);
-    const std::string base = BaseName(original);
-    for (const std::string &v : {original, StripDll(original), base, StripDll(base)}) {
-        if (!v.empty() && std::find(variants.begin(), variants.end(), v) == variants.end())
-            variants.push_back(v);
-    }
-    return variants;
-}
-
-bool ImageNameMatches(const std::vector<std::string> &requestedVariants, const char *actual) {
-    if (requestedVariants.empty())
-        return false;
-    const auto actualVariants = ImageNameVariants(actual);
-    for (const auto &r : requestedVariants)
-        for (const auto &a : actualVariants)
-            if (r == a)
-                return true;
-    return false;
-}
-
-std::string NormalizeTypeName(std::string type) {
-    std::string suffix;
-    while (!type.empty() && (type.back() == '&' || type.back() == '*')) {
-        suffix.insert(suffix.begin(), type.back());
-        type.pop_back();
-    }
-    if (type.rfind("class ", 0) == 0)
-        type.erase(0, 6);
-    if (type.rfind("struct ", 0) == 0)
-        type.erase(0, 7);
-    const std::string alias = Lower(type);
-    if (alias == "bool" || alias == "boolean" || alias == "system.boolean")
-        type = "system.boolean";
-    else if (alias == "byte" || alias == "system.byte")
-        type = "system.byte";
-    else if (alias == "sbyte" || alias == "system.sbyte")
-        type = "system.sbyte";
-    else if (alias == "char" || alias == "system.char")
-        type = "system.char";
-    else if (alias == "short" || alias == "int16" || alias == "system.int16")
-        type = "system.int16";
-    else if (alias == "ushort" || alias == "uint16" || alias == "system.uint16")
-        type = "system.uint16";
-    else if (alias == "int" || alias == "int32" || alias == "system.int32")
-        type = "system.int32";
-    else if (alias == "uint" || alias == "uint32" || alias == "system.uint32")
-        type = "system.uint32";
-    else if (alias == "long" || alias == "int64" || alias == "system.int64")
-        type = "system.int64";
-    else if (alias == "ulong" || alias == "uint64" || alias == "system.uint64")
-        type = "system.uint64";
-    else if (alias == "float" || alias == "single" || alias == "system.single")
-        type = "system.single";
-    else if (alias == "double" || alias == "system.double")
-        type = "system.double";
-    else if (alias == "string" || alias == "system.string")
-        type = "system.string";
-    else if (alias == "object" || alias == "system.object")
-        type = "system.object";
-    else if (alias == "type" || alias == "system.type")
-        type = "system.type";
-    else if (alias == "void" || alias == "system.void")
-        type = "system.void";
-    return type + suffix;
-}
-
-bool TypeNameMatches(const std::string &actual, const char *requested) {
-    return NormalizeTypeName(actual) == NormalizeTypeName(requested ? requested : "");
-}
-
 std::string JoinTypes(const char *const *types, int count) {
     std::string out;
     for (int i = 0; i < count; ++i) {
@@ -481,6 +394,7 @@ class StrictIl2CppExportResolver {
         exportSize_ = 0;
         optionalUnavailable_ = 0;
         sharedExactTargets_ = 0;
+        unbindableExports_ = 0;
 
         if (!module_) {
             return Fail("GameAssembly module handle is null");
@@ -562,20 +476,30 @@ class StrictIl2CppExportResolver {
             if (length != 0 && !SehCopyMemory(exportNameAddress, exportName.data(), length, &exceptionCode))
                 return failRead("GameAssembly export name", exceptionCode);
 
+            // One unbindable name is not a broken table. Skip it so an unrelated
+            // forwarded or empty export cannot block every IL2CPP capability; the
+            // required/optional policy still rejects it at BindExact time.
             const DWORD functionRva = functions[functionIndex];
-            if (!functionRva || !RangeInImage(functionRva, 1))
-                return Fail(std::string("invalid target RVA for export ") + exportName);
-            if (functionRva >= exportRva_ && static_cast<size_t>(functionRva - exportRva_) < exportSize_)
-                return Fail(std::string("forwarded export is not supported: ") + exportName);
+            if (!functionRva || !RangeInImage(functionRva, 1)) {
+                ++unbindableExports_;
+                continue;
+            }
+            if (functionRva >= exportRva_ && static_cast<size_t>(functionRva - exportRva_) < exportSize_) {
+                ++unbindableExports_;
+                continue;
+            }
 
             exports_.emplace(std::move(exportName),
                              PeExportRecord{reinterpret_cast<FARPROC>(const_cast<std::uint8_t *>(base + functionRva)),
                                             functionRva,
                                             static_cast<WORD>(exportDirectory.Base + functionIndex)});
         }
-        Log("[IL2CPP][EXPORT] Validated GameAssembly PE export table: imageSize=0x%lX names=%lu functions=%lu.",
+        Log("[IL2CPP][EXPORT] Validated GameAssembly PE export table: imageSize=0x%lX names=%lu functions=%lu "
+            "bindable=%zu skipped=%zu.",
             static_cast<unsigned long>(imageSize_), static_cast<unsigned long>(exportDirectory.NumberOfNames),
-            static_cast<unsigned long>(exportDirectory.NumberOfFunctions));
+            static_cast<unsigned long>(exportDirectory.NumberOfFunctions), exports_.size(), unbindableExports_);
+        if (exports_.empty())
+            return Fail("no directly bindable exports in the GameAssembly export table");
         return true;
     }
 
@@ -692,6 +616,7 @@ class StrictIl2CppExportResolver {
     std::string failure_;
     size_t optionalUnavailable_ = 0;
     size_t sharedExactTargets_ = 0;
+    size_t unbindableExports_ = 0;
 };
 
 template <typename Fn, typename... Args>
@@ -2815,11 +2740,52 @@ Il2CppClass *Il2CppApi::FindClass(const char *imageName, const char *namespc, co
         }
         return klass;
     }
-    const Il2CppImage *image = FindImage(imageName);
-    return image && !Empty(name)
-               ? InvokeMetadata("il2cpp_class_from_name during class lookup", il2cpp_class_from_name, image,
-                                namespc ? namespc : "", name)
-               : nullptr;
+    if (Empty(name))
+        return nullptr;
+    if (!Empty(imageName)) {
+        const Il2CppImage *image = FindImage(imageName);
+        return image ? InvokeMetadata("il2cpp_class_from_name during class lookup", il2cpp_class_from_name, image,
+                                      namespc ? namespc : "", name)
+                     : nullptr;
+    }
+
+    // Mono resolves an unqualified class by scanning every loaded assembly. Match
+    // that here so generated mod code behaves the same on both backends instead of
+    // silently failing for types outside a caller's hardcoded image list.
+    const std::string cacheKey = ClassLookupKey(*this, "", namespc, name);
+    {
+        Il2CppClass *cached = nullptr;
+        std::scoped_lock lock(g_il2cppLookupCacheMutex);
+        if (TryGetCached(g_il2cppLookupCaches.classes, cacheKey, cached))
+            return cached;
+    }
+    Il2CppDomain *domain = Domain();
+    if (!domain) {
+        SetError("IL2CPP: domain unavailable during unqualified class lookup");
+        return nullptr;
+    }
+    size_t count = 0;
+    const Il2CppAssembly **assemblies = InvokeMetadata(
+        "il2cpp_domain_get_assemblies during unqualified class lookup", il2cpp_domain_get_assemblies, domain, &count);
+    if (!assemblies) {
+        SetError(std::string("IL2CPP: assembly list unavailable during unqualified class lookup: requested=\"") +
+                 (namespc ? namespc : "") + "." + name + "\"");
+        return nullptr;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const Il2CppImage *candidate = InvokeMetadata("il2cpp_assembly_get_image during unqualified class lookup",
+                                                       il2cpp_assembly_get_image, assemblies[i]);
+        Il2CppClass *klass =
+            candidate ? InvokeMetadata("il2cpp_class_from_name during unqualified class lookup", il2cpp_class_from_name,
+                                       candidate, namespc ? namespc : "", name)
+                      : nullptr;
+        if (klass) {
+            std::scoped_lock lock(g_il2cppLookupCacheMutex);
+            g_il2cppLookupCaches.classes[cacheKey] = klass;
+            return klass;
+        }
+    }
+    return nullptr;
 }
 
 const Il2CppMethod *Il2CppApi::FindMethod(Il2CppClass *klass, const char *name, int argc) const {

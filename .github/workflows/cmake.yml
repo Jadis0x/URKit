@@ -49,3 +49,23 @@ jobs:
 
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Test
+        run: ctest --test-dir out/build/${{ matrix.preset }} --output-on-failure
+
+      - name: Generate a mod project for both backends
+        run: >-
+          out/build/${{ matrix.preset }}/urk_generated_project_tests.exe
+          --keep "${{ github.workspace }}/out/smoke"
+
+      - name: Build the generated IL2CPP project
+        working-directory: ${{ github.workspace }}/out/smoke/il2cpp/project
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Build the generated Mono project
+        working-directory: ${{ github.workspace }}/out/smoke/mono/project
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }} --parallel

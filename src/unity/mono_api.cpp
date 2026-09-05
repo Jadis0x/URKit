@@ -1,4 +1,5 @@
 #include "mono_api.h"
+#include "unity_name_matching.h"
 #include "logger.h"
 #include "runtime_wait.h"
 
@@ -180,111 +181,23 @@ template <class T> static bool Bind(HMODULE m, const char *n, T &o, bool req) {
     return o || !req;
 }
 
-static const char *Basename(const char *value) {
-    if (!value)
-        return nullptr;
-    const char *slash = std::strrchr(value, '/');
-    const char *backslash = std::strrchr(value, '\\');
-    const char *base = nullptr;
-    if (slash && backslash)
-        base = slash > backslash ? slash : backslash;
-    else
-        base = slash ? slash : backslash;
-    return base ? base + 1 : value;
-}
+using URK::UnityNames::BaseName;
+using URK::UnityNames::StripDll;
 
-static bool EqualsIgnoreCase(const char *a, const char *b) {
-    return a && b && _stricmp(a, b) == 0;
-}
-
-static bool EndsWithDll(const char *value) {
-    if (!value)
-        return false;
-    const size_t len = std::strlen(value);
-    return len > 4 && _stricmp(value + len - 4, ".dll") == 0;
-}
-
-static std::string StripDll(const char *value) {
-    if (!value)
-        return {};
-    std::string result(value);
-    if (EndsWithDll(result.c_str()))
-        result.resize(result.size() - 4);
-    return result;
+static std::string LowerString(std::string value) {
+    return URK::UnityNames::Lower(std::move(value));
 }
 
 static bool MonoImageNameMatches(const char *actual, const char *wanted) {
-    if (!actual || !wanted || !*wanted)
-        return false;
-
-    if (EqualsIgnoreCase(actual, wanted))
-        return true;
-    if (EqualsIgnoreCase(Basename(actual), wanted))
-        return true;
-
-    const std::string actualNoDll = StripDll(actual);
-    const std::string actualBaseNoDll = StripDll(Basename(actual));
-    const std::string wantedNoDll = StripDll(wanted);
-
-    return (!wantedNoDll.empty() && (EqualsIgnoreCase(actualNoDll.c_str(), wantedNoDll.c_str()) ||
-                                     EqualsIgnoreCase(actualBaseNoDll.c_str(), wantedNoDll.c_str())));
-}
-
-static std::string NormalizeMonoTypeName(std::string type) {
-    std::string suffix;
-    while (!type.empty() && (type.back() == '&' || type.back() == '*')) {
-        suffix.insert(suffix.begin(), type.back());
-        type.pop_back();
-    }
-    if (type.rfind("class ", 0) == 0)
-        type.erase(0, 6);
-    if (type.rfind("struct ", 0) == 0)
-        type.erase(0, 7);
-    std::transform(type.begin(), type.end(), type.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (type == "bool" || type == "boolean" || type == "system.boolean")
-        type = "system.boolean";
-    else if (type == "byte" || type == "system.byte")
-        type = "system.byte";
-    else if (type == "sbyte" || type == "system.sbyte")
-        type = "system.sbyte";
-    else if (type == "char" || type == "system.char")
-        type = "system.char";
-    else if (type == "short" || type == "int16" || type == "system.int16")
-        type = "system.int16";
-    else if (type == "ushort" || type == "uint16" || type == "system.uint16")
-        type = "system.uint16";
-    else if (type == "int" || type == "int32" || type == "system.int32")
-        type = "system.int32";
-    else if (type == "uint" || type == "uint32" || type == "system.uint32")
-        type = "system.uint32";
-    else if (type == "long" || type == "int64" || type == "system.int64")
-        type = "system.int64";
-    else if (type == "ulong" || type == "uint64" || type == "system.uint64")
-        type = "system.uint64";
-    else if (type == "float" || type == "single" || type == "system.single")
-        type = "system.single";
-    else if (type == "double" || type == "system.double")
-        type = "system.double";
-    else if (type == "string" || type == "system.string")
-        type = "system.string";
-    else if (type == "object" || type == "system.object")
-        type = "system.object";
-    else if (type == "void" || type == "system.void")
-        type = "system.void";
-    return type + suffix;
+    return URK::UnityNames::ImageNameMatches(wanted, actual);
 }
 
 static bool MonoTypeNameMatches(const char *actual, const char *wanted) {
-    if (!actual || !wanted)
-        return false;
-    return NormalizeMonoTypeName(actual) == NormalizeMonoTypeName(wanted);
+    return URK::UnityNames::TypeNameMatches(actual, wanted);
 }
 
-static std::string LowerString(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return value;
+static std::string NormalizeMonoTypeName(std::string type) {
+    return URK::UnityNames::NormalizeTypeName(std::move(type));
 }
 
 static std::string PointerKey(const void *ptr) {
@@ -299,9 +212,7 @@ static std::string MonoRuntimeCachePrefix(const MonoApi &api) {
 }
 
 static std::string MonoImageLookupKey(const char *image) {
-    const char *base = Basename(image);
-    std::string key = StripDll(base ? base : image);
-    return LowerString(key);
+    return LowerString(StripDll(BaseName(image ? image : "")));
 }
 
 static std::string MonoClassLookupKey(const MonoApi &api, const char *image, const char *namespc, const char *name) {

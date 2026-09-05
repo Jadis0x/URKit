@@ -139,6 +139,7 @@ inline std::deque<InputEvent> g_input_events;
 inline std::vector<HWND> g_platform_windows;
 inline Win32ViewportPolicy g_platform_window_policy;
 inline bool g_platform_window_topology_logged = false;
+inline bool g_detached_viewport_unsupported_logged = false;
 inline ULONGLONG g_platform_message_warning_tick = 0;
 inline std::uint32_t g_platform_messages_dispatched = 0;
 
@@ -1298,8 +1299,15 @@ inline void sync_menu_state() {
 
 // backends register at init; config just flips the flag ImGui reads per frame
 inline void sync_detached_viewports() {
-    if (!g_platform_renderer_callbacks.installed)
+    if (!g_platform_renderer_callbacks.installed) {
+        // OpenGL never registers viewport callbacks; report instead of silently ignoring.
+        if (ModConfig::enable_detached_viewports && !g_detached_viewport_unsupported_logged) {
+            g_detached_viewport_unsupported_logged = true;
+            log("Detached viewports are not supported by the active graphics backend; the "
+                "configuration toggle has no effect.");
+        }
         return;
+    }
     ImGuiIO &io = ImGui::GetIO();
     const bool active = (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
     if (ModConfig::enable_detached_viewports == active)
@@ -1347,6 +1355,7 @@ inline void shutdown_imgui() {
     g_platform_windows.clear();
     g_platform_window_policy.reset();
     g_platform_window_topology_logged = false;
+    g_detached_viewport_unsupported_logged = false;
     g_platform_message_warning_tick = 0;
     g_platform_window_policy_warning_tick = 0;
     g_platform_messages_dispatched = 0;
@@ -1754,6 +1763,7 @@ inline bool init_dx11_imgui(IDXGISwapChain *swap_chain) {
     g_backend = GraphicsBackend::dx11;
     g_imgui_ready = true;
     sync_menu_state();
+    sync_detached_viewports();
     log_font_diagnostics("DX11 ImGui", "linear");
     log("DX11 ImGui initialized with docking and multi-monitor viewport "
         "support.");
@@ -1832,6 +1842,7 @@ inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
     g_backend = GraphicsBackend::dx12;
     g_imgui_ready = true;
     sync_menu_state();
+    sync_detached_viewports();
     log_font_diagnostics("DX12 ImGui", "linear");
     log("DX12 ImGui initialized with docking and multi-monitor viewport "
         "support.");
@@ -2007,6 +2018,7 @@ inline void render_frame(IDXGISwapChain *swap_chain) {
     if (g_backend == GraphicsBackend::dx12) {
         apply_pending_menu_toggle();
         sync_menu_state();
+        sync_detached_viewports();
         render_dx12_frame(swap_chain);
         return;
     }

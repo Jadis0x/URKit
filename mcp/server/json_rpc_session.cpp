@@ -141,6 +141,9 @@ bool JsonRpcSession::Permits(const RpcMessage &message, Json *errorResponse) {
             *errorResponse = Error(message.id, -32600, "Session is closed");
         return false;
     }
+    // Ping is valid at any point in the connection lifecycle, initialization included.
+    if (message.method == "ping")
+        return true;
     if (state_ == State::AwaitingInitialize) {
         if (message.method == "initialize" && !message.notification) {
             era_ = Era::Legacy;

@@ -31,6 +31,7 @@ constexpr std::string_view kGitHubApiHost = "api.github.com";
 constexpr std::string_view kExpectedDownloadPrefix = "https://github.com/Jadis0x/URKit/releases/download/";
 constexpr size_t kMaxReleaseMetadataBytes = 1024 * 1024;
 constexpr size_t kMaxUpdaterBytes = 64 * 1024 * 1024;
+constexpr std::wstring_view kSelfUpdateHelperName = L"urk-updater.update-helper.exe";
 
 struct SemanticVersion {
     std::array<uint32_t, 3> parts{};
@@ -293,7 +294,7 @@ bool OpenGetRequest(const HttpsUrl &url, InternetHandle *session, InternetHandle
             *error = "cannot create HTTPS update request: " + WindowsError(GetLastError());
         return false;
     }
-    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
     WinHttpSetOption(request->get(), WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
     constexpr wchar_t headers[] = L"Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
     if (!WinHttpSendRequest(request->get(), headers, static_cast<DWORD>(std::size(headers) - 1), WINHTTP_NO_REQUEST_DATA,
@@ -611,7 +612,7 @@ bool DownloadAndRestart(const AvailableUpdate &update, std::string *error) {
     const std::filesystem::path download = temporaryRoot /
                                            ("urk-updater-" + update.availableVersion + "-" +
                                             std::to_string(GetCurrentProcessId()) + ".exe");
-    const std::filesystem::path helper = target.parent_path() / "urk-updater.update-helper.exe";
+    const std::filesystem::path helper = target.parent_path() / kSelfUpdateHelperName;
     std::filesystem::remove(download, filesystemError);
     if (!DownloadFile(update.downloadUrl, download, error)) {
         std::filesystem::remove(download, filesystemError);
@@ -658,6 +659,28 @@ bool DownloadAndRestart(const AvailableUpdate &update, std::string *error) {
 #endif
 }
 
+void RemoveStaleSelfUpdateHelper() noexcept {
+#ifdef _WIN32
+    std::filesystem::path self;
+    if (!ModulePath(&self, nullptr))
+        return;
+    const std::filesystem::path helper = self.parent_path() / kSelfUpdateHelperName;
+    // The helper deletes nothing while it is the running image.
+    if (self.filename() == helper.filename())
+        return;
+    std::error_code filesystemError;
+    if (!std::filesystem::exists(helper, filesystemError) || filesystemError)
+        return;
+    // The helper exits right after relaunching this process, so its image can stay
+    // locked for a moment. A later launch retries whatever these attempts miss.
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        if (std::filesystem::remove(helper, filesystemError) && !filesystemError)
+            return;
+        Sleep(200);
+    }
+#endif
+}
+
 bool ApplyDownloadedUpdate(const std::filesystem::path &source, const std::filesystem::path &target,
                            const std::string &expectedSha256, uint32_t waitForProcessId, std::string *error) {
     if (error)
@@ -698,7 +721,8 @@ bool ApplyDownloadedUpdate(const std::filesystem::path &source, const std::files
             *error = "downloaded updater SHA-256 changed before replacement";
         return false;
     }
-    if (!MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (!MoveFileExW(source.c_str(), target.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH)) {
         if (error)
             *error = "cannot replace urk-updater.exe: " + WindowsError(GetLastError());
         return false;

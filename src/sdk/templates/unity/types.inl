@@ -1094,7 +1094,7 @@ inline bool require_main_thread(std::string_view operation = "Unity operation") 
     return false;
 }
 
-inline constexpr std::array<std::string_view, 16> common_type_images{
+inline constexpr std::array<std::string_view, 17> common_type_images{
     "UnityEngine.CoreModule.dll",
     "UnityEngine.PhysicsModule.dll",
     "UnityEngine.Physics2DModule.dll",
@@ -1105,6 +1105,7 @@ inline constexpr std::array<std::string_view, 16> common_type_images{
     "UnityEngine.ImageConversionModule.dll",
     "UnityEngine.TextRenderingModule.dll",
     "Unity.TextMeshPro.dll",
+    "TextMeshPro.dll",
     "Unity.InputSystem.dll",
     "UnityEngine.AssetBundleModule.dll",
     "UnityEngine.dll",
@@ -1135,6 +1136,8 @@ struct TypeRef {
         } else {
             resolved = detail::Backend::find_class(image, namespc, name);
         }
+        if (!resolved && image.empty())
+            resolved = detail::Backend::find_class(std::string_view{}, namespc, name);
         if (resolved) {
             std::lock_guard<std::mutex> lock(detail::cache_mutex());
             detail::class_cache()[key] = resolved;
@@ -1159,6 +1162,8 @@ struct TypeRef {
         } else {
             resolved = detail::Backend::type_object_for_class(image, namespc, name);
         }
+        if (!resolved && image.empty())
+            resolved = detail::Backend::type_object_for_class(std::string_view{}, namespc, name);
         if (resolved) {
             std::lock_guard<std::mutex> lock(detail::cache_mutex());
             detail::type_cache()[key] = resolved;

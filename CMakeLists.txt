@@ -142,6 +142,17 @@ if (URK_BUILD_DEV_MCP)
     endif()
 endif()
 
+if (BUILD_TESTING)
+    # Pure string logic shared by the Mono and IL2CPP bindings; no runtime needed.
+    add_executable(urk_unity_name_matching_tests tests/unity_name_matching_tests.cpp)
+    target_include_directories(urk_unity_name_matching_tests PRIVATE .)
+    target_compile_features(urk_unity_name_matching_tests PRIVATE cxx_std_20)
+    target_compile_definitions(urk_unity_name_matching_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    urk_disable_vs_vcpkg_integration(urk_unity_name_matching_tests)
+    add_test(NAME urkit_unity_name_matching COMMAND urk_unity_name_matching_tests)
+
+endif()
+
 if (URK_BUILD_SDK_TOOL)
     set(URK_GENERATED_SDK_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/sdk)
     set(URK_EMBEDDED_MOD_SDK_HEADER ${URK_GENERATED_SDK_DIR}/embedded_mod_sdk.h)
@@ -207,6 +218,27 @@ if (URK_BUILD_SDK_TOOL)
     if (WIN32)
         target_link_libraries(URKitUpdater PRIVATE bcrypt winhttp)
     endif()
+
+if (BUILD_TESTING)
+    # The SDK templates are raw strings, so only a generated project type-checks
+    # them. This generates one per backend and compiles a probe against it.
+    add_executable(urk_generated_project_tests
+        tests/generated_project_tests.cpp
+        ${URK_SDK_GENERATOR_SRC}
+        ${URK_EMBEDDED_MOD_SDK_HEADER}
+        ${URK_EMBEDDED_DEV_TEST_HEADER}
+    )
+    target_include_directories(urk_generated_project_tests PRIVATE . ${URK_INCLUDE_DIRS} ${URK_GENERATED_SDK_DIR})
+    target_compile_features(urk_generated_project_tests PRIVATE cxx_std_20)
+    target_compile_definitions(urk_generated_project_tests PRIVATE
+        WIN32_LEAN_AND_MEAN NOMINMAX
+        URK_TEST_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
+        URK_TEST_SDK_DIR="${URK_SDK_DIR}"
+    )
+    urk_disable_vs_vcpkg_integration(urk_generated_project_tests)
+    add_test(NAME urkit_generated_project COMMAND urk_generated_project_tests)
+    set_tests_properties(urkit_generated_project PROPERTIES TIMEOUT 600)
+endif()
 
 endif()
 

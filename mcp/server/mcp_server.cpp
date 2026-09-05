@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -20,8 +21,47 @@ namespace {
 using Json = nlohmann::json;
 constexpr std::size_t kMaximumStdioOutputBytes = 512 * 1024;
 
+constexpr std::size_t kMaximumToolTextBytes = 64 * 1024;
+
+std::string ClipToolText(std::string text) {
+    if (text.size() <= kMaximumToolTextBytes)
+        return text;
+    text.resize(kMaximumToolTextBytes);
+    text += "\n... truncated; the complete value is in structuredContent.";
+    return text;
+}
+
+// Many clients render only content[].text, so describe the result there instead
+// of emitting a fixed success string that hides every field.
+std::string RenderToolText(const Json &value) {
+    if (!value.is_object())
+        return ClipToolText(value.dump(2));
+    std::string fields;
+    std::string body;
+    for (const auto &[key, entry] : value.items()) {
+        // Log tails and build transcripts are unreadable once JSON-escaped.
+        if ((key == "text" || key == "output") && entry.is_string()) {
+            body = entry.get<std::string>();
+            continue;
+        }
+        fields += key;
+        fields += ": ";
+        fields += entry.is_string() ? entry.get<std::string>() : entry.dump();
+        fields.push_back('\n');
+    }
+    if (fields.empty() && body.empty())
+        return ClipToolText(value.dump(2));
+    if (!body.empty()) {
+        if (!fields.empty())
+            fields.push_back('\n');
+        fields += body;
+    }
+    return ClipToolText(std::move(fields));
+}
+
 Json ToolSuccess(Json value) {
-    return {{"content", {{{"type", "text"}, {"text", "Operation completed successfully."}}}},
+    std::string text = RenderToolText(value);
+    return {{"content", {{{"type", "text"}, {"text", std::move(text)}}}},
             {"structuredContent", std::move(value)},
             {"isError", false}};
 }
@@ -59,7 +99,8 @@ Json McpServer::ExecuteBridgeTool(const std::string &name, const Json &arguments
         return ToolFailure(response.errorCode, response.errorMessage);
     if (name == "run_runtime_test" && !response.result.value("passed", false)) {
         const std::string message = response.result.value("message", std::string("runtime test failed"));
-        return {{"content", {{{"type", "text"}, {"text", "test_failed: " + message}}}},
+        std::string text = "test_failed: " + message + "\n" + RenderToolText(response.result);
+        return {{"content", {{{"type", "text"}, {"text", ClipToolText(std::move(text))}}}},
                 {"structuredContent", std::move(response.result)},
                 {"isError", true}};
     }
