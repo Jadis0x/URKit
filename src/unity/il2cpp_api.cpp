@@ -619,14 +619,60 @@ class StrictIl2CppExportResolver {
     size_t unbindableExports_ = 0;
 };
 
+// A guarded metadata fault is nearly always one stale or bogus pointer reaching
+// the runtime - a freed Il2CppClass*, a destroyed object's type - and not a
+// runtime that has stopped working. Tearing metadata access down on the first
+// such fault turned any one of those into "the mod goes dead until the game is
+// restarted", because the loader then hands the mod a null IL2CPP API table.
+// The switch now trips only on a burst, which is what an actually broken
+// runtime looks like.
+constexpr int kMetadataFaultBurstLimit = 8;
+constexpr auto kMetadataFaultBurstWindow = std::chrono::seconds(2);
+std::mutex g_metadataFaultMutex;
+int g_metadataFaultStreak = 0;
+std::chrono::steady_clock::time_point g_metadataFaultWindowStart{};
+
+// Guards Il2CppApi::metadataReady/cachedDomain so a burst-trip on one thread
+// and a recovery commit on another can't interleave into a torn or stale state.
+std::mutex g_metadataStateMutex;
+// Bumped every time a burst trip takes metadata offline; a recovery in flight
+// checks this before committing so it can't resurrect a domain that a fresh
+// fault just invalidated.
+uint64_t g_metadataFaultGeneration = 0;
+// Guards Il2CppApi::metadataRecoveryLastAttempt's check-then-set throttle.
+std::mutex g_metadataRecoveryMutex;
+
+void NoteMetadataSuccess() {
+    std::scoped_lock lock(g_metadataFaultMutex);
+    if (g_metadataFaultStreak > 0)
+        --g_metadataFaultStreak;
+}
+
+// Returns true exactly once per burst, the moment the streak crosses the
+// threshold - not on every fault afterward, which would just re-disable an
+// already-disabled subsystem.
+bool NoteMetadataFault() {
+    const auto now = std::chrono::steady_clock::now();
+    std::scoped_lock lock(g_metadataFaultMutex);
+    if (g_metadataFaultStreak == 0 || now - g_metadataFaultWindowStart > kMetadataFaultBurstWindow) {
+        g_metadataFaultWindowStart = now;
+        g_metadataFaultStreak = 1;
+    } else {
+        ++g_metadataFaultStreak;
+    }
+    return g_metadataFaultStreak == kMetadataFaultBurstLimit;
+}
+
 template <typename Fn, typename... Args>
 std::invoke_result_t<Fn, Args...> InvokeMetadata(const char *operation, Fn function, Args... args) {
     using Result = std::invoke_result_t<Fn, Args...>;
     static_assert(!std::is_void_v<Result>, "InvokeMetadata is for value-returning IL2CPP metadata APIs only");
     Result result{};
     DWORD exceptionCode = 0;
-    if (SehInvokeValue(function, &result, &exceptionCode, args...))
+    if (SehInvokeValue(function, &result, &exceptionCode, args...)) {
+        NoteMetadataSuccess();
         return result;
+    }
 
     char message[384]{};
     std::snprintf(message, sizeof(message),
@@ -634,11 +680,25 @@ std::invoke_result_t<Fn, Args...> InvokeMetadata(const char *operation, Fn funct
                   operation ? operation : "metadata call", static_cast<unsigned long>(exceptionCode));
     SetError(message);
     Log("[IL2CPP][ERROR] %s", message);
-    if (g_api) {
-        g_api->metadataReady = false;
+    if (g_api && NoteMetadataFault()) {
+        {
+            std::scoped_lock lock(g_metadataStateMutex);
+            g_api->metadataReady = false;
+            // Dropped alongside metadataReady, under the same lock: a stale
+            // domain left behind here is exactly what an in-flight recovery's
+            // Il2CppThreadScope would otherwise attach against unguarded.
+            g_api->cachedDomain = nullptr;
+            ++g_metadataFaultGeneration;
+        }
+        // Only a burst justifies dropping the lookup caches; doing it per fault
+        // discards every good entry and forces re-resolution, which is itself a
+        // fresh chance to touch the pointer that just faulted.
         ClearIl2CppCaches();
-        Log("[IL2CPP][ERROR] Metadata access has been disabled after the guarded failure; "
-            "subsequent native mod metadata calls will be rejected.");
+        Log("[IL2CPP][ERROR] %d guarded metadata faults inside %lld ms; metadata access has been taken "
+            "offline. It is retried automatically the next time the mod asks whether IL2CPP is available.",
+            kMetadataFaultBurstLimit,
+            static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(kMetadataFaultBurstWindow).count()));
     }
     return Result{};
 }
@@ -667,6 +727,35 @@ bool ValidateMetadataCString(const char *value, const char *operation) {
     return true;
 }
 
+struct MetadataAssemblyProbeResult {
+    bool ok = false;
+    size_t assemblyCount = 0;
+    const Il2CppImage *firstImage = nullptr;
+    const char *firstImageName = nullptr;
+};
+
+// Shared by WaitForMetadataAccess (startup) and TryRecoverMetadataAccess
+// (post-fault recovery): domain -> assemblies -> first image -> validated name.
+MetadataAssemblyProbeResult ProbeMetadataAssemblies(const Il2CppApi &api, Il2CppDomain *domain, const char *context) {
+    MetadataAssemblyProbeResult result;
+    char op[160]{};
+    std::snprintf(op, sizeof(op), "il2cpp_domain_get_assemblies %s", context);
+    const Il2CppAssembly **assemblies =
+        InvokeMetadata(op, api.il2cpp_domain_get_assemblies, domain, &result.assemblyCount);
+    if (!assemblies || result.assemblyCount == 0)
+        return result;
+    std::snprintf(op, sizeof(op), "il2cpp_assembly_get_image %s", context);
+    result.firstImage = InvokeMetadata(op, api.il2cpp_assembly_get_image, assemblies[0]);
+    if (!result.firstImage)
+        return result;
+    std::snprintf(op, sizeof(op), "il2cpp_image_get_name %s", context);
+    result.firstImageName = InvokeMetadata(op, api.il2cpp_image_get_name, result.firstImage);
+    if (!ValidateMetadataCString(result.firstImageName, "il2cpp_image_get_name"))
+        return result;
+    result.ok = true;
+    return result;
+}
+
 class Il2CppThreadScope {
   public:
     explicit Il2CppThreadScope(const Il2CppApi &api) : api_(api) {
@@ -689,7 +778,11 @@ class Il2CppThreadScope {
                 return;
             }
         }
-        Il2CppDomain *domain = api_.cachedDomain;
+        Il2CppDomain *domain;
+        {
+            std::scoped_lock lock(g_metadataStateMutex);
+            domain = api_.cachedDomain;
+        }
         if (!domain) {
             SetError("IL2CPP: domain unavailable while attaching current thread for "
                      "metadata access");
@@ -757,7 +850,14 @@ std::string TypeName(const Il2CppApi &api, const Il2CppType *type) {
 }
 
 int Api_IsAvailable() {
-    return g_api && g_api->MetadataAccessReady() ? 1 : 0;
+    if (!g_api)
+        return 0;
+    if (g_api->MetadataAccessReady())
+        return 1;
+    // The mod polls this before every metadata operation, which makes it the
+    // natural place to retry: an offline switch stays offline only while the
+    // runtime really cannot answer a probe.
+    return g_api->TryRecoverMetadataAccess() ? 1 : 0;
 }
 const void *Api_DomainGet() {
     if (!g_api || !g_api->valid()) {
@@ -1586,7 +1686,13 @@ const void *Api_ThreadAttach(const void *d) {
         SetError("IL2CPP: il2cpp_thread_attach unavailable");
         return nullptr;
     }
-    auto *domain = (Il2CppDomain *)const_cast<void *>(d ? d : g_api->cachedDomain);
+    Il2CppDomain *domain;
+    if (d) {
+        domain = (Il2CppDomain *)const_cast<void *>(d);
+    } else {
+        std::scoped_lock lock(g_metadataStateMutex);
+        domain = g_api->cachedDomain;
+    }
     if (!domain) {
         SetError("IL2CPP: thread_attach domain is unavailable");
         return nullptr;
@@ -2607,7 +2713,55 @@ bool Il2CppApi::thread_attach_available() const {
 }
 
 bool Il2CppApi::MetadataAccessReady() const {
+    std::scoped_lock lock(g_metadataStateMutex);
     return metadataReady && valid() && thread_attach_available() && cachedDomain;
+}
+
+bool Il2CppApi::TryRecoverMetadataAccess() {
+    if (MetadataAccessReady())
+        return true;
+    if (!valid() || !thread_attach_available() || !il2cpp_domain_get)
+        return false;
+    // Rate limited: a genuinely dead runtime must not be probed once per UI
+    // frame, and every probe is itself a guarded call into it. The throttle
+    // check-and-set happens under a lock so two threads racing in here can't
+    // both win the gate and run duplicate recovery probes.
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::scoped_lock lock(g_metadataRecoveryMutex);
+        if (metadataRecoveryLastAttempt != std::chrono::steady_clock::time_point{} &&
+            now - metadataRecoveryLastAttempt < std::chrono::seconds(3))
+            return false;
+        metadataRecoveryLastAttempt = now;
+    }
+
+    uint64_t generationAtStart;
+    {
+        std::scoped_lock lock(g_metadataStateMutex);
+        generationAtStart = g_metadataFaultGeneration;
+    }
+
+    Il2CppThreadScope scope(*this);
+    if (!scope.ok())
+        return false;
+    Il2CppDomain *domain = InvokeMetadata("il2cpp_domain_get during metadata recovery", il2cpp_domain_get);
+    if (!domain)
+        return false;
+    MetadataAssemblyProbeResult probe = ProbeMetadataAssemblies(*this, domain, "during metadata recovery");
+    if (!probe.ok)
+        return false;
+
+    std::scoped_lock lock(g_metadataStateMutex);
+    // A fresh fault burst tripped the breaker again while this probe was in
+    // flight; discard this success instead of resurrecting a domain the
+    // breaker just took offline out from under it.
+    if (g_metadataFaultGeneration != generationAtStart)
+        return false;
+    cachedDomain = domain;
+    metadataReady = true;
+    Log("[IL2CPP] Metadata access recovered: domain=%p assemblyCount=%zu firstImage=\"%s\".", domain,
+        probe.assemblyCount, probe.firstImageName);
+    return true;
 }
 
 void *Il2CppApi::MethodPointer(const Il2CppMethod *method) const {
@@ -3002,29 +3156,19 @@ bool Il2CppApi::WaitForMetadataAccess(std::chrono::milliseconds timeout, std::ch
             if (now - firstDomainSeen >= kDomainSettle) {
                 Il2CppThreadScope attach(*this);
                 if (attach.ok()) {
-                    size_t count = 0;
-                    const Il2CppAssembly **assemblies = InvokeMetadata(
-                        "il2cpp_domain_get_assemblies during metadata readiness", il2cpp_domain_get_assemblies, domain,
-                        &count);
-                    if (assemblies && count > 0) {
-                        const Il2CppImage *firstImage = InvokeMetadata(
-                            "il2cpp_assembly_get_image during metadata readiness", il2cpp_assembly_get_image,
-                            assemblies[0]);
-                        const char *firstImageName = firstImage ? InvokeMetadata(
-                            "il2cpp_image_get_name during metadata readiness", il2cpp_image_get_name, firstImage)
-                                                                  : nullptr;
-                        if (firstImage && ValidateMetadataCString(firstImageName, "il2cpp_image_get_name")) {
-                            cachedDomain = domain;
-                            metadataReady = true;
-                            Log("[SUCCESS][IL2CPP] Metadata access ready: domain=%p assemblyCount=%zu "
-                                "firstImage=%p firstImageName=\"%s\".",
-                                domain, count, firstImage, firstImageName);
-                            return true;
-                        }
-                        SetError("IL2CPP: assembly list was present but its first image/name validation failed");
-                    } else {
-                        SetError("IL2CPP: metadata assembly list is not ready yet");
+                    MetadataAssemblyProbeResult probe = ProbeMetadataAssemblies(*this, domain, "during metadata readiness");
+                    if (probe.ok) {
+                        cachedDomain = domain;
+                        metadataReady = true;
+                        Log("[SUCCESS][IL2CPP] Metadata access ready: domain=%p assemblyCount=%zu "
+                            "firstImage=%p firstImageName=\"%s\".",
+                            domain, probe.assemblyCount, probe.firstImage, probe.firstImageName);
+                        return true;
                     }
+                    if (probe.assemblyCount == 0)
+                        SetError("IL2CPP: metadata assembly list is not ready yet");
+                    else
+                        SetError("IL2CPP: assembly list was present but its first image/name validation failed");
                 }
             }
         }

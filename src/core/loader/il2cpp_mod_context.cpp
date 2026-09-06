@@ -7,7 +7,8 @@ URK_ModContext &ModContext_BuildIl2Cpp(const Config &config, Il2CppApi &il2cpp, 
     options.runtimeBackend = URK_RUNTIME_BACKEND_IL2CPP;
     options.backendCapabilities = backendCapabilities;
     options.mainThreadDispatcherAvailable = MainThread_HasDispatchTarget();
-    options.apis.il2cpp = ModApi_Il2Cpp(il2cpp.MetadataAccessReady() ? &il2cpp : nullptr);
+    options.apis.il2cpp =
+        ModApi_Il2Cpp((il2cpp.MetadataAccessReady() || il2cpp.TryRecoverMetadataAccess()) ? &il2cpp : nullptr);
     options.modules.backendModuleBase = il2cpp.gameAssemblyBase;
     options.modules.gameAssemblyModuleBase = il2cpp.gameAssemblyBase;
     options.modules.unityPlayerModuleBase = il2cpp.unityPlayerBase;

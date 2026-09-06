@@ -347,6 +347,8 @@ struct Il2CppApi {
     // exports may remain null on Unity versions that do not provide them.
     bool exportsValidated = false;
     bool metadataReady = false;
+    // Defaults to the epoch, which doubles as the "never attempted" sentinel.
+    std::chrono::steady_clock::time_point metadataRecoveryLastAttempt{};
     Il2CppDomain *cachedDomain = nullptr;
 
 #define M(name) name##_t name = nullptr
@@ -562,6 +564,9 @@ struct Il2CppApi {
     bool WaitForMetadataAccess(std::chrono::milliseconds timeout,
                                std::chrono::milliseconds preDomainDelay = std::chrono::milliseconds(1500));
     bool MetadataAccessReady() const;
+    // Re-probes the runtime after metadata access was taken offline by a burst
+    // of guarded faults. Rate limited internally; safe to call every frame.
+    bool TryRecoverMetadataAccess();
     bool TryAssemblyCount(size_t &count) const;
     const Il2CppImage *FindImage(const char *imageName) const;
     Il2CppClass *FindClass(const char *imageName, const char *namespc, const char *name) const;
