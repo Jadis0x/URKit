@@ -8,188 +8,67 @@
 [![License](https://img.shields.io/github/license/Jadis0x/URKit)](https://github.com/Jadis0x/URKit/blob/main/LICENSE)
 
 URKit is a native C++ modding toolkit for Windows x64 Unity games. It supports
-Mono and IL2CPP through one loader ABI and provides Unity object access, managed
-method calls, hooks, lifecycle callbacks, networking, and ImGui overlays.
-
-Generated mod DLLs are URKit plugins. Load them with a URKit proxy or
-`URKitInjector.dll`; do not inject mod DLLs directly.
+Mono and IL2CPP through one loader ABI, and gives you Unity object access,
+managed method calls, hooks, lifecycle callbacks, networking, and an ImGui
+overlay, generated straight into a buildable CMake project.
 
 <img src="showcase/ss1.png" width="550">
 
-## Release contents
+## What's in a release
 
-- `urk-sdk.exe`: project generator for Mono and IL2CPP mods.
-- `urk-updater.exe`: checks and updates an existing generated project without
-  replacing user-owned source files.
-- `version.dll`, `winhttp.dll`, `winmm.dll`: proxy loaders. Install exactly the
-  proxy imported by the game executable.
-- `URKitInjector.dll`: loader for external injection workflows. URKit does not
-  include an injector.
-- `urk-dev-mcp.exe`: local MCP server for building, deploying, diagnosing, and
-  runtime-testing generated URKit mods.
-- `URKitDevBridge.dll`: optional development-only mod that executes MCP runtime
-  requests on the Unity main thread.
+- `urk-sdk.exe`: generates a Mono or IL2CPP mod project.
+- `urk-updater.exe`: updates a generated project without touching your own files.
+- `version.dll`, `winhttp.dll`, `winmm.dll`: proxy loaders. Install the one the game actually imports.
+- `URKitInjector.dll`: a proxy-free loader for manual injection workflows.
+- `urk-dev-mcp.exe` + `URKitDevBridge.dll`: optional MCP server for AI coding assistants (build, deploy, runtime diagnostics).
 
-Place the selected proxy beside the game executable. Built mods belong in the
-game's `Mods` directory. Do not rename a proxy or install more than one proxy in
-the same game directory.
+Put the proxy DLL next to the game executable, and built mods in the game's
+`Mods` directory. Only install one proxy, and don't rename it.
 
-`URKitInjector.dll` provides a proxy-free alternative. Once loaded, it prompts
-for a configuration file and one or more mod DLLs; it does not create files or
-scan a `Mods` directory automatically.
-
-## Security software and false positives
-
-The proxy loaders and `URKitInjector.dll` intentionally load into a game
-process and can install API hooks. Those behaviors are common to mod loaders,
-but they can also trigger heuristic detections from security software. A
-detection does not by itself establish that a URKit release is malicious.
-
-Download releases only from the official GitHub repository and verify the
-published SHA-256 digest before using an archive. Release binaries are
-self-signed for tamper identification, but that certificate is not trusted by
-Windows by default and must not be treated as a general trust signal. Do not
-disable security protection to run URKit. Instead, record the antivirus
-product and version, the exact detection name, the affected file, and its
-SHA-256 digest, then submit the file to that vendor's false-positive process
-or open a GitHub issue with those details.
-
-## Generate and build a mod
-
-Run `urk-sdk.exe`, select a game executable and backend, then enter a project
-name. The equivalent command is:
+## Quick start
 
 ```powershell
 ./urk-sdk.exe --game-exe C:\Games\Example\Example.exe --backend auto --name MyMod
-```
-
-`auto` detects Mono or IL2CPP from the game directory. Add `--localization` to
-include editable locale JSON files. Projects are written to:
-
-```text
-<GameDir>/urk-sdk-output/<Project>/project
-```
-
-Requirements:
-
-- CMake 3.28 or newer;
-- Ninja;
-- LLVM/Clang or the MSVC toolchain from Visual Studio 2022 Build Tools or
-  newer.
-
-Clang build:
-
-```powershell
+cd <GameDir>\urk-sdk-output\MyMod\project
 cmake --preset clang-debug
 cmake --build --preset clang-debug --parallel
 ```
 
-MSVC build, from an x64 Visual Studio Developer PowerShell:
+That builds a debug DLL and drops it in the game's `Mods` directory. You need
+CMake 3.28+, Ninja, and either LLVM/Clang or the MSVC toolchain (VS 2022 Build
+Tools or newer). Use `clang-release` / `msvc-release` when you're ready to
+ship, and `msvc-debug` if you'd rather build with `cl.exe`.
 
-```powershell
-cmake --preset msvc-debug
-cmake --build --preset msvc-debug --parallel
-```
+Launch the game and check `URKit_logs.log` next to the executable. You
+should see the mod initialize. If that file doesn't exist, the game isn't
+importing the proxy you installed.
 
-Use `clang-release` or `msvc-release` for distributable builds. Generated
-projects copy the resulting DLL to the selected game's `Mods` directory.
+## Learn the API
 
-## Generated project layout
+New to URKit? Start with [Getting Started](docs/GETTING_STARTED.md). It
+walks through writing an actual mod, from "hello log" to reading and changing
+game state, step by step.
 
-| Path | Purpose |
-| --- | --- |
-| `mod/lifecycle/mod_runtime.cpp` | Startup, main-thread updates, scene events, and shutdown. |
-| `mod/hooks/mod_hooks.cpp` | Hook installation and removal. |
-| `mod/lifecycle/mod_network.cpp` | HTTP configuration and policy. |
-| `mod/support/mod_log.cpp` | Shared mod logging. |
-| `mod/config/mod_config.h` | Mod identity and settings. |
-| `mod/ui/theme.h` | UI styling. |
+Once you know the basics, [docs/SDK_HANDBOOK.md](docs/SDK_HANDBOOK.md) is the
+full reference: object search, threading rules, hooks, the render/highlight
+pipeline, caching, and a diagnostics chapter for when something doesn't work.
+[ARCHITECTURE.md](ARCHITECTURE.md) covers how URKit itself is put together,
+and [docs/DEV_MCP.md](docs/DEV_MCP.md) covers the AI-assistant MCP server.
 
-Files under `sdk/`, `mod/generated/`, and the native hook support are refreshed
-by the generator. Files under `mod/ui/` are created once and then preserved, so
-menu and widget changes survive SDK updates. Keep unrelated features in separate
-files under `mod/` so generated infrastructure remains replaceable.
+Updating an existing project, migrating a hand-patched SDK, or automating the
+updater from a script: that's all in the handbook's first chapter.
 
-## Update an existing project
+## Security software and false positives
 
-Run `urk-updater.exe`, choose the generated `project` directory, and select
-**Check Project**. The result lists every URKit-managed file that would be
-added (`+`) or refreshed (`~`). **Update Project** displays that same list in a
-confirmation dialog before it creates a backup under `.urk/backups/` and
-updates the files. User-owned files, such as `mod/lifecycle/mod_runtime.cpp`,
-are preserved.
+The proxy loaders and `URKitInjector.dll` load into a game process and can
+install API hooks, which is normal mod-loader behavior, but it can trip
+antivirus heuristics. A detection alone doesn't mean a release is malicious.
 
-Use **Check Updater** to look for a newer `urk-updater.exe` release. It only
-downloads the official GitHub release asset after confirmation, verifies its
-published SHA-256 digest, replaces itself through a short-lived helper process,
-and restarts. Every published release must therefore include `urk-updater.exe`;
-the public-release staging target does this automatically.
-
-The same flow is available for automation:
-
-```powershell
-./urk-updater.exe --project C:\Games\Example\urk-sdk-output\MyMod\project --check
-./urk-updater.exe --project C:\Games\Example\urk-sdk-output\MyMod\project --update
-./urk-updater.exe --project C:\Path\To\CustomMod --stage-sdk
-./urk-updater.exe --check-updater
-```
-
-Projects generated by current SDK versions contain `.urk/project.ini`. Older
-projects are detected from their generated SDK and CMake deployment settings;
-the updater writes the manifest when it completes their first update. The
-updater refuses to downgrade a project created by a newer SDK.
-
-### Safe SDK migration
-
-New generated projects record SHA-256 baselines for replaceable generated files
-in `.urk/generated-files.ini`. An update refreshes only files that still match
-their baseline. If a generated file was edited, the updater leaves the project
-unchanged and writes a complete candidate under `.urk/updates/` for review.
-
-Projects created before this ledger are staged on their first update instead of
-being overwritten. Custom projects with both Mono and IL2CPP SDKs, including
-UnityRuntimeExplorer, can use `--stage-sdk`; it creates one candidate per
-backend without requiring a generated-project manifest or changing the project.
-
-## Runtime notes
-
-- Unity calls belong on the Unity main thread.
-- Cache scene lookups and clear borrowed Unity handles on scene changes.
-- Check `Unity::last_error()` after an unexpected empty or zero result.
-- Detach hooks and release mod-owned resources before unload.
-- DX11, DX12, and OpenGL overlays are supported. Vulkan overlays are not.
-
-Loader API tables and context structures are versioned and append-only. Mods
-must check the advertised `version` and `size` before accessing newer fields.
-The public ABI is defined in `sdk/mod_sdk.h`.
-
-See the [URKit SDK Handbook](docs/SDK_HANDBOOK.md) for GameObject/component
-access, custom bindings, threading, hooks, and diagnostics. Its highlight
-chapter documents how overlay draw commands are
-projected and submitted through the generated DirectX 11, DirectX 12, or OpenGL
-render path. Internal components are described in
-[ARCHITECTURE.md](ARCHITECTURE.md).
-
-## AI-assisted mod development
-
-`urk-dev-mcp.exe` exposes the same local MCP tools to Codex, Claude, and other
-stdio-capable MCP clients. It reads the generated project's `.urk/project.ini`,
-uses only declared CMake presets, verifies deployment, returns bounded URKit
-logs, and connects to `URKitDevBridge.dll` for runtime status and tests.
-
-Copy `URKitDevBridge.dll` to the target game's `Mods` directory, then configure
-the MCP client with the generated mod project's root:
-
-```powershell
-urk-dev-mcp.exe --project C:\Games\Example\urk-sdk-output\MyMod\project
-```
-
-Runtime tests use the fixed C ABI in `sdk/dev_test.h`. See
-[URKit Development MCP](docs/DEV_MCP.md) for client configuration, test exports,
-security boundaries, and troubleshooting.
-
-For loader and startup failures, inspect `URKit_logs.log` beside the game
-executable. If the file does not exist, verify that the game imports the proxy
-you installed.
+Only download releases from this repository, and check the published SHA-256
+digest. Release binaries are self-signed for tamper identification, not as a
+trust signal: Windows won't trust that certificate by default. Don't disable
+your antivirus to run URKit. If you get a false positive, report it to the
+vendor (or open an issue here) with the detection name, the file, and its
+SHA-256 digest.
 
 URKit is available under the [MIT License](LICENSE).

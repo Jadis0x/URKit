@@ -1,22 +1,24 @@
 # URKit SDK Handbook
 
-This handbook is the API usage reference for generated URKit mods. It covers
-runtime ownership, Unity object access, managed members, threading, hooks,
-unload safety, and the generated native overlay. Code examples use fictional
-game metadata and compile against the generated SDK surface.
+This is the API reference for generated URKit mods: object access, managed
+members, threading, hooks, unload safety, and the native overlay. It's not
+meant to be read top to bottom. New to URKit? Read
+[Getting Started](GETTING_STARTED.md) first, then come back here when you
+need a specific answer.
 
-Game, assembly, namespace, class, field, property, and method names in the
-examples are fictional. Replace them with metadata from the target game.
+Every game name, assembly, namespace, class, field, and method below is made
+up. Swap them for whatever your target game actually uses. `ModRuntime`,
+`ModHooks`, `ModLog`, and `Unity::` are the real generated/SDK names though;
+everything else (feature names, wrapper names, cache names) is just an
+example.
 
-`ModRuntime`, `ModHooks`, `ModLog`, and `Unity::` belong to the generated project
-or public SDK. Feature, wrapper, cache, and hook names are illustrative.
-
-A generated mod DLL is a URKit loader plugin. Load it through a URKit proxy or
-`URKitInjector.dll`; do not inject it directly.
+One thing worth repeating: a generated mod DLL is a URKit loader plugin, not
+something you inject on its own. Load it through a URKit proxy or
+`URKitInjector.dll`.
 
 ## Core API workflow
 
-A feature that reads or modifies Unity state follows this API flow:
+Almost every feature you'll write reduces to the same flow:
 
 ```text
 find GameObject
@@ -37,8 +39,8 @@ The primary handle types and their operations are:
 | `Unity::Object` | Generic managed Unity object handle | field/property/method helpers |
 | `HighlightId` | A native overlay entry, not a Unity object | `enqueue_set_world_point()` |
 
-The following example resolves a GameObject and retrieves an attached built-in
-component:
+Here's that flow's first two steps, resolving a GameObject and getting a
+built-in component off it:
 
 ```cpp
 Unity::clear_error();
@@ -68,9 +70,10 @@ if (!animator) {
 `GetComponent` never performs a global scene search. It searches the component
 list attached to that specific GameObject. If the component is on a child or a
 parent, use the corresponding `InChildren` or `InParent` call described in
-[Get components without guessing](#7-get-components-without-guessing).
+[GameObject and Component APIs](#7-gameobject-and-component-apis).
 
-For highlights, remember this separate pipeline:
+Highlights (world-space overlay boxes/markers) are a separate pipeline, don't
+confuse it with the one above:
 
 ```text
 Unity main-thread feature code
@@ -89,15 +92,16 @@ threading contract is documented in
 
 ## Runtime model
 
-A mod has five different jobs:
+A mod splits into five jobs:
 
-1. URKit loads the DLL and connects the lifecycle callbacks.
-2. `ModRuntime` provides a place where Unity work can run on the main thread.
-3. Game bindings describe the game's managed types as small C++ wrappers.
-4. Feature modules decide what the mod should do.
-5. The menu collects user intent; it does not operate on Unity objects itself.
+1. URKit loads the DLL and wires up the lifecycle callbacks.
+2. `ModRuntime` gives you a place to run Unity work on the main thread.
+3. Game bindings wrap the game's managed types in small C++ classes.
+4. Feature modules decide what the mod actually does.
+5. The menu just collects user intent. It never touches a Unity object
+   directly.
 
-The data flow is:
+Data flows one way:
 
 ```text
 ImGui menu
@@ -135,7 +139,7 @@ Core rules:
 
 ## 1. Tools and project generation
 
-On Windows x64 you need:
+On Windows x64, you'll need:
 
 - CMake 3.28 or newer;
 - Ninja;
@@ -155,14 +159,14 @@ Generate a project from the UI or from a terminal:
 
 ### Update an existing project
 
-Use `urk-updater.exe` to update an existing generated `project` directory. It
-checks the backend and SDK ABI version first and shows the exact URKit-managed
-file list: `+` means a file will be added and `~` means it will be refreshed.
-Selecting **Update Project** repeats that list in a confirmation dialog, then
-backs up URKit-managed files under `.urk/backups/` and rewrites the generated
-SDK, generated lifecycle, generated hook, and build support files. Files under
-`mod/ui/` are seeded for new projects and preserved on updates together with the
-other user-owned source files.
+`urk-updater.exe` updates an existing generated `project` directory. It
+checks the backend and SDK ABI version first, then shows you the exact
+URKit-managed file list: `+` for a file that'll be added, `~` for one that'll
+be refreshed. **Update Project** shows that same list in a confirmation
+dialog, backs up URKit-managed files under `.urk/backups/`, then rewrites the
+generated SDK, lifecycle, hook, and build support files. `mod/ui/` is seeded
+once for new projects and left alone on every update after that, same as the
+rest of your own files.
 
 ```powershell
 ./urk-updater.exe --project C:\Games\Example\urk-sdk-output\FirstSteps\project --check
@@ -178,17 +182,17 @@ generated SDK folders and `URK_DEPLOY_DIR` setting are intact.
 
 ### Generated-file ownership and migrations
 
-Projects generated by this SDK version contain `.urk/generated-files.ini`,
-which records the SHA-256 baseline of each replaceable generated file. Ordinary updates replace only files
-that still match this baseline. If a generated file was edited, the updater
-does not overwrite it: it stages a complete candidate under `.urk/updates/` and
-marks the conflict with `!`.
+Every project this SDK version generates carries `.urk/generated-files.ini`:
+a SHA-256 baseline for each replaceable generated file. An ordinary update
+only touches files that still match that baseline. Edit a generated file
+yourself, and the updater won't overwrite it: it stages a full candidate
+under `.urk/updates/` and marks the conflict with `!` instead.
 
-Projects without this ledger are handled conservatively. Their first update is
-staged for manual migration, so custom SDK patches are never silently replaced.
-For custom projects with both `sdk/mono` and `sdk/il2cpp`, use `--stage-sdk`.
-It creates independent candidates without requiring a standard URKit manifest
-and without modifying the project.
+No ledger means no assumptions. A project without one gets its first update
+staged for you to migrate by hand, so a custom SDK patch never gets silently
+clobbered. Got a custom project with both `sdk/mono` and `sdk/il2cpp`? Use
+`--stage-sdk`, it builds independent candidates without needing a standard
+URKit manifest or touching the project at all.
 
 The desktop updater also has a **Check Updater** button. It checks the latest
 official GitHub release, asks for confirmation, verifies the published SHA-256
@@ -230,26 +234,24 @@ cmake --build --preset clang-release --parallel
 
 The equivalent MSVC release preset is `msvc-release`.
 
-CMake copies the resulting DLL to the game's `Mods` directory. After adding a
-new `.cpp` or `.h` file, run the configure command again. Source discovery is
-recursive under `mod/`, but CMake still needs to regenerate its source list.
+CMake copies the resulting DLL straight into the game's `Mods` directory. One
+gotcha: adding a new `.cpp` or `.h` file means running the configure command
+again. Source discovery under `mod/` is recursive, but CMake still has to
+regenerate its source list to notice the new file.
 
 ### Verify the generated project
 
-Before adding features, start the game and open `URKit_logs.log` beside the game
-executable. Confirm that:
+Before writing any feature code, start the game and open `URKit_logs.log`
+beside the game executable. Look for four things: did URKit start, was the
+mod DLL discovered, does the selected backend match the game, and did the
+mod initialize.
 
-- Did URKit start?
-- Was the mod DLL discovered?
-- Does the selected backend match the game?
-- Did the mod initialize?
-
-If no log file exists, verify that the game imports the selected proxy DLL.
-Install one proxy only and keep its original filename.
+No log file at all means the game isn't importing the proxy DLL you
+installed. Install exactly one proxy, and don't rename it.
 
 ## 2. Know which files you own
 
-Most mod work is confined to a small part of the generated project:
+Most of your actual work happens in a small corner of the generated project:
 
 ```text
 project/
@@ -283,13 +285,15 @@ File ownership matters:
 | `mod/ui/theme.h` | Change the visual theme here. |
 | Your own files under `mod/` | Put bindings, state, and features here. |
 
-`menu.h`, `highlight.h`, `widgets.h`, `localization.h`, and the default tabs are
-seeded by the generator but preserved by later regeneration. Keeping larger
-features in separate files still makes upstream UI changes easier to compare
-and adopt deliberately.
+`menu.h`, `highlight.h`, `widgets.h`, `localization.h`, and the default tabs
+get seeded once and then left alone on every regeneration after that. Still
+worth keeping larger features in their own files anyway, it makes comparing
+and adopting upstream UI changes a deliberate choice instead of a merge
+headache.
 
-Keep `mod_runtime.cpp` focused on lifecycle coordination. Move object discovery,
-settings, and UI code into dedicated modules as the project grows:
+`mod_runtime.cpp` should stay about lifecycle coordination, nothing else. As
+the project grows, push object discovery, settings, and UI code into their
+own modules:
 
 ```text
 mod/
@@ -303,7 +307,7 @@ mod/
 
 ## 3. Record the metadata you actually need
 
-Accessing a game type usually requires four pieces of information:
+Getting at a game type usually comes down to four pieces of information:
 
 | Item | Example | Meaning |
 | --- | --- | --- |
@@ -325,9 +329,10 @@ Unity::TypeRef type{
 ### Mono and IL2CPP
 
 Mono games expose managed assemblies that can be inspected directly. IL2CPP
-games require the native output and metadata to be considered together. If you
-have the URKit IL2CPP Explorer package, inspecting types, fields, properties,
-and method signatures at runtime is the most reliable starting point.
+games require the native output and metadata to be considered together. Don't
+have an external decompiler or dumper for the target game? The generated SDK
+ships its own runtime inspector for exactly this: see
+[Inspect an unfamiliar type at runtime](#81-inspect-an-unfamiliar-type-at-runtime).
 
 Record the metadata for every type the mod uses:
 
@@ -341,20 +346,19 @@ Property      : IsReady -> System.Boolean
 Method        : Refill(System.Single) -> System.Void
 ```
 
-Verify these details explicitly:
+A few things worth double-checking before you trust any of it: a field and a
+property aren't interchangeable, static and instance members use different
+access paths, `System.Int32` and `System.Single` are different layouts,
+overloads with the same name can still share a parameter count, and a C#
+namespace has nothing to do with a Unity hierarchy path.
 
-- A field and a property are not interchangeable.
-- Static and instance members use different access paths.
-- `System.Int32` and `System.Single` are different layouts.
-- Overloads with the same name may also have the same parameter count.
-- A C# namespace and a Unity hierarchy path are unrelated concepts.
-
-Game updates can change any of this metadata. If lookup fails after an update,
-verify the metadata again. Removing the error check only hides the real cause.
+A game update can silently change any of this. If a lookup that used to work
+suddenly fails, re-verify the metadata before you do anything else. Deleting
+the error check just hides the real cause; it doesn't fix it.
 
 ## 4. Understand the Unity object model
 
-Most scene objects follow this shape:
+Most scene objects look like this:
 
 ```text
 GameObject "Hero"
@@ -364,18 +368,18 @@ GameObject "Hero"
 `-- Animator                  Unity component
 ```
 
-A `GameObject` is the scene container. Components hold behaviour and state.
-`Transform` is also a component; it owns hierarchy, position, rotation, and
-scale.
+`GameObject` is the scene container. Components hold the behaviour and
+state. `Transform` is a component too; it owns hierarchy, position,
+rotation, and scale.
 
-URKit wrappers do not own Unity objects:
+URKit wrappers don't own the Unity objects they point to:
 
 ```cpp
 Unity::GameObject actor;
 ```
 
-This does not copy a Unity object. It only stores a borrowed handle to an object
-owned by Unity. There are two different checks:
+That's a borrowed handle, not a copy of anything Unity owns. Which means
+there are two separate things to check, not one:
 
 ```cpp
 if (!actor) {
@@ -387,16 +391,16 @@ if (actor && !actor.alive()) {
 }
 ```
 
-Scene transitions commonly produce both cases, but they are not the only cause.
-An object can be destroyed and replaced while the active scene remains
-unchanged. Call `alive()` on long-lived cached objects and reset wrappers to
-`{}` from scene-change callbacks when those callbacks are available.
+Scene transitions cause both of these a lot, but they're not the only cause:
+an object can get destroyed and replaced with the active scene never
+changing at all. Call `alive()` on anything you cache for long, and reset
+wrappers to `{}` from scene-change callbacks when the game gives you those.
 
 ## 5. Verify Unity access
 
-Start by confirming that managed Unity access works from the correct callback.
-
-Use this as the initial shape of `mod/lifecycle/mod_runtime.cpp`:
+Before writing any real feature, confirm managed Unity access actually works
+from the right callback. Use this as the starting shape of
+`mod/lifecycle/mod_runtime.cpp`:
 
 ```cpp
 #include "mod_runtime.h"
@@ -482,25 +486,26 @@ void stop() {
 } // namespace ModRuntime
 ```
 
-`MainCharacter` is a placeholder tag. If the game does not define it,
-`FindWithTag` reports an error. Continue once the scene name, object name, and
-position appear in the log.
+`MainCharacter` is a placeholder tag; if the game doesn't define it,
+`FindWithTag` just reports an error. Don't move on until the scene name,
+object name, and position actually show up in the log.
 
-`URK_SceneInfo::buildIndex` is `-1` when an IL2CPP player strips Unity's
-optional build-index binding. Scene-loaded and active-scene-changed callbacks
-remain available; use the scene name and handle when the build index is
-unavailable.
+Seeing `URK_SceneInfo::buildIndex` as `-1`? That's normal on an IL2CPP player
+that stripped Unity's optional build-index binding. Scene-loaded and
+active-scene-changed callbacks still work fine; just use the scene name and
+handle instead of the index.
 
-The probe repeats its search because the character can spawn after the scene
-callback. Production code should add a search interval and cache, as shown
-later.
+Why does the probe keep searching instead of stopping after one try? Because
+the character can spawn after the scene callback already fired. Real code
+needs a search interval and a cache, which is exactly what's next.
 
 ### Scene callbacks are hints, not object-readiness signals
 
-Some games keep one scene active and spawn gameplay objects much later. Do not
-wait for a scene callback before discovery. Poll at a bounded interval, cache
-the result, and return to discovery when `alive()` fails. Scene callbacks only
-invalidate the cache earlier.
+Some games keep one scene active for the whole session and spawn gameplay
+objects much later. Waiting for a scene callback before you start looking is
+the wrong instinct here. Poll on a bounded interval, cache what you find, and
+fall back to discovery again the moment `alive()` says no. Scene callbacks
+only get to invalidate the cache early; they don't get to gate discovery.
 
 ```cpp
 #include <chrono>
@@ -545,15 +550,16 @@ void ModRuntime::on_scene_changed(
 }
 ```
 
-`OnSceneLoaded` and `OnSceneChanged` being resolved only means the exports were
-found in the mod DLL. Use `URK::has_scene_events()` to check whether the runtime
-can deliver them. The polling path above remains valid when it cannot. Capture
-`Unity::last_error()` after a failed lookup and throttle repeated log output.
+One catch: `OnSceneLoaded` and `OnSceneChanged` being resolved only proves the
+exports exist in the mod DLL, not that the runtime will actually call them.
+Check `URK::has_scene_events()` for that. If it says no, the polling path
+above still works fine on its own. Either way, capture `Unity::last_error()`
+after a failed lookup, and throttle the log output instead of spamming it.
 
 ## 6. Choose the right object search
 
-There is no universal search call. Use the most stable fact you know about the
-object.
+There's no one-size-fits-all search call here. Pick based on the most stable
+fact you actually know about the object.
 
 ### Name or hierarchy path
 
@@ -561,8 +567,8 @@ object.
 Unity::GameObject altar = Unity::GameObject::Find("World/Temple/Altar");
 ```
 
-This usually finds active objects only. Names are not required to be unique. A
-full hierarchy path is safer than a bare name.
+This usually only finds active objects, and names aren't guaranteed unique. A
+full hierarchy path beats a bare name every time.
 
 If you already have the parent, prefer a relative lookup:
 
@@ -631,9 +637,10 @@ const auto objects =
     Unity::SceneManager::FindSceneGameObjectsFiltered(flags);
 ```
 
-The `FindObjectsOfTypeAll` family is broader than the current scene. It can
-include assets, hidden objects, inactive objects, or persistent objects. Do not
-treat its result as "everything in this scene" without filtering it.
+`FindObjectsOfTypeAll` casts a much wider net than "the current scene": it can
+pull in assets, hidden objects, inactive objects, persistent objects, all of
+it. Don't treat its raw result as "everything in this scene" until you've
+filtered it down.
 
 You can also walk loaded scenes and roots yourself:
 
@@ -660,7 +667,7 @@ for (const Unity::Scene& scene : Unity::SceneManager::GetLoadedScenes()) {
 
 ## 7. GameObject and Component APIs
 
-GameObject, Component, and Transform handles are related as follows:
+Here's how GameObject, Component, and Transform handles relate to each other:
 
 ```text
 GameObject "Hero"                    Unity::GameObject hero
@@ -670,15 +677,15 @@ GameObject "Hero"                    Unity::GameObject hero
 `-- HeroVitals                       hero.GetComponent<HeroVitals>()
 ```
 
-`GameObject::GetComponent` looks only on the receiving GameObject. It does not
-search the scene and it does not automatically inspect children or parents.
-The return value is another non-owning wrapper. A null wrapper means no matching
-component was returned.
+`GetComponent` only ever looks at the GameObject you called it on. No scene
+search, no automatic walk up to parents or down to children. What comes
+back is another non-owning wrapper, and a null one just means nothing
+matched.
 
 ### Attached built-in component
 
-Built-in components already have `unity_type()` metadata in the generated SDK,
-so use the typed form:
+Built-in components already carry `unity_type()` metadata in the generated
+SDK, so use the typed form directly:
 
 ```cpp
 Unity::GameObject actor =
@@ -698,13 +705,13 @@ if (!animator) {
 }
 ```
 
-Every GameObject has a Transform, so `actor.transform()` is the clearest form
-for it. `actor.GetComponent<Unity::Transform>()` is also valid, but adds no
-value in normal code.
+Every GameObject has a Transform, so just call `actor.transform()`.
+`actor.GetComponent<Unity::Transform>()` technically works too, it just
+doesn't buy you anything.
 
 ### Attached game-specific component
 
-When no typed wrapper exists, supply the managed type identity:
+No typed wrapper yet? Give it the managed type identity directly:
 
 ```cpp
 Unity::clear_error();
@@ -721,14 +728,14 @@ if (!vitals) {
 }
 ```
 
-These three strings describe a managed type. They are not a file-system path,
-a Unity hierarchy path, or a GameObject name. The call resolves that type and
-then asks the target GameObject for the attached component of that type.
+Those three strings describe a managed type, full stop. Not a file path, not
+a Unity hierarchy path, not a GameObject name. The call resolves that type,
+then asks the target GameObject whether it has one attached.
 
 ### Component on a child or parent
 
-Use child/parent search only when the component is not attached to the current
-GameObject:
+Reach for child/parent search only once you've confirmed the component isn't
+on the current GameObject:
 
 ```cpp
 // `true` includes inactive child GameObjects.
@@ -745,12 +752,13 @@ Unity::Animator owner =
     visual.GetComponentInParent<Unity::Animator>(true);
 ```
 
-The searches include the starting GameObject as Unity does; “children” and
-“parents” do not mean “strict descendants/ancestors only.” The Boolean controls
-whether inactive GameObjects participate. It does not turn a same-object lookup
-into a global scene search.
+Same quirk Unity itself has: the search includes the starting GameObject, so
+"children" and "parents" here don't mean strict descendants or ancestors
+only. The boolean just decides whether inactive GameObjects get considered;
+it doesn't turn a local lookup into a scene-wide one.
 
-For a game-specific type, the untyped variants use the same metadata triplet:
+Game-specific type instead of a built-in? Same metadata triplet, untyped
+form:
 
 ```cpp
 Unity::Object weapon = actor.GetComponentInChildren(
@@ -762,8 +770,9 @@ Unity::Object controller = actor.GetComponentInParent(
 
 ### One component versus every component
 
-`GetComponent` returns the first matching component. Use the plural APIs when a
-GameObject or hierarchy can contain several matches:
+`GetComponent` gives you the first match and stops there. Reach for the
+plural APIs whenever a GameObject or hierarchy could plausibly hold more than
+one:
 
 ```cpp
 const std::vector<Unity::Renderer> local_renderers =
@@ -780,16 +789,17 @@ for (const Unity::Renderer& renderer : all_renderers) {
 }
 ```
 
-Plural component queries first use Unity's native-backed
-`GetComponentsInternal` implementation. This matters in stripped IL2CPP players,
-where a public `GetComponents*` method can remain visible in metadata even though
-its managed wrapper has no callable body. The SDK retains the public overloads as
-compatibility fallbacks and reports both failures through `Unity::last_error()` if
-neither path succeeds.
+These plural queries try Unity's native-backed `GetComponentsInternal` first.
+That matters on a stripped IL2CPP player, where a public `GetComponents*`
+method can still show up in metadata with no callable body behind it. The SDK
+keeps the public overloads around as a fallback for exactly that case, and
+if both paths fail, `Unity::last_error()` tells you about both failures, not
+just the last one.
 
-Use the default `Object` result wrapper when the GameObject can contain unrelated
-component types. URKit queries Unity with `UnityEngine.Component` in this case and
-returns each heterogeneous component as an `Object`:
+When a GameObject can hold unrelated component types, ask for the default
+`Object` wrapper instead of a specific one. URKit queries Unity with
+`UnityEngine.Component` and hands back each mismatched component as a plain
+`Object`:
 
 ```cpp
 for (const Unity::Object& component : actor.GetComponents<>()) {
@@ -797,12 +807,13 @@ for (const Unity::Object& component : actor.GetComponents<>()) {
 }
 ```
 
-The same rule applies to the rooted and hierarchy variants. Supplying a concrete
-wrapper such as `Renderer` still uses that wrapper's Unity type as the filter.
+Same rule for the rooted and hierarchy variants: pass a concrete wrapper like
+`Renderer` and its Unity type becomes the filter, same as above.
 
-The vector-returning overloads preserve the familiar API and keep the managed
-result array rooted while it is decoded. For a scan that performs several managed
-calls while iterating, keep the rooted lease for the whole loop:
+The vector-returning overloads keep the familiar API, rooting the managed
+result array only long enough to decode it. If your loop makes several
+managed calls per iteration, hold onto the rooted lease for the whole loop
+instead:
 
 ```cpp
 auto renderers =
@@ -820,19 +831,20 @@ for (const Unity::Renderer& renderer : renderers) {
 ```
 
 `GetComponentsRooted`, `GetComponentsInChildrenRooted`, and
-`GetComponentsInParentRooted` are move-only RAII leases. Destroying or resetting
-the lease frees its strong GC handle. A valid lease may be empty; test the lease
-itself to distinguish an empty Unity result from an API failure. The lease keeps
-managed references reachable, but it does not prevent Unity from destroying a
-native object, so `alive()` remains necessary when the hierarchy can change.
+`GetComponentsInParentRooted` return move-only RAII leases: destroy or reset
+one and its strong GC handle goes with it. A valid lease can still be empty,
+so test the lease itself, not its contents, to tell "Unity found nothing"
+apart from "the API call failed." The lease keeps managed references
+reachable, but Unity can still destroy the underlying native object out from
+under it, so `alive()` doesn't go away just because you're holding a lease.
 
-Do not call `GetComponentsInChildren` every frame just to rediscover an
-unchanged hierarchy. Cache the wrappers, validate long-lived entries with
-`alive()`, and rebuild the cache after scene or hierarchy changes.
+And don't call `GetComponentsInChildren` every frame to rediscover a
+hierarchy that hasn't changed. Cache the wrappers, check `alive()` on the
+long-lived ones, and only rebuild after a scene or hierarchy change.
 
 ### GameObject and Component conversion
 
-The relationship works in both directions:
+This relationship goes both directions:
 
 ```cpp
 Unity::GameObject owner = animator.gameObject();
@@ -840,9 +852,9 @@ Unity::Transform owner_transform = animator.transform();
 Unity::Rigidbody sibling = animator.GetComponent<Unity::Rigidbody>();
 ```
 
-Calling `GetComponent` on a `Component` delegates to its owning GameObject. The
-last line therefore asks for a sibling `Rigidbody`, not a component nested
-inside the Animator.
+Calling `GetComponent` on a `Component` just delegates to its owning
+GameObject, so the last line above asks for a sibling `Rigidbody`, not
+something nested inside the Animator.
 
 ### Component lookup reference
 
@@ -860,17 +872,15 @@ inside the Animator.
 
 ### Null component result
 
-A null result usually means one of these facts is wrong:
+Got null back? One of these five is almost always the reason: the target
+GameObject isn't what you think it is, the component actually lives on a
+child or parent, the assembly image, namespace, or class name is wrong, the
+object or component hasn't spawned yet (or is inactive), or a cached
+GameObject is still pointing at a previous scene.
 
-1. The target GameObject is not the object you think it is.
-2. The component lives on a child or parent instead of the same object.
-3. The assembly image, namespace, or class name is wrong.
-4. The object/component has not spawned or is inactive.
-5. A cached GameObject belongs to a previous scene.
-
-Keep the error adjacent to the lookup so another Unity call cannot overwrite
-it. After defining the typed binding in the next subsection, the check looks
-like this:
+Grab the error right next to the lookup, before some other Unity call gets a
+chance to overwrite it. With the typed binding from the next subsection, that
+looks like this:
 
 ```cpp
 Unity::clear_error();
@@ -886,14 +896,15 @@ if (!vitals) {
 }
 ```
 
-An empty result is a lookup failure until the exact object identity, hierarchy,
-and managed type metadata have been verified. It must not be converted into a
-made-up default value.
+Treat an empty result as a failed lookup until you've verified the exact
+object identity, hierarchy, and managed type metadata, not before. Never turn
+it into a made-up default value just to move on.
 
 ### Write a typed game binding
 
-If you use a game-specific type in more than one place, stop repeating strings
-and write a binding. Create `mod/bindings/hero_vitals.h`:
+Using a game-specific type in more than one place? Stop retyping the same
+three strings everywhere and write a binding instead. Create
+`mod/bindings/hero_vitals.h`:
 
 ```cpp
 #pragma once
@@ -937,14 +948,14 @@ public:
 } // namespace DemoBindings
 ```
 
-Typed component access now works:
+Typed component access just works now:
 
 ```cpp
 DemoBindings::HeroVitals vitals =
     actor.GetComponent<DemoBindings::HeroVitals>();
 ```
 
-The C++ base must match the real managed kind:
+Just make sure the C++ base actually matches the real managed kind:
 
 | Managed type | C++ wrapper base |
 | --- | --- |
@@ -953,9 +964,10 @@ The C++ base must match the real managed kind:
 | `ScriptableObject` subclass | `Unity::ScriptableObject` |
 | Ordinary managed reference type | `Unity::Object` |
 
-C++ inheritance does not cast the managed object or create a C# subclass. It
-only describes which wrapper operations are valid for the handle. Do not derive
-an ordinary data class from `MonoBehaviour` just to gain helper methods.
+This C++ inheritance doesn't cast the managed object or create a C# subclass;
+it just tells the wrapper which operations are valid for that handle. Don't
+derive an ordinary data class from `MonoBehaviour` just to borrow its helper
+methods.
 
 ## 8. Read fields, properties, and methods correctly
 
@@ -1003,9 +1015,10 @@ const bool active = component.GetProperty<bool>("IsActive");
 component.SetProperty("IsActive", true);
 ```
 
-A property getter or setter is a managed method call. `SetProperty` fails for a
-read-only property. Calling `GetProperty` for a field, or `GetField` for a
-property, is not a valid fallback.
+Under the hood a property getter or setter is just a managed method call.
+`SetProperty` on a read-only property fails, as it should. And `GetProperty`
+on an actual field (or `GetField` on an actual property) isn't a fallback
+that happens to work; it's just wrong.
 
 ### Method
 
@@ -1025,8 +1038,9 @@ component.CallExact<void>(
     true);
 ```
 
-For a `void` method, `TryCallExact` is the less error-prone form because its
-return value reports lookup, marshalling, and managed invocation failure:
+For a `void` method, reach for `TryCallExact` instead: its return value
+actually tells you whether lookup, marshalling, or the managed call itself
+failed.
 
 ```cpp
 if (!Unity::require_main_thread("Health.Heal") ||
@@ -1036,14 +1050,14 @@ if (!Unity::require_main_thread("Health.Heal") ||
 }
 ```
 
-A successful runtime invocation means that the managed method returned without
-an exception. It cannot prove that game state changed: the method may clamp the
-value, reject it internally, or have its result overwritten later in the frame.
-Read a relevant field or property after the call when a state-change
-postcondition matters.
+A successful call just means the managed method returned without throwing.
+That's it, it doesn't prove anything about game state: the method might
+clamp the value, reject it silently, or have its result overwritten later
+the same frame. If the state change actually matters to your feature, read
+the field or property back afterward and check.
 
-The parameter list does not include the return type. Use complete managed type
-names:
+The parameter list never includes the return type, just the arguments, and
+it wants the full managed type name for each one:
 
 | C++ | Managed signature |
 | --- | --- |
@@ -1054,7 +1068,7 @@ names:
 | `std::string_view` | `System.String` |
 | `Unity::Vector3` | `UnityEngine.Vector3` |
 
-Request an appropriate wrapper when a method returns a managed object:
+If a method hands back a managed object, ask for the right wrapper type:
 
 ```cpp
 Unity::GameObject target =
@@ -1068,11 +1082,97 @@ const auto markers =
     component.CallArrayExact<Unity::Transform>("GetMarkers", {});
 ```
 
+### Static method or property
+
+`StaticGetField` and `StaticSetField` only cover fields. A static property
+getter, a static factory method, or any other static method without a
+dedicated wrapper goes through `URK::Unity::detail::InvokeStatic<Ret>(type,
+methodName, args...)` instead. This is the same internal call the SDK itself
+uses for `Object::Instantiate` and `Object::Destroy`.
+
+A C# property compiles to a getter method with a `get_` prefix (and a setter
+with `set_`), so a static property reads exactly like any other static
+method call. This example reads `Photon.Bolt.BoltNetwork.IsServer` in a game
+built on the Photon Bolt networking library:
+
+```cpp
+// bolt.dll
+// Photon.Bolt.BoltNetwork
+// public static bool IsServer => BoltCore.isServer;
+
+inline constexpr Unity::TypeRef kBoltNetworkType{
+    "bolt.dll", "Photon.Bolt", "BoltNetwork"};
+
+bool IsHost() {
+    Unity::clear_error();
+    const bool is_server =
+        URK::Unity::detail::InvokeStatic<bool>(kBoltNetworkType, "get_IsServer");
+
+    if (const char* error = Unity::last_error(); error && error[0]) {
+        ModLog::warn("BoltNetwork.get_IsServer failed: %s", error);
+        return false;
+    }
+    return is_server;
+}
+```
+
+Define the type once with `TypeRef`, then call the generated getter by name.
+The same pattern works for any static property once you know its managed
+type.
+
+A static factory method that returns an object works the same way, just with
+a real return type instead of `bool`. Here's a complete example built on
+that: creating a Photon Bolt event and sending it to another player. The
+target game defines `Photon.Bolt.ReviveEvent` in `bolt.user.dll`:
+
+```csharp
+public static ReviveEvent Create();
+
+public BoltEntity Player { get; set; }
+public BoltEntity Reviver { get; set; }
+```
+
+```cpp
+void Revive(Unity::GameObject target_player, Unity::GameObject local_player) {
+    if (!target_player || !local_player)
+        return;
+
+    Unity::Object target_entity =
+        target_player.GetComponent("bolt.dll", "Photon.Bolt", "BoltEntity");
+    Unity::Object reviver_entity =
+        local_player.GetComponent("bolt.dll", "Photon.Bolt", "BoltEntity");
+
+    if (!target_entity || !reviver_entity)
+        return;
+
+    constexpr Unity::TypeRef revive_event_type{
+        "bolt.user.dll", "Photon.Bolt", "ReviveEvent"};
+
+    Unity::Object revive_event =
+        URK::Unity::detail::InvokeStatic<Unity::Object>(revive_event_type, "Create");
+    if (!revive_event)
+        return;
+
+    revive_event.CallExact<void>("set_Player", {"Photon.Bolt.BoltEntity"}, target_entity);
+    revive_event.CallExact<void>("set_Reviver", {"Photon.Bolt.BoltEntity"}, reviver_entity);
+    revive_event.Call<void>("Send");
+}
+```
+
+`target_player` is whoever you want to revive. `local_player` is your own
+player's GameObject; URKit has no notion of "the local player", so resolving
+and caching that handle is on you, and how you do it depends entirely on the
+game. The managed side of this call is four steps: `ReviveEvent.Create()`
+through `InvokeStatic`, the two property setters through `CallExact` (a C#
+property setter compiles to `set_<Name>`, the same way a getter compiles to
+`get_<Name>`), and `Send()` through a plain `Call`.
+
 ### Why a zero result is dangerous
 
-When `GetField<int>` fails, the returned `0` looks exactly like a legitimate
-value of `0`. The same ambiguity exists for `false`, `0.0f`, an empty string,
-or an empty vector. Keep error handling beside the call:
+A failed `GetField<int>` returns `0`, which looks exactly like a genuine `0`.
+Same story for `false`, `0.0f`, an empty string, an empty vector: the failure
+case and the legitimate value are indistinguishable unless you check. Keep
+the error check right next to the call:
 
 ```cpp
 Unity::clear_error();
@@ -1084,12 +1184,13 @@ if (detail && detail[0]) {
 }
 ```
 
-Another Unity call can replace the previous error, so inspect it immediately.
+And check it right away, the next Unity call you make can overwrite it.
 
 ## 8.1 Inspect an unfamiliar type at runtime
 
-If you only know the object or class name, do not guess whether a member is a
-field, property, or method. `sdk/unity/unity.h` includes the inspection helpers:
+Only know the object or class name? Don't guess whether a member is a field,
+property, or method, `sdk/unity/unity.h` ships inspection helpers that just
+tell you:
 
 ```cpp
 const Unity::TypeRef unknown_type{
@@ -1111,11 +1212,11 @@ Unity::Inspect::DumpMethods(unknown_type, [](const char* line) {
 });
 ```
 
-Capture this output once, select the correct member, and use a typed wrapper in
-normal feature code. Enumerating every member on every update is unnecessary
-reflection work.
+Run this once, pick the member you actually need, then switch to a typed
+wrapper in real feature code. Enumerating everything on every `update()` is
+just wasted reflection work.
 
-Common inspection helpers include:
+The rest of the inspection helpers:
 
 | Helper | Purpose |
 | --- | --- |
@@ -1129,14 +1230,14 @@ Common inspection helpers include:
 | `InvokeMethod` | Invoke selected method metadata |
 | `ReadArrayElement` / `SetArrayElement` | Access a supported array element |
 
-`ValueInfo` is a tagged result. Check `readable`, `kind`, and the matching value
-field before treating it as an integer, float, string, or object.
+`ValueInfo` comes back tagged, not typed: check `readable` and `kind` before
+you treat it as an integer, float, string, or object.
 
 ## 8.2 Everyday Unity helpers
 
-The generated `sdk/unity/unity_components.h` is the source of truth for the
-wrappers in your SDK version. If the SDK changes, inspect your generated header
-instead of relying on an old example.
+Your generated `sdk/unity/unity_components.h` is the real source of truth for
+whatever wrappers your SDK version has. If something here doesn't match, trust
+your generated header over this page.
 
 ### One-shot input toggle
 
@@ -1155,14 +1256,15 @@ if (!Unity::Input::available()) {
 }
 ```
 
-`GetKey` remains true while the key is held. `GetKeyDown` is usually correct for
-a toggle, and `GetKeyUp` is useful when release matters. Mouse equivalents are
-`GetMouseButton`, `GetMouseButtonDown`, and `GetMouseButtonUp`.
+`GetKey` stays true the whole time the key's held down; `GetKeyDown` is
+usually what you want for a toggle, and `GetKeyUp` matters when release is
+the trigger. Mouse has the same three: `GetMouseButton`,
+`GetMouseButtonDown`, `GetMouseButtonUp`.
 
-Always check `Unity::Input::available()` before interpreting a `false` result.
-Its boolean helpers also return `false` when legacy input is unavailable. Use a
-menu action instead, or have a native input module publish a plain request that
-`ModRuntime::update()` applies.
+Check `Unity::Input::available()` before you trust a `false`, though: the
+boolean helpers also return `false` when legacy input just isn't available at
+all. If it's not, fall back to a menu action, or have a native input module
+publish a plain request that `ModRuntime::update()` picks up.
 
 ### Time
 
@@ -1171,10 +1273,10 @@ const float frame_seconds = Unity::Time::deltaTime();
 const float real_frame_seconds = Unity::Time::unscaledDeltaTime();
 ```
 
-`deltaTime` is affected by the game's `timeScale`. Use `unscaledDeltaTime` for
-menu animation or timers that must keep moving while the game is paused. If a
-feature calls `set_timeScale`, preserve the previous value and restore it when
-the feature is disabled.
+`deltaTime` moves with the game's `timeScale`; reach for `unscaledDeltaTime`
+for menu animation or any timer that needs to keep running while the game is
+paused. If a feature ever calls `set_timeScale`, save the previous value and
+put it back when the feature turns off.
 
 ### Screen and camera projection
 
@@ -1198,8 +1300,8 @@ Related helpers include:
 - `direction_to_screen_edge`;
 - `world_visible`.
 
-Unity screen coordinates and ImGui overlay coordinates use opposite Y
-directions. The URKit projection helpers perform that conversion.
+Unity screen space and ImGui's overlay space disagree about which way Y
+points; the URKit projection helpers handle that conversion for you.
 
 ### Transform
 
@@ -1214,9 +1316,11 @@ transform.set_position({
 });
 ```
 
-Use `position` and `rotation` for world space. Use local position, rotation, and
-scale when coordinates should be relative to the parent. When changing a
-parent, choose the `SetParent(parent, worldPositionStays)` argument deliberately.
+Use `position` and `rotation` for world space, and their local equivalents
+when you actually want parent-relative coordinates. Reparenting? Think about
+the `SetParent(parent, worldPositionStays)` argument before you pass it, both
+values do something different and only one of them is probably what you
+want.
 
 ### Create, clone, and destroy objects
 
@@ -1243,10 +1347,10 @@ Unity::Object::Destroy(marker);
 marker = {};
 ```
 
-`Destroy` follows Unity's normal delayed destruction path. Use
-`DestroyImmediate` only when immediate semantics are genuinely required. Keep
-ownership of objects created by your mod in the feature that created them and
-clean them up during scene reset or shutdown.
+`Destroy` follows Unity's normal delayed path; only reach for
+`DestroyImmediate` when you genuinely need it to happen right now. And
+whatever your mod creates, keep it owned by the feature that created it, and
+clean it up on scene reset or shutdown; don't let it become an orphan.
 
 ### Built-in wrapper groups
 
@@ -1261,16 +1365,16 @@ clean them up during scene reset or shutdown.
 | Layout | `RectTransform`, layout groups, `ContentSizeFitter` |
 | Assets | `AssetBundle`, `Sprite` |
 
-If a Unity API is missing from a built-in wrapper, create a small wrapper and
-use `GetProperty` or `CallExact`, just as you would for a game type.
+Missing a Unity API from a built-in wrapper? Write a small wrapper of your
+own and use `GetProperty` or `CallExact`, exactly like you would for a game
+type.
 
 ## 9. Organize a feature
 
-The next example implements a small feature from end to end. In the fictional
-game, it raises the local character's energy back to a floor when the value
-drops too low.
+Time for a real feature, end to end. In our fictional game, it tops the local
+character's energy back up to a floor whenever it drops too low.
 
-The code is split into three responsibilities:
+Three files, three responsibilities:
 
 ```text
 mod/
@@ -1318,8 +1422,8 @@ ViewState view();
 } // namespace EnergyAssist
 ```
 
-There is no `Unity::Object` in this header. The menu never sees a managed
-handle.
+Notice there's no `Unity::Object` anywhere in that header. The menu never
+gets to see a managed handle at all.
 
 ### Feature implementation
 
@@ -1471,18 +1575,16 @@ ViewState view() {
 } // namespace EnergyAssist
 ```
 
-Notice what this implementation does:
-
-- A failed tag search is retried every 750 ms, not every frame.
-- The Unity wrapper remains on the main-thread side of the module.
-- The menu receives a copy of `ViewState`.
-- A failed managed call clears the cached handle so discovery can retry.
-- The setting, cache, and observable state have one owner.
+A few things worth noticing here: the failed tag search retries every
+750 ms, not every frame; the Unity wrapper never leaves the main-thread side
+of the module; the menu only ever sees a copy of `ViewState`; a failed
+managed call clears the cached handle so discovery gets another shot; and the
+setting, the cache, and the observable state each have exactly one owner.
 
 ### Connect it to the lifecycle
 
-Include the feature in `mod/lifecycle/mod_runtime.cpp` and add the calls to the
-existing function bodies:
+Pull the feature into `mod/lifecycle/mod_runtime.cpp` by adding calls into
+the existing function bodies:
 
 ```cpp
 #include "features/energy_assist.h"
@@ -1506,15 +1608,16 @@ void ModRuntime::stop() {
 }
 ```
 
-Those functions may already be defined inside `namespace ModRuntime` in the
-generated file. Add the calls to the existing bodies; do not define a second
-`update()`. Keep the context and backend initialization in `start()`.
+These functions likely already exist inside `namespace ModRuntime` in the
+generated file, so add the calls into the existing bodies. Don't define a
+second `update()`, and leave the context/backend initialization where it is,
+in `start()`.
 
-`forget_scene()` is an eager invalidation path, not the only invalidation path.
-`EnergyAssist::advance()` must still reject a cached component whose `alive()`
-check fails and return to its timed discovery path. This is what keeps the
-feature correct in games that never change their active scene or do not expose
-URKit scene-event capability.
+`forget_scene()` invalidates the cache early, but it's not the only path
+that does: `EnergyAssist::advance()` still has to reject a cached component
+that fails `alive()` and fall back to its timed discovery. That's what keeps
+the feature working correctly in a game that never changes scenes, or one
+that doesn't expose URKit's scene-event capability at all.
 
 ### Add a menu panel
 
@@ -1545,12 +1648,12 @@ inline void draw() {
 } // namespace PracticePanel
 ```
 
-To make the panel visible, include it from the preserved `mod/ui/menu.h` and call
-`PracticePanel::draw()` in the desired content area. Regeneration may replace
-this small connection. The panel itself remains safe because it lives in a
-separate user-owned file.
+Making it show up just means including it from the preserved `mod/ui/menu.h`
+and calling `PracticePanel::draw()` wherever you want it. Regeneration might
+undo that one-line connection, but never the panel itself, it lives in its
+own user-owned file.
 
-For a minimal menu integration, draw the panel below the current tab content:
+The quickest wiring: draw it right below the current tab's content.
 
 ```cpp
 #include "tabs/practice_panel.h"
@@ -1560,12 +1663,12 @@ active_entry.render();
 PracticePanel::draw();
 ```
 
-You can later add a dedicated value to the `Tab` enum and a tab entry. First
-prove that the feature works; polishing navigation is a separate task.
+You can give it its own `Tab` enum value and a real tab entry later. Prove
+the feature works first; navigation polish can wait.
 
 ## 10. Menu and main-thread boundary
 
-The following code is short, but it is not reliable:
+This looks fine. It isn't:
 
 ```cpp
 // Bad: managed Unity call from the render callback.
@@ -1573,12 +1676,12 @@ if (ImGui::Button("Refill"))
   g_vitals.Call<void>("Refill");
 ```
 
-The render callback can run on another thread, and `g_vitals` can become stale
-during a scene transition. The safe pattern is to enqueue a request from the UI
-and process it in `update()`.
+The render callback can run on a different thread, and `g_vitals` can go
+stale mid scene-transition. The safe version enqueues a request from the UI
+and lets `update()` process it instead.
 
-An `std::atomic_bool` is enough for a single toggle. Use a bounded queue for
-commands with parameters:
+A single toggle only needs an `std::atomic_bool`. Anything with parameters
+wants a bounded queue:
 
 ```cpp
 struct Command {
@@ -1600,8 +1703,8 @@ void enqueue(Command command) {
 }
 ```
 
-At the start of `update()`, move the queue into a local vector while holding the
-lock briefly:
+Then at the top of `update()`, swap the whole queue out into a local vector
+while barely holding the lock at all:
 
 ```cpp
 std::vector<Command> take_commands() {
@@ -1612,9 +1715,9 @@ std::vector<Command> take_commands() {
 }
 ```
 
-Perform Unity calls after releasing the lock. Do not keep a mutex locked across
-a managed call. When a queue is full, report the failure or define an explicit
-"latest value wins" policy. Do not silently discard work.
+Make the Unity calls after the lock's released, never while holding a mutex
+across a managed call. And if the queue fills up, say so, or pick an explicit
+"latest value wins" policy. Either is fine. Quietly dropping the work isn't.
 
 ### Snapshot rule
 
@@ -1634,11 +1737,11 @@ Do not expose these to the render side:
 
 ## 11. Design caches around the work they avoid
 
-Global searches, reflection, and managed property calls all have a cost. A
-small mod may hide that cost, while an overlay tracking hundreds of objects
-will not.
+Global searches, reflection, managed property calls, none of it is free. A
+tiny mod can get away with ignoring that. An overlay tracking hundreds of
+objects can't.
 
-A useful cache can run different jobs at different rates:
+A good cache doesn't run everything at the same rate:
 
 | Work | Example interval |
 | --- | --- |
@@ -1647,10 +1750,10 @@ A useful cache can run different jobs at different rates:
 | Capture fast position state | 30-100 ms |
 | Refresh slower names or state | 500-2000 ms |
 
-These numbers are not requirements. Measure how often your data changes and
-choose intervals accordingly.
+Don't treat those numbers as gospel; measure how fast your own data actually
+changes and set intervals from that.
 
-Keep runtime state separate from published state:
+Keep the runtime state and the published state as two separate structs:
 
 ```cpp
 struct RuntimeEntry {
@@ -1670,13 +1773,13 @@ struct ActorSnapshot {
 };
 ```
 
-`RuntimeEntry` stays on the main thread. `ActorSnapshot` can be copied to the
-render thread.
+`RuntimeEntry` never leaves the main thread. `ActorSnapshot` is the one
+that's safe to copy to the render side.
 
 ### Mark dirty instead of scanning inside a hook
 
-A hook that notices a possible new object should not perform a full scan. Set
-an atomic dirty flag instead:
+If a hook notices something that might be a new object, resist the urge to
+scan right there. Flip an atomic dirty flag instead:
 
 ```cpp
 std::atomic_bool g_rescan_requested{true};
@@ -1686,13 +1789,14 @@ void notice_possible_change() noexcept {
 }
 ```
 
-The main-thread update reads the flag and scans at an appropriate point. The
-hook stays short, and reflection or allocation remains in one owner.
+The main-thread update reads that flag and scans when it's actually a good
+time to. The hook stays short, and reflection or allocation stays owned by
+one place.
 
 ### Log spam is also a performance bug
 
-If a property fails every frame, do not write hundreds of identical log lines
-per second. Keep the failure visible, but throttle repeated messages:
+A property that fails every frame doesn't need hundreds of identical log
+lines per second to prove it. Keep the failure visible, just throttle it:
 
 ```cpp
 if (now >= next_error_log) {
@@ -1701,28 +1805,29 @@ if (now >= next_error_log) {
 }
 ```
 
-The latest error can remain visible in the UI snapshot between log messages.
-Throttling repeated output is not swallowing an error; it prevents the same
-known failure from consuming disk and frame time.
+The UI snapshot can still show the latest error between log lines, so
+throttling isn't hiding anything. It's just refusing to let one known
+failure eat your disk and frame time.
 
 ## 12. Highlights and the native render pipeline
 
-Generated projects include `mod/ui/highlight.h`. It can draw a box, fill,
-label, and off-screen direction indicator for:
+Every generated project ships `mod/ui/highlight.h`. It draws a box, a fill,
+a label, and an off-screen direction indicator, and it can anchor any of
+that to:
 
 - a world-position snapshot;
 - a `Transform`, `GameObject`, or `Component` target;
 - an already projected screen rectangle.
 
-The name “highlight” does not mean a Unity outline effect. The module does not
-change a target's `Renderer`, materials, shaders, render layer, or GameObject.
-It builds ImGui draw commands and the generated native render hook submits
-those commands to the game's graphics back end.
+Don't read "highlight" as a Unity outline effect, it isn't one. Nothing about
+a target's `Renderer`, materials, shaders, render layer, or GameObject ever
+changes. It's ImGui draw commands, submitted by the generated native render
+hook straight to the game's graphics back end.
 
 ### Where a highlight is actually rendered
 
-On a DirectX game the generated project installs DXGI presentation hooks. The
-end-to-end path is:
+On a DirectX game the generated project installs DXGI presentation hooks, and
+the highlight travels this path end to end:
 
 ```text
 ModRuntime::update()                         Unity main thread
@@ -1750,15 +1855,16 @@ game swap-chain back buffer
 original Present / Present1
 ```
 
-This means the overlay is native DirectX output composited into the same back
-buffer the game presents. It is not rendered by a Unity Canvas and it does not
-exist in the Unity scene hierarchy. The default draw list is ImGui's background
-draw list: highlights appear over the 3D scene and behind the mod's ImGui menu.
+Which means the overlay is native DirectX output, composited straight into
+the same back buffer the game presents. No Unity Canvas involved, and it
+never exists in the Unity scene hierarchy at all. It lands on ImGui's
+background draw list by default, so it renders over the 3D scene and behind
+the mod's own ImGui menu.
 
-Feature modules do not need to contain DirectX code. The generated
+None of this means your feature code needs to touch DirectX. The generated
 `mod/hooks/render_imgui_hook.cpp` owns device discovery, swap-chain hooks,
-ImGui frame creation, render-target handling, resize handling, and shutdown.
-Feature code owns highlight IDs and publishes plain target data.
+ImGui frame creation, render targets, resize handling, and shutdown. Your
+feature code just owns highlight IDs and publishes plain target data.
 
 ### What happens on DirectX 11
 
@@ -1774,15 +1880,16 @@ For D3D11, the generated hook:
    `ImGui_ImplDX11_RenderDrawData`;
 7. calls the game's original `Present`/`Present1`.
 
-`ResizeBuffers` invalidates the render target and ImGui device objects before
-the resize, then rebuilds them after a successful resize. A mod feature must
-not cache DirectX back-buffer or render-target pointers itself.
+`ResizeBuffers` tears down the render target and ImGui device objects before
+the resize happens, then rebuilds them once it succeeds. Don't cache a
+DirectX back-buffer or render-target pointer in your own feature code; it
+won't survive that.
 
 ### What happens on DirectX 12
 
-D3D12 requires explicit command submission. The generated hook therefore also
-captures the game's direct `ID3D12CommandQueue` through
-`ExecuteCommandLists`. For each presented back buffer it:
+D3D12 doesn't let you skip explicit command submission, so the generated hook
+also grabs the game's direct `ID3D12CommandQueue` through
+`ExecuteCommandLists`. Per presented back buffer:
 
 1. gets the current back-buffer index from `IDXGISwapChain3`;
 2. waits for that frame context's fence when the GPU still owns it;
@@ -1795,15 +1902,16 @@ captures the game's direct `ID3D12CommandQueue` through
 9. executes the command list on the captured direct queue and signals a fence;
 10. returns to the game's original `Present`/`Present1`.
 
-The D3D12 overlay cannot render until both a compatible DXGI presentation hook
-and the direct command queue are available. The log distinguishes presentation
-hook failure, command-queue hook failure, device-object failure, and per-frame
-fence/command-list failure.
+The D3D12 overlay simply won't render until both the DXGI presentation hook
+and the direct command queue are in place. Check the log to tell which one:
+presentation hook failure, command-queue hook failure, device-object
+failure, and per-frame fence/command-list failure all get logged as
+distinct cases.
 
 ### Back-end selection and support
 
-`URK::graphics_device_type()` reports the Unity graphics device when the
-runtime exposes it. The generated render hook currently recognizes:
+`URK::graphics_device_type()` reports Unity's graphics device when the
+runtime exposes it. Here's what the generated render hook currently handles:
 
 | Reported device | Generated overlay path |
 | --- | --- |
@@ -1813,17 +1921,17 @@ runtime exposes it. The generated render hook currently recognizes:
 | Unknown | Probe native DXGI and OpenGL presentation paths |
 | Vulkan or another unsupported device | No generated highlight/menu render hook |
 
-Unknown does not mean “assume DX11.” It tells the generated project to probe
-the native presentation APIs and initialize only after a compatible context is
-observed. Check `URKit_logs.log` for the selected path; do not infer it from the
-game's launcher option alone.
+"Unknown" doesn't mean "assume DX11." It means the generated project probes
+the native presentation APIs itself and only initializes once it actually
+sees a compatible context. Check `URKit_logs.log` for the path it picked;
+don't guess from the game's launcher options.
 
 ### Main-thread world snapshots
 
-The most predictable pattern is to read Unity state during
-`ModRuntime::update()`, then enqueue only a copied `Unity::Vector3`. This keeps
-scene-object ownership in feature code and makes the render-side input plain
-data.
+The pattern that's actually predictable: read Unity state during
+`ModRuntime::update()`, then enqueue nothing but a copied `Unity::Vector3`.
+Scene-object ownership stays in feature code, and the render side only ever
+sees plain data.
 
 ```cpp
 // mod/features/objective_marker.h
@@ -1903,44 +2011,46 @@ void clear() {
 } // namespace ObjectiveMarker
 ```
 
-Call `ObjectiveMarker::clear()` from scene-change and shutdown paths. The ID is
-native state, but its meaning is owned by the feature; do not let a previous
-scene's ID silently become the new scene's marker.
+Call `ObjectiveMarker::clear()` on scene-change and shutdown. The ID is
+native state, sure, but its meaning belongs to the feature, so don't let a
+stale ID from a previous scene quietly become this scene's marker.
 
-`enqueue_set_world_point` may legitimately run once per main-thread update for
-a moving target. Do not call `enqueue_add_world_point` every frame: that creates
-new entries instead of moving the existing one.
+Calling `enqueue_set_world_point` once per main-thread update for a moving
+target is exactly what it's for. Calling `enqueue_add_world_point` every
+frame instead is a bug: that creates a fresh entry each time instead of
+moving the one you already have.
 
 ### Transform target thread contract
 
-The API also accepts a `GameObject`, `Component`, or `Transform`:
+The API also takes a `GameObject`, `Component`, or `Transform` directly:
 
 ```cpp
 const auto id = ModUI::Highlight::enqueue_add(
     objective_transform, "Objective", style);
 ```
 
-This queues the handle safely, but “thread-safe queue” and “Unity main-thread
-access” are different guarantees. The generated manager later validates the
-Transform, reads its position, resolves `Camera::main()`, and projects the world
-position while building the render frame. That work occurs in the native
-presentation callback.
+Queuing the handle is thread-safe. That's not the same thing as "safe to
+touch Unity from," though, and the generated manager does exactly that
+later: it validates the Transform, reads its position, resolves
+`Camera::main()`, and projects the world position while building the render
+frame, all from the native presentation callback.
 
-Use Transform targets only when the target game's/runtime's Unity calls are
-known to be valid from that callback. The portable default is the world-snapshot
-pattern above: read the Transform on the Unity main thread and enqueue the copied
-position. If a title is sensitive even to camera projection outside Unity's
-main thread, project on the main thread and publish a screen rectangle, or
-provide a projector based entirely on a synchronized plain-data camera
-snapshot.
+So only pass a Transform target when you actually know this specific game
+and runtime tolerate Unity calls from that callback. The safe default stays
+the world-snapshot pattern from above: read the Transform on the Unity main
+thread, enqueue just the copied position. If a title is touchy even about
+camera projection happening off the Unity main thread, project it yourself
+on the main thread and publish a screen rectangle instead, or build a
+projector entirely off a synchronized plain-data camera snapshot.
 
-Do not pass wrappers through arbitrary UI state just because `enqueue_add`
-accepts them. The queue protects its native command vector; it cannot extend a
-Unity object's lifetime or make a destroyed scene object valid.
+And don't pass wrappers through arbitrary UI state just because `enqueue_add`
+happens to accept them. The queue only protects its own native command
+vector; it can't extend a Unity object's lifetime or resurrect a destroyed
+scene object.
 
 ### Static world points and screen rectangles
 
-A fixed world location has no Unity handle:
+A fixed world location doesn't need a Unity handle at all:
 
 ```cpp
 const auto checkpoint = ModUI::Highlight::enqueue_add_world_point(
@@ -1949,10 +2059,9 @@ const auto checkpoint = ModUI::Highlight::enqueue_add_world_point(
     style);
 ```
 
-Screen rectangles are already in ImGui screen coordinates. Direct calls such
-as `add_screen_rect` belong to code executing in the render callback because
-there is no queued screen-rectangle add operation in the current public helper
-set:
+Screen rectangles already speak ImGui screen coordinates. There's no queued
+version of adding one, so `add_screen_rect` is a direct call, meant for code
+already running in the render callback:
 
 ```cpp
 const auto id = ModUI::Highlight::add_screen_rect(
@@ -1962,26 +2071,27 @@ const auto id = ModUI::Highlight::add_screen_rect(
     style);
 ```
 
-Do not call that direct API from `ModRuntime::update()`. For cross-thread
-features, prefer queued world points or add a feature-owned plain-data command
-that the render callback consumes.
+Don't call that from `ModRuntime::update()`. For anything crossing threads,
+stick to queued world points, or add your own feature-owned plain-data
+command that the render callback consumes instead.
 
 ### Projection and coordinates
 
-By default, a world entry is projected with the current main camera. The
-manager obtains screen size from ImGui and falls back to the camera pixel size.
-Unity's screen-space Y axis grows upward, whereas ImGui's grows downward, so the
-manager flips Y before drawing.
+By default a world entry gets projected with the current main camera. Screen
+size comes from ImGui first, falling back to the camera's pixel size. And
+since Unity's screen-space Y grows upward while ImGui's grows downward, the
+manager flips it before drawing, so you don't have to.
 
-Projection produces more than a point: it records depth, whether the target is
-in front, whether it is on screen, the clamped edge position, direction from
-screen center, and distance. The style uses this data for distance scaling,
-near-distance hiding, labels, and off-screen arrows.
+Projection gives you more than a point, too: depth, whether the target's in
+front of the camera, whether it's on screen, the clamped edge position,
+direction from screen center, and distance. That's what the style options
+use for distance scaling, near-distance hiding, labels, and off-screen
+arrows.
 
-If `Camera::main()` is null, the camera has not spawned, the tag is different,
-or projection fails, the manager skips the entry instead of drawing an invalid
-rectangle. Diagnose the camera; do not replace the failed projection with a
-fake `(0, 0)` position.
+If `Camera::main()` comes back null, the camera hasn't spawned yet, the tag
+is wrong, or projection itself fails, the manager just skips the entry
+rather than drawing garbage. Go diagnose the camera. Don't paper over a
+failed projection with a fake `(0, 0)`.
 
 ### Style reference
 
@@ -1999,12 +2109,13 @@ The commonly changed style fields are:
 | `scale_with_distance`, `min_scale`, `max_scale` | Distance-based size |
 | `indicator_padding`, `indicator_length` | Edge margin and arrow length |
 
-Build one `Style` when the marker is created. Do not reconstruct and submit an
-unchanged style every frame.
+Build the `Style` once, when the marker is created. Rebuilding and
+resubmitting an unchanged style every frame is just waste.
 
 ### Update policies and cost
 
-Projection policy controls how frequently world entries are refreshed:
+The projection policy decides how often world entries actually get
+refreshed:
 
 ```cpp
 ModUI::Highlight::UpdatePolicy policy{};
@@ -2017,10 +2128,10 @@ policy.transform_validation_interval_frames = 30;
 ModUI::Highlight::set_update_policy(policy);
 ```
 
-Configure this once in `ModRuntime::start()`. In the generated lifecycle,
-`ModRuntime::start()` runs before `ModHooks::install()` installs the render
-hook. `set_update_policy` mutates manager configuration directly; it is not a
-queued per-frame command.
+Set this once, in `ModRuntime::start()`, since it runs before
+`ModHooks::install()` brings the render hook up in the generated lifecycle.
+`set_update_policy` isn't a queued per-frame command, it mutates the manager's
+configuration directly.
 
 | Mode | Behaviour | Suitable use |
 | --- | --- | --- |
@@ -2028,9 +2139,10 @@ queued per-frame command.
 | `Budgeted` | Refreshes up to the configured budget and reuses cached projections | General-purpose overlays |
 | `EventDriven` | Refreshes only when dirty or explicitly moved | Static/event-driven markers |
 
-`max_updates_per_frame == 0` disables the per-frame limit; it does not disable
-updates. Watch `last_frame_stats()` when tuning many markers. A high cached-draw
-count is expected in budgeted mode; projection failures are not.
+Setting `max_updates_per_frame` to `0` removes the per-frame limit; it
+doesn't turn updates off. If you're tuning a lot of markers, watch
+`last_frame_stats()`: a high cached-draw count is normal in budgeted mode,
+projection failures are not.
 
 ### Highlight API ownership table
 
@@ -2044,12 +2156,13 @@ count is expected in budgeted mode; projection failures are not.
 | Policy and diagnostic configuration | `ModRuntime::start()` before render-hook installation | One-time direct manager configuration |
 | `manager().render()` | Generated render hook only | Already called once inside the ImGui frame |
 
-Do not call `manager().render()` from a feature or menu. Rendering twice in one
-frame duplicates work and breaks the generated hook's ownership model.
+Never call `manager().render()` from a feature or the menu. Rendering twice
+in one frame doesn't just waste work, it breaks the generated hook's
+ownership model.
 
 ### Highlight diagnostics API
 
-Enable diagnostics temporarily while bringing up an overlay:
+Turn diagnostics on temporarily while you're bringing an overlay up:
 
 ```cpp
 ModUI::Highlight::set_diagnostics([](const char* line) {
@@ -2059,14 +2172,15 @@ ModUI::Highlight::set_verbose_diagnostics(true);
 ModUI::Highlight::set_diagnostic_throttle_frames(120);
 ```
 
-Register these in `ModRuntime::start()` for the same reason as the update
-policy: they are direct manager configuration, not queued mutations.
+Same deal as the update policy: register these in `ModRuntime::start()`,
+since they're direct manager configuration, not queued mutations.
 
-Disable verbose mode for release unless the feature genuinely needs it. The
-manager reports states such as missing/dead Transform, no projection,
-projection failure, invalid rectangle, off-screen, too close, and removal.
+Turn verbose mode off again for release unless the feature genuinely
+needs it left on. The manager reports states like a missing or dead
+Transform, no projection, projection failure, an invalid rectangle,
+off-screen, too close, and removal.
 
-Use this failure ladder:
+When something's not showing up, work down this list:
 
 1. Does the log say a DX11, DX12, or OpenGL render hook was installed?
 2. Did ImGui initialize on a compatible game swap chain/context?
@@ -2077,15 +2191,15 @@ Use this failure ladder:
 7. Are projection failures increasing in `last_frame_stats()`?
 8. Is the style actually configured to draw a box, label, or indicator?
 
-If the menu and highlight are both invisible, investigate the native render
-hook first. If the menu is visible but the highlight is not, the DirectX/ImGui
-path is already working; investigate marker ownership, projection, camera, and
-style instead.
+Menu and highlight both invisible? Start with the native render hook. Menu
+visible but no highlight? The DirectX/ImGui path already works, so look at
+marker ownership, projection, camera, and style instead.
 
 ## 13. Use coroutines to spread work across frames
 
-The generated lifecycle ticks frame-based coroutines through `ModAsync`. You do
-not need a worker thread just to wait a few frames on the Unity main thread.
+The generated lifecycle ticks frame-based coroutines through `ModAsync`, so
+you don't need a worker thread just to wait a few frames on the Unity main
+thread.
 
 ```cpp
 #include "sdk/mod_async.h"
@@ -2105,18 +2219,19 @@ void begin_sequence() {
 }
 ```
 
-Coroutine work advances from the `ModRuntime::update()` flow. The generated
-lifecycle cancels tasks during shutdown. Even so, if a coroutine captures a
-borrowed Unity handle, call `alive()` after resuming.
+Coroutine work advances out of the `ModRuntime::update()` flow, and shutdown
+cancels tasks automatically. That said, if a coroutine captured a borrowed
+Unity handle before suspending, call `alive()` again once it resumes; time
+passed, and the object might not have.
 
-A coroutine does not make blocking I/O or heavy CPU work non-blocking. Run
-those jobs on an appropriate worker and move only plain results back to the
-main thread.
+A coroutine won't turn blocking I/O or heavy CPU work into something
+non-blocking, either. Run that on a real worker and hand only plain results
+back to the main thread.
 
 ## 14. Add hooks only when normal calls are not enough
 
-Hooks are required only when normal Unity API access cannot provide the needed
-behaviour. Normal API access covers:
+Reach for a hook only once normal Unity API access genuinely can't do what
+you need. Normal access already covers:
 
 - `ModRuntime::update()` polling;
 - field and property access;
@@ -2124,21 +2239,14 @@ behaviour. Normal API access covers:
 - scene callbacks;
 - object-destroy request callbacks.
 
-A hook becomes useful when:
+A hook actually earns its place when you need the exact moment a managed
+method runs, when a parameter or return value has to change mid-call, or
+when polling would just miss a short-lived event entirely.
 
-- you need the exact moment a managed method runs;
-- a parameter or return value must be changed;
-- polling misses a short-lived event.
-
-Four things must be correct before installing a hook:
-
-1. The runtime backend.
-2. Static versus instance method semantics.
-3. Every parameter and the return type.
-4. The native ABI.
-
-A bad hook does not always return a tidy error. It can crash the process
-immediately.
+Before you install one, get four things right: the runtime backend, static
+versus instance method semantics, every parameter and the return type, and
+the native ABI. Miss one of those and a bad hook doesn't politely fail, it
+can crash the process on the spot.
 
 ### IL2CPP managed method hook
 
@@ -2232,19 +2340,20 @@ inline bool detach() {
 } // namespace CrateSensorHook
 ```
 
-For an IL2CPP instance method, `self` is the first argument. Generated native
-methods commonly carry a trailing `MethodInfo*`, represented here as
-`void* method_info`. Value-type instance methods, struct returns, and some
-Unity/IL2CPP versions can have different ABI details. Verify the native
-signature instead of copying this typedef blindly.
+For an IL2CPP instance method, `self` comes first. Generated native methods
+usually carry a trailing `MethodInfo*` too, shown here as `void* method_info`.
+But value-type instance methods, struct returns, and some Unity/IL2CPP
+versions can differ on ABI details, so verify the real native signature.
+Don't just copy this typedef and assume.
 
-The detour only sets a flag and calls the original. It performs no scan,
-allocation, or ImGui work. `ModRuntime::update()` can read the flag and mark a
-feature cache dirty.
+Notice the detour does nothing but set a flag and call the original, no scan,
+no allocation, no ImGui work in sight. `ModRuntime::update()` reads that flag
+later and marks the feature cache dirty on its own time.
 
 ### Mono difference
 
-A compiled Mono method does not use IL2CPP's trailing `method_info` argument:
+A compiled Mono method skips IL2CPP's trailing `method_info` argument
+entirely:
 
 ```cpp
 using TickFn = void(*)(void* self, float delta);
@@ -2257,11 +2366,12 @@ The Mono installation flow is:
 3. Attach it with `URK::hooks::attach_ex`.
 4. Remove it with the same original/detour pair through `detach_ex`.
 
-Do not use IL2CPP helpers in a Mono project or a Mono ABI in an IL2CPP project.
+Don't reach for IL2CPP helpers in a Mono project, or a Mono ABI in an IL2CPP
+one; they're not interchangeable.
 
 ### Centralize hook ownership
 
-Let `mod/hooks/mod_hooks.cpp` own every hook:
+Give every hook one owner, `mod/hooks/mod_hooks.cpp`:
 
 ```cpp
 #include "mod_hooks.h"
@@ -2285,30 +2395,34 @@ void uninstall() {
 } // namespace ModHooks
 ```
 
-`URK::hooks::HookSet` can own several raw targets. If a later required hook
-fails, detach the earlier ones. Make `install()` idempotent. If detach fails,
-do not clear state and claim success; unloading the DLL may not be safe.
+`URK::hooks::HookSet` can hold several raw targets at once. If a later
+required hook fails, detach the ones you already installed, and make
+`install()` safe to call twice. If detach itself fails, don't clear your
+state and claim success anyway; unloading the DLL at that point might not be
+safe at all.
 
 ### Pick a hook backend
 
-`URK_HOOK_BACKEND_DETOURS` is the default and handles function entry points.
-`URK_HOOK_BACKEND_SAFETYHOOK` is available for targets Detours cannot rewrite;
-select it with `URK::hooks::attach_ex(&original, detour,
-URK::hook_backend_safetyhook)` after checking
-`URK::hooks::backend_available(URK::hook_backend_safetyhook)`.
+`URK_HOOK_BACKEND_DETOURS` is the default, and it handles ordinary function
+entry points fine. For a target Detours can't rewrite, there's
+`URK_HOOK_BACKEND_SAFETYHOOK`: check
+`URK::hooks::backend_available(URK::hook_backend_safetyhook)` first, then
+select it via `URK::hooks::attach_ex(&original, detour,
+URK::hook_backend_safetyhook)`.
 
-All hooks on one target share a single backend. The first hook fixes the
-backend, and a later attach that names a different one is rejected. Hooks on
-the same target chain in attach order: each detour calls the trampoline it was
-handed, which reaches the previously attached detour and eventually the
-original code. A second mod hooking the same function does not fail.
+One target, one backend, always. Whichever hook attaches first locks it in,
+and a later attach naming a different backend just gets rejected. Hooks on
+the same target chain in attach order: each detour calls the trampoline it
+was handed, which reaches the previously attached detour and eventually the
+original code. So a second mod hooking the same function doesn't fail, it
+just joins the chain.
 
 ### Hook in the middle of a function
 
-Some targets have no usable entry point: an inlined body, a hybrid native
-backend, or a branch you only want to observe halfway through. A mid-function
-hook attaches to an arbitrary instruction boundary and hands the callback the
-whole register file.
+Some targets just don't have a usable entry point: an inlined body, a hybrid
+native backend, a branch you only want to observe halfway through. A
+mid-function hook attaches to an arbitrary instruction boundary instead and
+hands the callback the whole register file.
 
 ```cpp
 #include "sdk/hook_api.h"
@@ -2349,9 +2463,9 @@ Rules that matter:
   any mid hook owned by a mod module when that module unloads.
 - The loader has a fixed pool of 128 mid hook slots for the whole process.
 
-A mid hook can also read managed instance state without a separate managed
-call: combine `this` from a GPR with `field_offset`. This was tested against a
-small real IL2CPP build with a method shaped like this:
+A mid hook can also read managed instance state with no separate managed call
+at all: just combine `this` from a GPR with `field_offset`. Here's that
+tested against a small, real IL2CPP build, on a method shaped like this:
 
 ```csharp
 public class SimpleHookTest : MonoBehaviour {
@@ -2364,10 +2478,10 @@ public class SimpleHookTest : MonoBehaviour {
 }
 ```
 
-`score` is a sibling field on the same instance, not a local inside
-`SpawnTarget`; a mid hook cannot read a local the method hasn't computed yet at
-the address it is attached to. The mid hook was placed at `SpawnTarget`'s
-entry, where `this` is already valid:
+`score` is a sibling field on the instance, not a local inside `SpawnTarget`,
+which matters: a mid hook can't read a local the method hasn't computed yet
+at the address it's attached to. So the hook goes at `SpawnTarget`'s entry,
+where `this` is already valid:
 
 ```cpp
 void on_spawn(URK_HookRegisters* regs, void*) {
@@ -2379,7 +2493,7 @@ void on_spawn(URK_HookRegisters* regs, void*) {
 g_mid.attach(URK::il2cpp::method_pointer(spawn_target_method), &on_spawn);
 ```
 
-It fired on every call and read the live score correctly:
+It fired on every single call and read the live score correctly every time:
 
 ```text
 [SafetyHook mid] SpawnTarget() call #1 this=000001DA7FCEF740 score=0 rip=00007FF8F6DF01A2
@@ -2387,23 +2501,24 @@ It fired on every call and read the live score correctly:
 [SafetyHook mid] SpawnTarget() call #3 this=000001DA7FCEF740 score=10 rip=00007FF8F6DF01A2
 ```
 
-`this` stays the same (one `SimpleHookTest` instance in the scene), `score`
-moves as the player scores, and `rip` is constant because the hook always
-resumes at the same trampoline address. A separate inline
-hook (`URK_HOOK_BACKEND_SAFETYHOOK`) on a small unrelated method attached and
-ran fine too. One caveat found in this same test: inline-hooking
-`SpawnTarget` itself (a larger method with many embedded constants and calls)
-with the SafetyHook backend made the game misbehave after a while, while
-mid-hooking that same method did not. Prefer Detours or a mid hook on methods
-like that until this is root-caused.
+`this` stays constant (one `SimpleHookTest` instance in the scene), `score`
+moves as the player scores, and `rip` never changes because the hook always
+resumes at the same trampoline address. A separate inline hook
+(`URK_HOOK_BACKEND_SAFETYHOOK`) on a small, unrelated method attached and ran
+fine in the same test. One caveat did turn up, though: inline-hooking
+`SpawnTarget` itself, a bigger method full of embedded constants and calls,
+with the SafetyHook backend made the game misbehave after a while. Mid-hooking
+that exact same method didn't. Until that's root-caused, prefer Detours or a
+mid hook on methods shaped like that.
 
 ## 15. Persist settings
 
-Small constants and runtime settings can live under `mod_config.h`. Resolve a
-persistent settings path relative to the mod DLL, not the process current
-working directory.
+Small constants and runtime settings are fine living in `mod_config.h`. Just
+resolve a persistent settings path relative to the mod DLL, not to the
+process's current working directory, or you'll find it somewhere you didn't
+expect.
 
-A robust configuration layer should:
+A configuration layer you can trust does all of this:
 
 - treat a missing file as a valid first-run state;
 - validate parsed types and numeric ranges;
@@ -2412,17 +2527,17 @@ A robust configuration layer should:
 - flush successfully before atomically replacing the real file;
 - retain a useful last error for the log or UI.
 
-Do not write the configuration every frame. Save when a checkbox or slider
-actually changes, or during orderly shutdown. If dragging a slider causes too
-many writes, save at edit completion or after a short debounce.
+Don't write it every frame, though. Save when a checkbox or slider actually
+changes, or on orderly shutdown. If dragging a slider triggers too many
+writes, save on edit completion or after a short debounce instead.
 
-If the generated lifecycle already loads and saves a configuration store,
-extend that store instead of adding a second owner for the same settings.
+If the generated lifecycle already has a configuration store loading and
+saving, extend that one. Don't add a second owner for the same settings.
 
 ## 16. Strings, arrays, and managed lifetime
 
-Passing `std::string_view` through a high-level wrapper creates the managed
-string required for that call:
+Pass a `std::string_view` through a high-level wrapper and it creates the
+managed string that call needs, automatically:
 
 ```cpp
 component.CallExact<void>(
@@ -2437,29 +2552,30 @@ Copy managed string results into `std::string`:
 const std::string label = component.GetProperty<std::string>("Label");
 ```
 
-Do not keep a raw Mono or IL2CPP string-buffer pointer. Copy the UTF-8 value and
-use the matching helper to free runtime-owned temporary storage when required.
+Never hang onto a raw Mono or IL2CPP string-buffer pointer. Copy the UTF-8
+value out and use the matching helper to free runtime-owned temporary storage
+when it's needed.
 
-Wrapper handles are borrowed. If a managed object truly must outlive scene
-ownership and ordinary managed references, use the backend GC-handle API and
-free the handle during shutdown. Do not add GC handles to a first feature when
-normal scene ownership is sufficient.
+Wrapper handles are always borrowed. If a managed object genuinely needs to
+outlive scene ownership and ordinary managed references, that's what the
+backend GC-handle API is for, freed on shutdown. Don't reach for GC handles
+on your first feature, though, when plain scene ownership already covers it.
 
-For array-returning Unity searches, prefer the SDK's scoped leases instead of
-managing one handle per result. `FindObjectsOfTypeRooted<T>()`,
-`FindObjectsOfTypeAllRooted<T>()`, and the rooted component-query variants keep
-the managed result array alive with one move-only RAII owner and free that owner
-automatically at scope exit.
+For array-returning Unity searches, reach for the SDK's scoped leases instead
+of juggling one handle per result. `FindObjectsOfTypeRooted<T>()`,
+`FindObjectsOfTypeAllRooted<T>()`, and the rooted component-query variants
+all keep the managed result array alive behind one move-only RAII owner, and
+free it automatically once that owner goes out of scope.
 
-Never guess the layout of a managed value type. Use SDK definitions for
-`Vector3`, `Quaternion`, `Color`, and other built-in values. For a custom game
-struct, verify size, alignment, and field layout before writing a matching C++
-type.
+Never guess the layout of a managed value type; use the SDK's own
+definitions for `Vector3`, `Quaternion`, `Color`, and the rest. For a custom
+game struct, verify size, alignment, and field layout yourself before writing
+a matching C++ type.
 
 ## 17. Diagnostics by API layer
 
-Validate the API layers in this order. Each stage isolates the source of a
-failure before the next subsystem is introduced:
+Work through the API layers in this order. Each stage rules out one source
+of failure before the next subsystem even enters the picture:
 
 1. Generated project compilation.
 2. Loader DLL discovery.
@@ -2473,7 +2589,8 @@ failure before the next subsystem is introduced:
 10. Plain menu request publication.
 11. Managed/native hook installation, when normal API access is insufficient.
 
-Adding five layers at once makes a crash much harder to localize.
+Stack five new layers on at once and a crash becomes much harder to pin
+down.
 
 ### The mod does not load
 
@@ -2502,9 +2619,9 @@ Adding five layers at once makes a crash much harder to localize.
 - Discovery still runs from `ModRuntime::update()` and cached wrappers use
   `alive()` because an object can spawn or die without a scene change.
 
-On IL2CPP, `URK_SceneInfo::buildIndex == -1` is supported and does not by itself
-make scene events unavailable. Use the scene name and handle when the optional
-build-index binding was stripped.
+On IL2CPP, seeing `URK_SceneInfo::buildIndex == -1` is expected and doesn't
+by itself mean scene events are unavailable. It just means the optional
+build-index binding got stripped, use the scene name and handle instead.
 
 ### Unity input always returns false
 
@@ -2512,8 +2629,9 @@ build-index binding was stripped.
 - The loader's `input=yes/no` capability line is checked.
 - Input polling occurs from `ModRuntime::update()`, not from the render thread.
 
-An unavailable input service and an unpressed key both produce `false` from the
-boolean helper. Confirm availability before diagnosing key state.
+An unavailable input service and a key nobody's pressing look identical:
+both return `false`. Confirm availability first, before you go chasing key
+state.
 
 ### A component is not found
 
@@ -2556,16 +2674,16 @@ boolean helper. Confirm availability before diagnosing key state.
 - Hook installation is idempotent.
 - Shutdown detaches hooks in reverse ownership order.
 
-Removing an error check, adding an empty catch, or using an unvalidated address
-does not solve the problem. It only makes the failure less observable and the
-eventual crash harder to diagnose.
+Deleting an error check, adding an empty catch, or using an address you never
+validated doesn't fix any of this. It just hides the failure until it shows
+up later, as a crash you now have no way to diagnose.
 
 ## 18. Release validation
 
-Release validation includes a clean Release configure/build, first launch,
-game shutdown, and a scene transition when the target game has one. Also test a
-late object spawn or replacement without a scene transition. Validate the
-following invariants:
+Before you ship: a clean Release configure/build, first launch, game
+shutdown, and a scene transition if the target game has one. Also test a
+late object spawn or replacement that happens without any scene transition
+at all. Then check these hold:
 
 - Supported runtime unload detaches all hooks.
 - Shutdown clears highlights, commands, and caches.
@@ -2599,5 +2717,6 @@ following invariants:
 14. Add a hook only if normal calls are insufficient.
 15. Test scene transitions, same-scene object replacement, and shutdown.
 
-A reliable URKit mod resolves the correct object and member, performs Unity work
-on the correct thread, and releases everything it owns during shutdown.
+That's really the whole job: resolve the right object and member, do Unity
+work on the right thread, and let go of everything you own when you shut
+down.
