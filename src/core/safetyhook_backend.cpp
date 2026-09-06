@@ -118,7 +118,11 @@ void *SafetyHookBackend_CreateInline(void *target, void *detour, void **trampoli
     if (!hook)
         return nullptr;
 
-    *trampoline = reinterpret_cast<void *>(hook->original<std::uintptr_t>());
+    // original<void*>() avoids original<uintptr_t>(), which some MSVC toolsets
+    // reject: the library's template body does reinterpret_cast<T>(uintptr_t),
+    // and T=uintptr_t makes that an identity reinterpret_cast that newer MSVC
+    // flags as ill-formed even though it's standard-permitted.
+    *trampoline = hook->original<void *>();
     return hook;
 }
 
