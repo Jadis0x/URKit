@@ -601,10 +601,11 @@ void TryFormatCxxSource(const fs::path &destination, std::string &text) {
         DWORD exitCode = 1;
         if (waitResult == WAIT_OBJECT_0 && GetExitCodeProcess(processInfo.hProcess, &exitCode) && exitCode == 0) {
             std::ifstream formattedFile(tempFile, std::ios::binary);
-            std::ostringstream buffer;
-            buffer << formattedFile.rdbuf();
-            if (formattedFile.eof())
+            if (formattedFile.is_open()) {
+                std::ostringstream buffer;
+                buffer << formattedFile.rdbuf();
                 text = buffer.str();
+            }
         } else if (waitResult == WAIT_TIMEOUT) {
             TerminateProcess(processInfo.hProcess, 1);
         }
