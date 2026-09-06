@@ -5,6 +5,14 @@
 #include "project_ledger.h"
 #include "project_manifest.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -527,6 +535,86 @@ bool ReadSdkHeader(const ModuleProjectOptions &options, std::string &text, std::
     return true;
 }
 
+bool LooksLikeCxxSource(const fs::path &path) {
+    const std::string extension = path.extension().string();
+    return extension == ".h" || extension == ".hpp" || extension == ".cpp" || extension == ".cc";
+}
+
+// Keep in sync with the repository's own .clang-format. Generated projects
+// ship without the URKit source tree, so the style is inlined here instead
+// of looked up on disk.
+const wchar_t *ClangFormatStyle() {
+    return L"{BasedOnStyle: Microsoft, IndentWidth: 4, TabWidth: 4, UseTab: Never, "
+           L"BreakBeforeBraces: Attach, AllowShortIfStatementsOnASingleLine: Never, "
+           L"AllowShortLoopsOnASingleLine: false, AllowShortBlocksOnASingleLine: Never, "
+           L"AllowShortFunctionsOnASingleLine: None, IndentCaseLabels: true, ColumnLimit: 120, "
+           L"SortIncludes: Never}";
+}
+
+// Generated code is assembled from concatenated raw strings, so guard clauses
+// and cleanup chains land on a single line with no wrapping. This is
+// best-effort: a mod author's machine may not have clang-format on PATH, so
+// any failure here silently keeps the unformatted text rather than failing
+// generation.
+void TryFormatCxxSource(const fs::path &destination, std::string &text) {
+    if (!LooksLikeCxxSource(destination))
+        return;
+
+    std::error_code ec;
+    const fs::path tempDir = fs::temp_directory_path(ec);
+    if (ec)
+        return;
+    const fs::path tempFile = tempDir / ("urk-fmt-" + std::to_string(GetCurrentProcessId()) + "-" +
+                                         std::to_string(reinterpret_cast<std::uintptr_t>(&text)) +
+                                         destination.extension().string());
+
+    {
+        std::ofstream tempOutput(tempFile, std::ios::binary | std::ios::trunc);
+        tempOutput << text;
+        if (!tempOutput)
+            return;
+    }
+
+    std::wstring commandLine =
+        L"clang-format.exe -i -style=\"" + std::wstring(ClangFormatStyle()) + L"\" \"" + tempFile.wstring() + L"\"";
+
+    SECURITY_ATTRIBUTES inheritableHandle{};
+    inheritableHandle.nLength = sizeof(inheritableHandle);
+    inheritableHandle.bInheritHandle = TRUE;
+    HANDLE nul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &inheritableHandle, OPEN_EXISTING, 0, nullptr);
+    STARTUPINFOW startupInfo{};
+    startupInfo.cb = sizeof(startupInfo);
+    if (nul != INVALID_HANDLE_VALUE) {
+        startupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startupInfo.hStdOutput = nul;
+        startupInfo.hStdError = nul;
+    }
+    PROCESS_INFORMATION processInfo{};
+    const BOOL started = CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr,
+                                        nul != INVALID_HANDLE_VALUE, CREATE_NO_WINDOW, nullptr, nullptr, &startupInfo,
+                                        &processInfo);
+    if (nul != INVALID_HANDLE_VALUE)
+        CloseHandle(nul);
+
+    if (started) {
+        const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, 5000);
+        DWORD exitCode = 1;
+        if (waitResult == WAIT_OBJECT_0 && GetExitCodeProcess(processInfo.hProcess, &exitCode) && exitCode == 0) {
+            std::ifstream formattedFile(tempFile, std::ios::binary);
+            std::ostringstream buffer;
+            buffer << formattedFile.rdbuf();
+            if (formattedFile.eof())
+                text = buffer.str();
+        } else if (waitResult == WAIT_TIMEOUT) {
+            TerminateProcess(processInfo.hProcess, 1);
+        }
+        CloseHandle(processInfo.hThread);
+        CloseHandle(processInfo.hProcess);
+    }
+
+    fs::remove(tempFile, ec);
+}
+
 } // namespace
 
 std::string Identifier(const std::string &text, const char *fallback) {
@@ -556,8 +644,10 @@ bool WriteText(const fs::path &path, const std::string &text, std::string *error
             return false;
         }
     }
+    std::string formatted = text;
+    TryFormatCxxSource(path, formatted);
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    output << text;
+    output << formatted;
     if (!output) {
         if (error)
             *error = "cannot write " + path.string();
