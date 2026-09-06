@@ -373,7 +373,7 @@ inline void emit(DiagnosticSink sink, const char *text) {
 }
 inline std::string type_name(const void *type) {
     char out[256]{};
-    return URK::@BACKEND @ ::type_get_name(static_cast<const URK::@BACKEND @ ::Type *>(type), out, sizeof(out))
+    return URK::@BACKEND@ ::type_get_name(static_cast<const URK::@BACKEND@ ::Type *>(type), out, sizeof(out))
                ? std::string(out)
                : std::string{};
 }
@@ -382,19 +382,19 @@ inline TypeInfo DescribeClass(const void *klass) {
     out.handle = klass;
     if (!klass)
         return out;
-    const auto *k = static_cast<const URK::@BACKEND @ ::Class *>(klass);
-    const char *ns = URK::@BACKEND @ ::class_get_namespace(k);
-    const char *name = URK::@BACKEND @ ::class_get_name(k);
+    const auto *k = static_cast<const URK::@BACKEND@ ::Class *>(klass);
+    const char *ns = URK::@BACKEND@ ::class_get_namespace(k);
+    const char *name = URK::@BACKEND@ ::class_get_name(k);
     out.namespc = ns ? ns : "";
     out.name = name ? name : "";
     out.full_name = out.namespc.empty() ? out.name : out.namespc + "." + out.name;
-    out.flags = URK::@BACKEND @ ::class_get_flags(k);
-    out.is_value_type = URK::@BACKEND @ ::class_is_valuetype(k);
-    out.is_enum = URK::@BACKEND @ ::class_is_enum(k);
+    out.flags = URK::@BACKEND@ ::class_get_flags(k);
+    out.is_value_type = URK::@BACKEND@ ::class_is_valuetype(k);
+    out.is_enum = URK::@BACKEND@ ::class_is_enum(k);
     return out;
 }
 inline TypeInfo DescribeType(const void *type) {
-    return DescribeClass(URK::@BACKEND @ ::@TYPE_GET_CLASS @(static_cast<const URK::@BACKEND @ ::Type *>(type)));
+    return DescribeClass(URK::@BACKEND@ ::@TYPE_GET_CLASS@(static_cast<const URK::@BACKEND@ ::Type *>(type)));
 }
 inline TypeInfo TypeOf(Object object) {
     detail::clear_error();
@@ -503,26 +503,25 @@ inline void FreeObjectHandle(ObjectHandle &handle) {
     handle.weak = false;
     handle.pinned = false;
 }
-inline std::vector<FieldInfo> fields_from_class(const URK::@BACKEND @ ::Class *klass, bool includeInherited) {
+inline std::vector<FieldInfo> fields_from_class(const URK::@BACKEND@ ::Class *klass, bool includeInherited) {
     std::vector<FieldInfo> out;
     for (const void *current = klass; current;
-         current = includeInherited ? URK::@BACKEND
-                       @ ::class_get_parent(static_cast<const URK::@BACKEND @ ::Class *>(current))
+         current = includeInherited ? URK::@BACKEND@ ::class_get_parent(static_cast<const URK::@BACKEND@ ::Class *>(current))
                                     : nullptr) {
         const TypeInfo declaring = DescribeClass(current);
         void *it = nullptr;
         while (const auto *field =
-                   URK::@BACKEND @ ::class_get_fields(static_cast<const URK::@BACKEND @ ::Class *>(current), &it)) {
+                   URK::@BACKEND@ ::class_get_fields(static_cast<const URK::@BACKEND@ ::Class *>(current), &it)) {
             FieldInfo info{};
             info.handle = field;
             info.declaring_type = declaring;
-            const char *name = URK::@BACKEND @ ::field_get_name(field);
+            const char *name = URK::@BACKEND@ ::field_get_name(field);
             info.name = name ? name : "";
-            const void *fieldType = URK::@BACKEND @ ::field_get_type(field);
+            const void *fieldType = URK::@BACKEND@ ::field_get_type(field);
             const TypeInfo fieldTypeInfo = DescribeType(fieldType);
             info.type = fieldType;
             info.type_name = type_name(fieldType);
-            info.flags = URK::@BACKEND @ ::field_get_flags(field);
+            info.flags = URK::@BACKEND@ ::field_get_flags(field);
             info.is_static = (info.flags & kStaticMemberFlag) != 0;
             info.is_value_type = fieldTypeInfo.is_value_type;
             info.is_enum = fieldTypeInfo.is_enum;
@@ -539,7 +538,7 @@ inline std::vector<FieldInfo> Fields(TypeRef type, bool includeInherited = true)
         detail::append_backend_error();
         return {};
     }
-    return fields_from_class(static_cast<const URK::@BACKEND @ ::Class *>(klass), includeInherited);
+    return fields_from_class(static_cast<const URK::@BACKEND@ ::Class *>(klass), includeInherited);
 }
 inline std::vector<FieldInfo> Fields(Object object, bool includeInherited = true) {
     detail::clear_error();
@@ -549,33 +548,32 @@ inline std::vector<FieldInfo> Fields(Object object, bool includeInherited = true
         detail::append_backend_error();
         return {};
     }
-    return fields_from_class(static_cast<const URK::@BACKEND @ ::Class *>(klass), includeInherited);
+    return fields_from_class(static_cast<const URK::@BACKEND@ ::Class *>(klass), includeInherited);
 }
 inline std::vector<FieldInfo> Fields(const ObjectRefInfo &object, bool includeInherited = true) {
     return object.handle ? Fields(Object{object.handle}, includeInherited) : std::vector<FieldInfo>{};
 }
-inline MethodInfo method_info(const URK::@BACKEND @ ::Method *method, TypeInfo declaring) {
+inline MethodInfo method_info(const URK::@BACKEND@ ::Method *method, TypeInfo declaring) {
     MethodInfo info{};
     info.handle = method;
     info.declaring_type = std::move(declaring);
-    const char *name = URK::@BACKEND @ ::method_get_name(method);
+    const char *name = URK::@BACKEND@ ::method_get_name(method);
     info.name = metadata_display_name(name);
-    info.flags = URK::@BACKEND @ ::method_get_flags(method, &info.iflags);
+    info.flags = URK::@BACKEND@ ::method_get_flags(method, &info.iflags);
     info.is_static = (info.flags & kStaticMemberFlag) != 0;
-    info.return_type_handle = URK::@BACKEND @ ::method_get_return_type(method);
+    info.return_type_handle = URK::@BACKEND@ ::method_get_return_type(method);
     info.return_type = type_name(info.return_type_handle);
-    @METHOD_PARAMETERS @ return info;
+    @METHOD_PARAMETERS@ return info;
 }
-inline std::vector<MethodInfo> methods_from_class(const URK::@BACKEND @ ::Class *klass, bool includeInherited) {
+inline std::vector<MethodInfo> methods_from_class(const URK::@BACKEND@ ::Class *klass, bool includeInherited) {
     std::vector<MethodInfo> out;
     for (const void *current = klass; current;
-         current = includeInherited ? URK::@BACKEND
-                       @ ::class_get_parent(static_cast<const URK::@BACKEND @ ::Class *>(current))
+         current = includeInherited ? URK::@BACKEND@ ::class_get_parent(static_cast<const URK::@BACKEND@ ::Class *>(current))
                                     : nullptr) {
         const TypeInfo declaring = DescribeClass(current);
         void *it = nullptr;
         while (const auto *method =
-                   URK::@BACKEND @ ::class_get_methods(static_cast<const URK::@BACKEND @ ::Class *>(current), &it))
+                   URK::@BACKEND@ ::class_get_methods(static_cast<const URK::@BACKEND@ ::Class *>(current), &it))
             out.push_back(method_info(method, declaring));
     }
     return out;
@@ -588,7 +586,7 @@ inline std::vector<MethodInfo> Methods(TypeRef type, bool includeInherited = tru
         detail::append_backend_error();
         return {};
     }
-    return methods_from_class(static_cast<const URK::@BACKEND @ ::Class *>(klass), includeInherited);
+    return methods_from_class(static_cast<const URK::@BACKEND@ ::Class *>(klass), includeInherited);
 }
 inline std::vector<MethodInfo> Methods(Object object, bool includeInherited = true) {
     detail::clear_error();
@@ -598,27 +596,25 @@ inline std::vector<MethodInfo> Methods(Object object, bool includeInherited = tr
         detail::append_backend_error();
         return {};
     }
-    return methods_from_class(static_cast<const URK::@BACKEND @ ::Class *>(klass), includeInherited);
+    return methods_from_class(static_cast<const URK::@BACKEND@ ::Class *>(klass), includeInherited);
 }
 inline std::vector<MethodInfo> Methods(const ObjectRefInfo &object, bool includeInherited = true) {
     return object.handle ? Methods(Object{object.handle}, includeInherited) : std::vector<MethodInfo>{};
 }
-inline PropertyInfo property_info(const URK::@BACKEND @ ::Property *property, TypeInfo declaring) {
+inline PropertyInfo property_info(const URK::@BACKEND@ ::Property *property, TypeInfo declaring) {
     PropertyInfo info{};
     info.handle = property;
     info.declaring_type = std::move(declaring);
-    const char *name = URK::@BACKEND @ ::property_get_name(property);
+    const char *name = URK::@BACKEND@ ::property_get_name(property);
     info.name = name ? name : "";
-    info.flags = URK::@BACKEND @ ::property_get_flags(property);
-    info.get_method = URK::@BACKEND @ ::property_get_get_method(property);
-    info.set_method = URK::@BACKEND @ ::property_get_set_method(property);
+    info.flags = URK::@BACKEND@ ::property_get_flags(property);
+    info.get_method = URK::@BACKEND@ ::property_get_get_method(property);
+    info.set_method = URK::@BACKEND@ ::property_get_set_method(property);
     info.can_read = info.get_method != nullptr;
     info.can_write = info.set_method != nullptr;
     const void *propertyType =
-        info.get_method ? URK::@BACKEND
-            @ ::method_get_return_type(static_cast<const URK::@BACKEND @ ::Method *>(info.get_method))
-                        : (info.set_method ? URK::@BACKEND @ ::@METHOD_GET_PARAM
-                               @(static_cast<const URK::@BACKEND @ ::Method *>(info.set_method), 0)
+        info.get_method ? URK::@BACKEND@ ::method_get_return_type(static_cast<const URK::@BACKEND@ ::Method *>(info.get_method))
+                        : (info.set_method ? URK::@BACKEND@ ::@METHOD_GET_PARAM@(static_cast<const URK::@BACKEND@ ::Method *>(info.set_method), 0)
                                            : nullptr);
     const TypeInfo propertyTypeInfo = DescribeType(propertyType);
     info.type = propertyType;
@@ -627,16 +623,15 @@ inline PropertyInfo property_info(const URK::@BACKEND @ ::Property *property, Ty
     info.is_enum = propertyTypeInfo.is_enum;
     return info;
 }
-inline std::vector<PropertyInfo> properties_from_class(const URK::@BACKEND @ ::Class *klass, bool includeInherited) {
+inline std::vector<PropertyInfo> properties_from_class(const URK::@BACKEND@ ::Class *klass, bool includeInherited) {
     std::vector<PropertyInfo> out;
     for (const void *current = klass; current;
-         current = includeInherited ? URK::@BACKEND
-                       @ ::class_get_parent(static_cast<const URK::@BACKEND @ ::Class *>(current))
+         current = includeInherited ? URK::@BACKEND@ ::class_get_parent(static_cast<const URK::@BACKEND@ ::Class *>(current))
                                     : nullptr) {
         const TypeInfo declaring = DescribeClass(current);
         void *it = nullptr;
         while (const auto *property =
-                   URK::@BACKEND @ ::class_get_properties(static_cast<const URK::@BACKEND @ ::Class *>(current), &it))
+                   URK::@BACKEND@ ::class_get_properties(static_cast<const URK::@BACKEND@ ::Class *>(current), &it))
             out.push_back(property_info(property, declaring));
     }
     return out;
@@ -649,7 +644,7 @@ inline std::vector<PropertyInfo> Properties(TypeRef type, bool includeInherited 
         detail::append_backend_error();
         return {};
     }
-    return properties_from_class(static_cast<const URK::@BACKEND @ ::Class *>(klass), includeInherited);
+    return properties_from_class(static_cast<const URK::@BACKEND@ ::Class *>(klass), includeInherited);
 }
 inline std::vector<PropertyInfo> Properties(Object object, bool includeInherited = true) {
     detail::clear_error();
@@ -659,7 +654,7 @@ inline std::vector<PropertyInfo> Properties(Object object, bool includeInherited
         detail::append_backend_error();
         return {};
     }
-    return properties_from_class(static_cast<const URK::@BACKEND @ ::Class *>(klass), includeInherited);
+    return properties_from_class(static_cast<const URK::@BACKEND@ ::Class *>(klass), includeInherited);
 }
 inline std::vector<PropertyInfo> Properties(const ObjectRefInfo &object, bool includeInherited = true) {
     return object.handle ? Properties(Object{object.handle}, includeInherited) : std::vector<PropertyInfo>{};
@@ -690,15 +685,15 @@ inline ValueInfo enum_placeholder(std::string typeName) {
 }
 inline std::string enum_underlying_type_name(const void *type) {
     const void *klass =
-        type ? URK::@BACKEND @ ::@TYPE_GET_CLASS @(static_cast<const URK::@BACKEND @ ::Type *>(type)) : nullptr;
+        type ? URK::@BACKEND@ ::@TYPE_GET_CLASS@(static_cast<const URK::@BACKEND@ ::Type *>(type)) : nullptr;
     if (!klass)
         return {};
-    @ENUM_BASETYPE @ void *it = nullptr;
+    @ENUM_BASETYPE@ void *it = nullptr;
     while (const auto *field =
-               URK::@BACKEND @ ::class_get_fields(static_cast<const URK::@BACKEND @ ::Class *>(klass), &it)) {
-        const char *name = URK::@BACKEND @ ::field_get_name(field);
+               URK::@BACKEND@ ::class_get_fields(static_cast<const URK::@BACKEND@ ::Class *>(klass), &it)) {
+        const char *name = URK::@BACKEND@ ::field_get_name(field);
         if (name && std::string_view{name} == "value__")
-            return type_name(URK::@BACKEND @ ::field_get_type(field));
+            return type_name(URK::@BACKEND@ ::field_get_type(field));
     }
     return {};
 }
@@ -1668,6 +1663,15 @@ inline void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr) {
         replaceAll("@METHOD_GET_PARAM@", mono ? "method_get_param_type" : "method_get_param");
         replaceAll("@METHOD_PARAMETERS@", methodParameters);
         replaceAll("@ENUM_BASETYPE@", enumBaseType);
+        // A reformat once split these placeholders across lines, so every
+        // substitution silently missed and the emitted header did not compile.
+        // Fail at generation time rather than shipping a broken SDK.
+        for (const std::string_view placeholder : {"@BACKEND", "@TYPE_GET_CLASS", "@METHOD_GET_PARAM",
+                                                   "@METHOD_PARAMETERS", "@ENUM_BASETYPE"}) {
+            if (text.find(placeholder) != std::string::npos)
+                throw std::runtime_error("unity_inspect template placeholder was not substituted: " +
+                                         std::string(placeholder));
+        }
         return text;
     }();
 
