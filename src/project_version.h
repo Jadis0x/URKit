@@ -4,6 +4,6 @@
 
 namespace UrkVersion {
 
-inline constexpr std::string_view kReleaseVersion = "0.3.1";
+inline constexpr std::string_view kReleaseVersion = "0.3.2";
 
 }
