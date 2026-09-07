@@ -809,7 +809,7 @@ struct AudioSource : Behaviour {
         return GetProperty<Object>("clip");
     }
     void set_clip(Object value) const {
-        SetProperty("clip", value);
+        CallExact<void>("set_clip", {"UnityEngine.AudioClip"}, value);
     }
     float volume() const {
         return GetProperty<float>("volume");
@@ -937,13 +937,13 @@ struct Animator : Behaviour {
         return GetProperty<Object>("avatar");
     }
     void set_avatar(Object value) const {
-        SetProperty("avatar", value);
+        CallExact<void>("set_avatar", {"UnityEngine.Avatar"}, value);
     }
     Object runtimeAnimatorController() const {
         return GetProperty<Object>("runtimeAnimatorController");
     }
     void set_runtimeAnimatorController(Object value) const {
-        SetProperty("runtimeAnimatorController", value);
+        CallExact<void>("set_runtimeAnimatorController", {"UnityEngine.RuntimeAnimatorController"}, value);
     }
     float GetFloat(std::string_view name) const {
         return CallExact<float>("GetFloat", {"System.String"}, name);
@@ -1245,7 +1245,7 @@ struct Text : Graphic {
         return GetProperty<Object>("font");
     }
     void set_font(Object value) const {
-        SetProperty("font", value);
+        CallExact<void>("set_font", {"UnityEngine.Font"}, value);
     }
     int fontSize() const {
         return GetProperty<int>("fontSize");

@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -198,6 +199,44 @@ bool GenerateBoth(const fs::path &workspace, std::vector<GeneratedProject> *proj
     return true;
 }
 
+std::string ReadText(const fs::path &path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// A setter whose C++ parameter is the generic `Object` wrapper cannot be
+// dispatched by inferred type: inference yields "UnityEngine.Object" while the
+// property's declared C# type is something narrower (AudioClip, Font, ...), so
+// the exact-overload lookup never matches and the call silently never happens.
+// Such setters must name the declared type through CallExact.
+void CheckObjectSettersAreExact(const GeneratedProject &project) {
+    const std::string text = ReadText(project.root / "sdk" / "unity" / "unity_components.h");
+    Check(!text.empty(), project.label + ": unity_components.h is readable");
+
+    std::size_t offset = 0;
+    int checked = 0;
+    bool clean = true;
+    const std::string_view needle = "(Object value) const {";
+    while ((offset = text.find(needle, offset)) != std::string::npos) {
+        const std::size_t lineStart = text.rfind('\n', offset) + 1;
+        const std::size_t bodyEnd = text.find('}', offset);
+        const std::string declaration = text.substr(lineStart, offset - lineStart);
+        if (declaration.find("void set_") == std::string::npos) {
+            offset += needle.size();
+            continue;
+        }
+        ++checked;
+        const std::string body = text.substr(offset, bodyEnd - offset);
+        if (body.find("CallExact<void>") == std::string::npos) {
+            std::printf("  generic-Object setter without CallExact: %s\n", declaration.c_str());
+            clean = false;
+        }
+        offset += needle.size();
+    }
+    Check(checked > 0, project.label + ": generic-Object property setters are present");
+    Check(clean, project.label + ": generic-Object property setters dispatch via CallExact");
+}
+
 void CheckLayout(const GeneratedProject &project) {
     const char *const required[] = {
         "CMakeLists.txt",
@@ -247,6 +286,7 @@ int main(int argc, char **argv) {
 
     for (const GeneratedProject &project : projects) {
         CheckLayout(project);
+        CheckObjectSettersAreExact(project);
 
         const fs::path probe = project.root / "urk_probe_unity.cpp";
         Write(probe, kProbeSource);
