@@ -52,9 +52,13 @@ struct MonoCursorMethods {
     MonoMethod *getLockState = nullptr;
     MonoMethod *setLockState = nullptr;
 
-    bool ready() const {
-        return getVisible && setVisible && getLockState && setLockState;
-    }
+    // Taking the cursor for the menu needs the setters. Managed stripping keeps
+    // only the members a game actually uses, so a game that assigns
+    // Cursor.visible without ever reading it back ships without the getter -
+    // and requiring all four used to disable cursor control completely, leaving
+    // the game free to keep warping the cursor under the menu.
+    bool ready() const { return setVisible && setLockState; }
+    bool canReadState() const { return getVisible && getLockState; }
 };
 
 struct MonoInputMethods {
@@ -68,6 +72,10 @@ struct MonoInputMethods {
     bool ready() const {
         return getKey && getKeyDown && getKeyUp && getMouseButton && getMouseButtonDown && getMouseButtonUp;
     }
+    // Suppressing the clicks the menu swallows only needs the mouse helpers. A
+    // build that stripped Input.GetKeyDown still has these, and used to lose
+    // suppression along with the rest.
+    bool readyForMouseSuppression() const { return getMouseButton && getMouseButtonDown && getMouseButtonUp; }
 };
 
 struct MonoFrameMethods {
@@ -127,9 +135,10 @@ struct Il2CppCursorMethods {
     const Il2CppMethod *getLockState = nullptr;
     const Il2CppMethod *setLockState = nullptr;
 
-    bool ready() const {
-        return getVisible && setVisible && getLockState && setLockState;
-    }
+    // See MonoCursorMethods::ready(): the setters are the capability, the
+    // getters only say what to restore afterwards.
+    bool ready() const { return setVisible && setLockState; }
+    bool canReadState() const { return getVisible && getLockState; }
 };
 
 struct Il2CppInputMethods {
@@ -143,6 +152,8 @@ struct Il2CppInputMethods {
     bool ready() const {
         return getKey && getKeyDown && getKeyUp && getMouseButton && getMouseButtonDown && getMouseButtonUp;
     }
+    // See MonoInputMethods::readyForMouseSuppression().
+    bool readyForMouseSuppression() const { return getMouseButton && getMouseButtonDown && getMouseButtonUp; }
 };
 
 struct Il2CppFrameMethods {
@@ -1523,9 +1534,33 @@ void Il2CppDestroyImmediateDetour(Il2CppObject *object, bool allowDestroyingAsse
     ModLifecycle_DispatchObjectDestroyRequested(request);
 }
 
+// What the cursor looks like from outside the runtime. Unity's Locked mode
+// hides the cursor and clips it to the window, both of which Windows reports, so
+// a build whose Cursor getters were stripped can still have its state saved and
+// put back.
+bool ReadNativeCursorState(CursorState *state) {
+    if (!state)
+        return false;
+    CURSORINFO info{};
+    info.cbSize = sizeof(info);
+    state->visible = GetCursorInfo(&info) != 0 && (info.flags & CURSOR_SHOWING) != 0;
+    RECT clip{};
+    state->lockState = URK_CURSOR_LOCK_NONE;
+    if (GetClipCursor(&clip) != 0) {
+        const int screenWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        const int screenHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        const bool clipped = (clip.right - clip.left) < screenWidth || (clip.bottom - clip.top) < screenHeight;
+        if (clipped)
+            state->lockState = state->visible ? URK_CURSOR_LOCK_CONFINED : URK_CURSOR_LOCK_LOCKED;
+    }
+    return true;
+}
+
 bool ReadMonoCursorState(CursorState *state) {
     if (!state || !g_mono || !g_cursorMethods.ready())
         return false;
+    if (!g_cursorMethods.canReadState())
+        return ReadNativeCursorState(state);
 
     bool ok = false;
     MonoObject *visibleObject = InvokeMono(g_cursorMethods.getVisible, nullptr, nullptr, "Cursor.get_visible", &ok);
@@ -1554,6 +1589,8 @@ bool SetMonoCursorLockState(int32_t lockState) {
 bool ReadIl2CppCursorState(CursorState *state) {
     if (!state || !g_il2cpp || !g_il2cppCursorMethods.ready())
         return false;
+    if (!g_il2cppCursorMethods.canReadState())
+        return ReadNativeCursorState(state);
 
     bool ok = false;
     Il2CppObject *visibleObject =
@@ -2447,23 +2484,27 @@ uint64_t TryActivateMonoRuntimeEvents(MonoApi &mono) {
 
     if (needInput || needMouseSuppression) {
         const MonoInputMethods inputMethods = ResolveInputMethods(mono);
-        if (inputMethods.ready()) {
+        // Keep whatever resolved, even a partial set: the mouse hooks below run
+        // off the mouse helpers alone, and the capability flag stays gated on
+        // the full set so callers still get what it promises.
+        if (inputMethods.readyForMouseSuppression() || inputMethods.ready()) {
             std::lock_guard lock(g_eventsMutex);
             if (g_backend != RuntimeEventsBackend::Mono || g_mono != &mono)
                 return g_capabilities;
             g_inputMethods = inputMethods;
-            if (needInput)
+            if (needInput && inputMethods.ready())
                 g_capabilities |= URK_RUNTIME_CAP_INPUT;
             capabilities = g_capabilities;
         }
         const bool suppressionInstalled =
-            inputMethods.ready() && needMouseSuppression && InstallMonoMouseHooks(mono, inputMethods);
+            inputMethods.readyForMouseSuppression() && needMouseSuppression &&
+            InstallMonoMouseHooks(mono, inputMethods);
         if (suppressionInstalled) {
             std::lock_guard lock(g_eventsMutex);
             g_mouseInputSuppressionInstalled = true;
             Log("[SUCCESS][runtime][events][Mono] mouse input suppression activated after "
                 "UnityEngine methods became available.");
-        } else if (inputMethods.ready() && needMouseSuppression) {
+        } else if (inputMethods.readyForMouseSuppression() && needMouseSuppression) {
             std::lock_guard lock(g_eventsMutex);
             g_monoMouseHookInstallFailed = true;
             Log("[runtime][events][Mono][WARNING] Mouse input suppression hooks "
@@ -2653,23 +2694,25 @@ uint64_t TryActivateIl2CppRuntimeEvents(Il2CppApi &il2cpp) {
                 "Legacy input helpers not ready yet; searched InputLegacyModule, CoreModule, and UnityEngine",
                 inputMethods);
         }
-        if (inputMethods.ready()) {
+        // See the Mono path: a partial set still buys mouse suppression.
+        if (inputMethods.readyForMouseSuppression() || inputMethods.ready()) {
             std::lock_guard lock(g_eventsMutex);
             if (g_backend != RuntimeEventsBackend::Il2Cpp || g_il2cpp != &il2cpp)
                 return g_capabilities;
             g_il2cppInputMethods = inputMethods;
-            if (needInput)
+            if (needInput && inputMethods.ready())
                 g_capabilities |= URK_RUNTIME_CAP_INPUT;
             capabilities = g_capabilities;
         }
         const bool suppressionInstalled =
-            inputMethods.ready() && needMouseSuppression && InstallIl2CppMouseHooks(il2cpp, inputMethods);
+            inputMethods.readyForMouseSuppression() && needMouseSuppression &&
+            InstallIl2CppMouseHooks(il2cpp, inputMethods);
         if (suppressionInstalled) {
             std::lock_guard lock(g_eventsMutex);
             g_mouseInputSuppressionInstalled = true;
             Log("[SUCCESS][runtime][events][IL2CPP] mouse input suppression activated after "
                 "UnityEngine methods became available.");
-        } else if (inputMethods.ready() && needMouseSuppression) {
+        } else if (inputMethods.readyForMouseSuppression() && needMouseSuppression) {
             std::lock_guard lock(g_eventsMutex);
             g_il2cppMouseHookInstallFailed = true;
             Log("[runtime][events][IL2CPP][WARNING] Mouse input suppression hooks "
@@ -3232,8 +3275,9 @@ uint64_t RuntimeEvents_ConfigureMono(MonoApi &mono) {
     if (cursorMethods.ready())
         capabilities |= URK_RUNTIME_CAP_CURSOR_CONTROL;
     bool mouseSuppressionInstalled = false;
-    if (inputMethods.ready()) {
+    if (inputMethods.ready())
         capabilities |= URK_RUNTIME_CAP_INPUT;
+    if (inputMethods.readyForMouseSuppression()) {
         mouseSuppressionInstalled = InstallMonoMouseHooks(mono, inputMethods);
         if (!mouseSuppressionInstalled)
             Log("[runtime][events][Mono][WARNING] Mouse input suppression hooks could not be installed; Unity input "
@@ -3246,7 +3290,7 @@ uint64_t RuntimeEvents_ConfigureMono(MonoApi &mono) {
         g_mouseInputSuppressionInstalled = mouseSuppressionInstalled;
         g_monoFrameHookInstallFailed = frameMethods.frame_ready() && !frameInstalled;
         g_monoSceneHookInstallFailed = sceneMethods.ready() && !sceneInstalled;
-        g_monoMouseHookInstallFailed = inputMethods.ready() && !mouseSuppressionInstalled;
+        g_monoMouseHookInstallFailed = inputMethods.readyForMouseSuppression() && !mouseSuppressionInstalled;
         g_monoApplicationQuitHookInstallFailed = applicationMethods.ready() && !applicationQuitInstalled;
         g_monoObjectDestroyHookInstallFailed = objectDestroyMethods.ready() && !objectDestroyInstalled;
     }

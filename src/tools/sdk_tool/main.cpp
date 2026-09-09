@@ -199,7 +199,8 @@ constexpr int kIdGitHubProfile = 1004;
 constexpr int kIdCoffee = 1005;
 constexpr int kIdBackendIl2Cpp = 1007;
 constexpr int kIdBrowseGameExe = 1008;
-constexpr int kIdTabs = 1009;
+constexpr int kIdTabGenerate = 1009;
+constexpr int kIdTabSupport = 1013;
 constexpr int kIdProjectRepo = 1010;
 constexpr int kIdBackendAuto = 1011;
 constexpr int kIdLocalization = 1012;
@@ -307,6 +308,7 @@ class SdkGeneratorWindow {
         logBrush_ = CreateSolidBrush(URK::ToolUi::kPalette.surfaceMuted);
         canvasBrush_ = CreateSolidBrush(URK::ToolUi::kPalette.canvas);
         brandBrush_ = CreateSolidBrush(URK::ToolUi::kPalette.brand);
+        inputBrush_ = CreateSolidBrush(URK::ToolUi::kPalette.surfaceMuted);
 
         WNDCLASSW wc{};
         wc.lpfnWndProc = &SdkGeneratorWindow::WndProc;
@@ -350,6 +352,8 @@ class SdkGeneratorWindow {
             DeleteObject(canvasBrush_);
         if (brandBrush_)
             DeleteObject(brandBrush_);
+        if (inputBrush_)
+            DeleteObject(inputBrush_);
         return static_cast<int>(msg.wParam);
     }
 
@@ -380,8 +384,6 @@ class SdkGeneratorWindow {
                 return 0;
             case WM_COMMAND:
                 return HandleCommand(LOWORD(wParam), HIWORD(wParam));
-            case WM_NOTIFY:
-                return HandleNotify(reinterpret_cast<NMHDR *>(lParam));
             case WM_DRAWITEM:
                 return DrawControl(*reinterpret_cast<DRAWITEMSTRUCT *>(lParam));
             case WM_DROPFILES:
@@ -407,13 +409,13 @@ class SdkGeneratorWindow {
                 SetTextColor(reinterpret_cast<HDC>(wParam), URK::ToolUi::kPalette.text);
                 SetBkMode(reinterpret_cast<HDC>(wParam), TRANSPARENT);
                 return reinterpret_cast<LRESULT>(whiteBrush_);
-            case WM_CTLCOLOREDIT:
-                if (reinterpret_cast<HWND>(lParam) == logEdit_) {
-                    SetTextColor(reinterpret_cast<HDC>(wParam), RGB(32, 38, 46));
-                    SetBkColor(reinterpret_cast<HDC>(wParam), RGB(248, 250, 252));
-                    return reinterpret_cast<LRESULT>(logBrush_);
-                }
-                break;
+            case WM_CTLCOLOREDIT: {
+                HDC dc = reinterpret_cast<HDC>(wParam);
+                HWND control = reinterpret_cast<HWND>(lParam);
+                SetTextColor(dc, URK::ToolUi::kPalette.text);
+                SetBkColor(dc, URK::ToolUi::kPalette.surfaceMuted);
+                return reinterpret_cast<LRESULT>(control == logEdit_ ? logBrush_ : inputBrush_);
+            }
             case WM_SETCURSOR:
                 if (IsLinkControl(reinterpret_cast<HWND>(wParam))) {
                     SetCursor(LoadCursorW(nullptr, IDC_HAND));
@@ -435,43 +437,64 @@ class SdkGeneratorWindow {
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     }
 
-    LRESULT HandleNotify(const NMHDR *header) {
-        if (!header || header->idFrom != kIdTabs || header->code != TCN_SELCHANGE)
-            return 0;
-        activeTab_ = static_cast<int>(SendMessageW(tab_, TCM_GETCURSEL, 0, 0));
-        ApplyTabVisibility();
-        InvalidateRect(tab_, nullptr, TRUE);
-        return 0;
+    // BS_OWNERDRAW is mutually exclusive with BS_AUTORADIOBUTTON, so these
+    // buttons hold no check state of their own and BM_SETCHECK/BM_GETCHECK are
+    // no-ops on them. options_ is the only source of truth; repainting is all
+    // the selection change needs.
+    int SelectedBackendId() const {
+        if (options_.backendSelection == "il2cpp")
+            return kIdBackendIl2Cpp;
+        if (options_.backendSelection == "mono")
+            return kIdBackendMono;
+        return kIdBackendAuto;
+    }
+
+    void SetRadioSelection(int) {
+        InvalidateRect(autoRadio_, nullptr, TRUE);
+        InvalidateRect(monoRadio_, nullptr, TRUE);
+        InvalidateRect(il2cppRadio_, nullptr, TRUE);
     }
 
     LRESULT DrawControl(const DRAWITEMSTRUCT &item) {
-        if (item.CtlType == ODT_BUTTON) {
-            URK::ToolUi::DrawButton(item, font_, item.CtlID == kIdGenerate);
+        if (item.CtlType == ODT_STATIC && item.hwndItem == panelBackground_) {
+            URK::ToolUi::DrawRoundedPanel(item.hDC, item.rcItem, URK::ToolUi::kPalette.surface,
+                                          URK::ToolUi::kPalette.border, 8, URK::ToolUi::kPalette.canvas);
             return TRUE;
         }
-        if (item.CtlType == ODT_TAB && item.hwndItem == tab_) {
-            RECT rect = item.rcItem;
-            const int selectedTab = static_cast<int>(SendMessageW(tab_, TCM_GETCURSEL, 0, 0));
-            const bool selected = static_cast<int>(item.itemID) == selectedTab;
-            URK::ToolUi::Fill(item.hDC, rect, selected ? URK::ToolUi::kPalette.surface : URK::ToolUi::kPalette.canvas);
-            if (selected) {
-                RECT accent{rect.left + 18, rect.bottom - 3, rect.right - 18, rect.bottom};
-                URK::ToolUi::Fill(item.hDC, accent, URK::ToolUi::kPalette.accent);
+        if (item.CtlType == ODT_BUTTON) {
+            if (item.CtlID == kIdBackendAuto || item.CtlID == kIdBackendMono || item.CtlID == kIdBackendIl2Cpp) {
+                URK::ToolUi::DrawRadioButton(item, font_, SelectedBackendId() == static_cast<int>(item.CtlID));
+                return TRUE;
             }
-            wchar_t text[64]{};
-            TCITEMW tabItem{};
-            tabItem.mask = TCIF_TEXT;
-            tabItem.pszText = text;
-            tabItem.cchTextMax = static_cast<int>(std::size(text));
-            SendMessageW(tab_, TCM_GETITEMW, item.itemID, reinterpret_cast<LPARAM>(&tabItem));
-            SetBkMode(item.hDC, TRANSPARENT);
-            SetTextColor(item.hDC, selected ? URK::ToolUi::kPalette.text : URK::ToolUi::kPalette.textMuted);
-            HGDIOBJ oldFont = SelectObject(item.hDC, font_);
-            DrawTextW(item.hDC, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            SelectObject(item.hDC, oldFont);
+            if (item.CtlID == kIdLocalization) {
+                URK::ToolUi::DrawCheckbox(item, font_, options_.enableLocalization);
+                return TRUE;
+            }
+            if (item.CtlID == kIdTabGenerate || item.CtlID == kIdTabSupport) {
+                DrawTabButton(item, item.CtlID == kIdTabGenerate ? 0 : 1);
+                return TRUE;
+            }
+            URK::ToolUi::DrawButton(item, font_, item.CtlID == kIdGenerate, URK::ToolUi::kPalette.surface);
             return TRUE;
         }
         return FALSE;
+    }
+
+    void DrawTabButton(const DRAWITEMSTRUCT &item, int tabIndex) {
+        RECT rect = item.rcItem;
+        const bool selected = activeTab_ == tabIndex;
+        URK::ToolUi::Fill(item.hDC, rect, selected ? URK::ToolUi::kPalette.surface : URK::ToolUi::kPalette.canvas);
+        if (selected) {
+            RECT accent{rect.left + 18, rect.bottom - 3, rect.right - 18, rect.bottom};
+            URK::ToolUi::Fill(item.hDC, accent, URK::ToolUi::kPalette.accent);
+        }
+        wchar_t text[64]{};
+        GetWindowTextW(item.hwndItem, text, static_cast<int>(std::size(text)));
+        SetBkMode(item.hDC, TRANSPARENT);
+        SetTextColor(item.hDC, selected ? URK::ToolUi::kPalette.text : URK::ToolUi::kPalette.textMuted);
+        HGDIOBJ oldFont = SelectObject(item.hDC, font_);
+        DrawTextW(item.hDC, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(item.hDC, oldFont);
     }
 
     LRESULT HandleCommand(int id, int notification) {
@@ -479,25 +502,37 @@ class SdkGeneratorWindow {
             case kIdBackendAuto:
                 if (notification == BN_CLICKED) {
                     options_.backendSelection = "auto";
+                    SetRadioSelection(kIdBackendAuto);
                     RefreshDerivedPaths(false);
                 }
                 return 0;
             case kIdBackendMono:
                 if (notification == BN_CLICKED) {
                     options_.backendSelection = "mono";
+                    SetRadioSelection(kIdBackendMono);
                     RefreshDerivedPaths(false);
                 }
                 return 0;
             case kIdBackendIl2Cpp:
                 if (notification == BN_CLICKED) {
                     options_.backendSelection = "il2cpp";
+                    SetRadioSelection(kIdBackendIl2Cpp);
                     RefreshDerivedPaths(false);
                 }
                 return 0;
             case kIdLocalization:
+                if (notification == BN_CLICKED) {
+                    options_.enableLocalization = !options_.enableLocalization;
+                    InvalidateRect(localizationCheck_, nullptr, TRUE);
+                }
+                return 0;
+            case kIdTabGenerate:
                 if (notification == BN_CLICKED)
-                    options_.enableLocalization =
-                        SendMessageW(localizationCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                    SelectTab(0);
+                return 0;
+            case kIdTabSupport:
+                if (notification == BN_CLICKED)
+                    SelectTab(1);
                 return 0;
             case kIdBrowseGameExe:
                 BrowseGameExecutable();
@@ -572,6 +607,15 @@ class SdkGeneratorWindow {
         InvalidateRect(hwnd_, nullptr, TRUE);
     }
 
+    void SelectTab(int tabIndex) {
+        if (activeTab_ == tabIndex)
+            return;
+        activeTab_ = tabIndex;
+        ApplyTabVisibility();
+        InvalidateRect(tabGenerateButton_, nullptr, TRUE);
+        InvalidateRect(tabSupportButton_, nullptr, TRUE);
+    }
+
     void CreateControls() {
         int y = 13;
 
@@ -586,17 +630,12 @@ class SdkGeneratorWindow {
                                          std::to_wstring(URK_NETWORK_API_VERSION);
         subtitle_ = MakeControl(L"STATIC", versionText.c_str(), 0, 0, 73, y + 27, 620, 18);
 
-        tab_ = MakeControl(WC_TABCONTROLW, L"", WS_TABSTOP | TCS_FIXEDWIDTH | TCS_OWNERDRAWFIXED, 0, 20, 86, 704, 450,
-                           kIdTabs);
-        SendMessageW(tab_, TCM_SETITEMSIZE, 0, MAKELPARAM(124, 30));
-        TCITEMW item{};
-        item.mask = TCIF_TEXT;
-        item.pszText = const_cast<wchar_t *>(L"Generate");
-        SendMessageW(tab_, TCM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&item));
-        item.pszText = const_cast<wchar_t *>(L"Support");
-        SendMessageW(tab_, TCM_INSERTITEMW, 1, reinterpret_cast<LPARAM>(&item));
+        tabGenerateButton_ = MakeControl(L"BUTTON", L"Generate", BS_OWNERDRAW | WS_TABSTOP, 0, 20, 86, 124, 30,
+                                         kIdTabGenerate);
+        tabSupportButton_ = MakeControl(L"BUTTON", L"Support", BS_OWNERDRAW | WS_TABSTOP, 0, 144, 86, 124, 30,
+                                        kIdTabSupport);
 
-        panelBackground_ = MakeControl(L"STATIC", L"", SS_WHITERECT, 0, 29, 120, 694, 414);
+        panelBackground_ = MakeControl(L"STATIC", L"", SS_OWNERDRAW, 0, 20, 120, 704, 416);
 
         const int panelX = 42;
         const int panelY = 130;
@@ -614,22 +653,22 @@ class SdkGeneratorWindow {
 
         y = panelY + 28;
         MakeControl(L"STATIC", L"Runtime backend", 0, 0, panelX, y + 3, labelWidth, 18, 0, Panel::Generate);
-        autoRadio_ = MakeControl(L"BUTTON", L"Auto", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 0, editX, y, 76, 20,
+        autoRadio_ = MakeControl(L"BUTTON", L"Auto", BS_OWNERDRAW | WS_GROUP | WS_TABSTOP, 0, editX, y, 76, 20,
                                  kIdBackendAuto, Panel::Generate);
-        monoRadio_ = MakeControl(L"BUTTON", L"Mono", BS_AUTORADIOBUTTON | WS_TABSTOP, 0, editX + 84, y, 78, 20,
+        monoRadio_ = MakeControl(L"BUTTON", L"Mono", BS_OWNERDRAW | WS_TABSTOP, 0, editX + 84, y, 78, 20,
                                  kIdBackendMono, Panel::Generate);
-        il2cppRadio_ = MakeControl(L"BUTTON", L"IL2CPP", BS_AUTORADIOBUTTON | WS_TABSTOP, 0, editX + 170, y, 88, 20,
+        il2cppRadio_ = MakeControl(L"BUTTON", L"IL2CPP", BS_OWNERDRAW | WS_TABSTOP, 0, editX + 170, y, 88, 20,
                                    kIdBackendIl2Cpp, Panel::Generate);
-        SendMessageW(autoRadio_, BM_SETCHECK, BST_CHECKED, 0);
+        SetRadioSelection(kIdBackendAuto);
         y += 32;
 
         MakeControl(L"STATIC", L"Project name", 0, 0, panelX, y + 4, labelWidth, 18, 0, Panel::Generate);
-        projectEdit_ = MakeControl(L"EDIT", L"GeneratedMod", ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, editX, y, editWidth, 24,
+        projectEdit_ = MakeControl(L"EDIT", L"GeneratedMod", ES_AUTOHSCROLL, 0, editX, y, editWidth, 24,
                                    kIdProjectName, Panel::Generate);
         y += 32;
 
         MakeControl(L"STATIC", L"Language support", 0, 0, panelX, y + 3, labelWidth, 18, 0, Panel::Generate);
-        localizationCheck_ = MakeControl(L"BUTTON", L"Generate selectable JSON locales", BS_AUTOCHECKBOX | WS_TABSTOP,
+        localizationCheck_ = MakeControl(L"BUTTON", L"Generate selectable JSON locales", BS_OWNERDRAW | WS_TABSTOP,
                                          0, editX, y, 280, 20, kIdLocalization, Panel::Generate);
         y += 32;
 
@@ -651,7 +690,7 @@ class SdkGeneratorWindow {
         if (activityTitle)
             SendMessageW(activityTitle, WM_SETFONT, reinterpret_cast<WPARAM>(sectionFont_), TRUE);
         y += 24;
-        logEdit_ = MakeControl(L"EDIT", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL, WS_EX_CLIENTEDGE,
+        logEdit_ = MakeControl(L"EDIT", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL, 0,
                                panelX, y, 640, logHeight, 0, Panel::Generate);
         SendMessageW(logEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(logFont_), TRUE);
 
@@ -662,7 +701,6 @@ class SdkGeneratorWindow {
         CreateSupportControls();
 
         SetWindowPos(panelBackground_, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        SetWindowPos(tab_, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         ApplyTabVisibility();
     }
 
@@ -748,19 +786,23 @@ class SdkGeneratorWindow {
 
     bool RefreshDerivedPaths(bool logResult) {
         Options next;
-        if (SendMessageW(il2cppRadio_, BM_GETCHECK, 0, 0) == BST_CHECKED)
-            next.backendSelection = "il2cpp";
-        else if (SendMessageW(monoRadio_, BM_GETCHECK, 0, 0) == BST_CHECKED)
-            next.backendSelection = "mono";
-        else
-            next.backendSelection = "auto";
+        next.backendSelection = options_.backendSelection.empty() ? "auto" : options_.backendSelection;
         next.projectName = URK::ToolUi::WideToUtf8(URK::ToolUi::WindowText(projectEdit_));
         next.gameExePath = options_.gameExePath;
-        next.enableLocalization = SendMessageW(localizationCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        next.enableLocalization = options_.enableLocalization;
 
         std::string error;
         if (!FillDerivedProjectPaths(next, error)) {
-            options_ = {};
+            // Only the derived paths are invalid. options_ is now the sole
+            // record of what the user picked, so clearing it here would reset
+            // the backend radio and the locale checkbox on every refresh that
+            // runs before a game executable is chosen.
+            Options kept;
+            kept.backendSelection = next.backendSelection;
+            kept.projectName = next.projectName;
+            kept.gameExePath = next.gameExePath;
+            kept.enableLocalization = next.enableLocalization;
+            options_ = std::move(kept);
             URK::ToolUi::SetUtf8Text(gameExeEdit_, next.gameExePath);
             URK::ToolUi::SetUtf8Text(exportEdit_, "");
             URK::ToolUi::SetUtf8Text(outputEdit_, "");
@@ -827,6 +869,17 @@ class SdkGeneratorWindow {
         EnableWindow(generateButton_, TRUE);
     }
 
+    void DrawInputFrame(HDC dc, HWND control) {
+        RECT rect{};
+        GetWindowRect(control, &rect);
+        POINT topLeft{rect.left, rect.top};
+        POINT bottomRight{rect.right, rect.bottom};
+        ScreenToClient(hwnd_, &topLeft);
+        ScreenToClient(hwnd_, &bottomRight);
+        RECT frame{topLeft.x - 3, topLeft.y - 3, bottomRight.x + 3, bottomRight.y + 3};
+        URK::ToolUi::DrawRoundedPanel(dc, frame, URK::ToolUi::kPalette.surfaceMuted, URK::ToolUi::kPalette.border, 5);
+    }
+
     void PaintPanels() {
         PAINTSTRUCT paint{};
         HDC dc = BeginPaint(hwnd_, &paint);
@@ -836,8 +889,12 @@ class SdkGeneratorWindow {
         FillRect(dc, &header, brandBrush_);
         URK::ToolUi::DrawBrandMark(dc, 22, 13, 40);
         RECT generatePanel{20, 120, 724, 536};
-        URK::ToolUi::DrawRoundedPanel(dc, generatePanel, URK::ToolUi::kPalette.surface, URK::ToolUi::kPalette.border,
-                                      6);
+        URK::ToolUi::DrawElevatedPanel(dc, generatePanel, URK::ToolUi::kPalette.surface, URK::ToolUi::kPalette.border,
+                                       8);
+        if (activeTab_ == 0) {
+            DrawInputFrame(dc, projectEdit_);
+            DrawInputFrame(dc, logEdit_);
+        }
         EndPaint(hwnd_, &paint);
     }
 
@@ -845,7 +902,8 @@ class SdkGeneratorWindow {
     HWND hwnd_ = nullptr;
     HWND title_ = nullptr;
     HWND subtitle_ = nullptr;
-    HWND tab_ = nullptr;
+    HWND tabGenerateButton_ = nullptr;
+    HWND tabSupportButton_ = nullptr;
     HWND panelBackground_ = nullptr;
     HWND projectRepoLink_ = nullptr;
     HWND githubProfileLink_ = nullptr;
@@ -869,6 +927,7 @@ class SdkGeneratorWindow {
     HBRUSH logBrush_ = nullptr;
     HBRUSH canvasBrush_ = nullptr;
     HBRUSH brandBrush_ = nullptr;
+    HBRUSH inputBrush_ = nullptr;
     std::vector<HWND> generateControls_;
     std::vector<HWND> supportControls_;
     Options options_;

@@ -2426,6 +2426,12 @@ struct GameObject : Object {
     Scene scene() const {
         return Scene{Call<void *>("get_scene")};
     }
+    // Managed stripping drops GameObject.scene from builds whose own code
+    // never reads it, and then every object looks scene-less. Check this
+    // before treating an unreadable scene as "prefab or asset".
+    static bool scene_available() {
+        return has_method(GameObjectType, "get_scene", 0);
+    }
     std::string tag() const;
     template <class T> T GetComponent() const {
         return T{GetComponent(T::unity_type().image, T::unity_type().namespc, T::unity_type().name).handle()};

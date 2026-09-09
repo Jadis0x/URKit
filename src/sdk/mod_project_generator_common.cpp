@@ -392,6 +392,16 @@ std::string Readme(const ModuleProjectOptions &options) {
         out << "- " << line << "\n";
     if (options.enableLocalization)
         out << "- Locale JSON files under `locales/` are preserved and deployed beside the DLL.\n";
+    out << "\n## Stripped members\n\n"
+        << "IL2CPP and Mono builds drop UnityEngine members the game never calls. A stripped member returns "
+           "the default value, which reads the same as a legitimate empty result.\n\n"
+        << "- Probe first: `Unity::has_method(Unity::GameObjectType, \"get_scene\", 0)`, "
+           "`Unity::has_property(type, \"tag\")`, or a wrapper helper such as "
+           "`Unity::GameObject::scene_available()`.\n"
+        << "- Disable the feature when the member is gone. Do not report the default as data.\n"
+        << "- Against your own Unity project, `Assets/link.xml` with "
+           "`<linker><assembly fullname=\"UnityEngine.CoreModule\" preserve=\"all\"/></linker>` keeps the "
+           "member. A shipped game gives you no such option.\n";
     out << "\nStart troubleshooting with `URKit_logs.log` beside the game executable.\n";
     return out.str();
 }

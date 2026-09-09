@@ -121,6 +121,15 @@ void probe_scene_traversal() {
     (void)URK::Unity::SceneManager::FindSceneGameObjects(true);
 }
 
+void probe_stripped_member_detection() {
+    // Managed stripping removes UnityEngine members the game never calls, so
+    // presence has to be answerable without invoking anything.
+    (void)URK::Unity::has_method(URK::Unity::GameObjectType, "get_scene", 0);
+    (void)URK::Unity::has_method(URK::Unity::TransformType, "SetParent", 1);
+    (void)URK::Unity::has_property(URK::Unity::GameObjectType, "tag");
+    (void)URK::Unity::GameObject::scene_available();
+}
+
 void probe_reflection(URK::Unity::Object target) {
     (void)target.GetField<int>("health");
     target.SetField<float>("speed", 1.0f);

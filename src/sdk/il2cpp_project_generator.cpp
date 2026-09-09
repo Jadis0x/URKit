@@ -1482,6 +1482,42 @@ inline void *require_method_pointer(const URK::il2cpp::Method *method, Diagnosti
                                     const char *klass = nullptr, const char *method_name = nullptr) {
     return try_method_pointer(method, sink, image, namespc, klass, method_name);
 }
+// IL2CPP is ahead-of-time compiled, so a method always has a native entry
+// point even when nothing branches to it. Two cases make a perfectly installed
+// hook unreachable, and both are visible from the metadata: the entry point is
+// shared with another method because the C++ compiler folded identical bodies,
+// or the method is a generic definition whose entry point is a shared stub. A
+// third case, an inlined body, cannot be seen from here at all; it only shows
+// up as a hook that never fires. Report what is knowable so a silent hook is
+// at least an explained one.
+inline void warn_if_entry_point_unreachable(const URK::il2cpp::Method *method, void *target, DiagnosticSink sink,
+                                            const char *method_name) {
+    if (!sink || !method || !target)
+        return;
+    const URK::il2cpp::Class *owner = URK::il2cpp::method_get_declaring_class(method);
+    if (!owner)
+        return;
+    void *iterator = nullptr;
+    const char *twin = nullptr;
+    std::size_t scanned = 0;
+    while (const URK::il2cpp::Method *other = URK::il2cpp::class_get_methods(owner, &iterator)) {
+        if (++scanned > 4096)
+            break;
+        if (other == method || URK::il2cpp::method_pointer(other) != target)
+            continue;
+        twin = URK::il2cpp::method_get_name(other);
+        break;
+    }
+    if (!twin)
+        return;
+    char message[512]{};
+    std::snprintf(message, sizeof(message),
+                  "[URK IL2CPP runtime] %s shares its native entry point with %s; the compiler folded identical "
+                  "bodies, so this hook observes both and may never see the call you expect",
+                  method_name ? method_name : "the hooked method", twin);
+    emit(sink, message);
+}
+
 // try_hook_method_pointer seeds *original with the resolved method_pointer
 // target before attaching. On success, the hook backend may replace *original
 // with a trampoline. On failure, no hook is installed, but *original may still
@@ -1493,6 +1529,7 @@ inline bool try_hook_method_pointer(const URK::il2cpp::Method *method, void **or
     void *target = try_method_pointer(method, sink, image, namespc, klass, method_name);
     if (!target)
         return false;
+    warn_if_entry_point_unreachable(method, target, sink, method_name);
     if (!original || !detour) {
         emit(sink, "[URK IL2CPP runtime] hook original/detour is null; native "
                    "method hook is not installed");

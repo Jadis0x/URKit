@@ -2574,102 +2574,26 @@ const URK_Il2CppApi g_publicApi = [] {
             g_api->il2cpp_free_captured_memory_snapshot((Il2CppManagedMemorySnapshot *)snapshot);
     };
 
-    api.debug_get_class_info = [](const void *klass) -> const void * {
-        return g_api && g_api->il2cpp_debug_get_class_info && klass
-                   ? g_api->il2cpp_debug_get_class_info((const Il2CppClass *)klass)
-                   : nullptr;
-    };
-    api.debug_class_get_document = [](const void *info) -> const void * {
-        return g_api && g_api->il2cpp_debug_class_get_document && info
-                   ? g_api->il2cpp_debug_class_get_document((const Il2CppDebugTypeInfo *)info)
-                   : nullptr;
-    };
-    api.debug_document_get_filename = [](const void *document) -> const char * {
-        return g_api && g_api->il2cpp_debug_document_get_filename && document
-                   ? g_api->il2cpp_debug_document_get_filename((const Il2CppDebugDocument *)document)
-                   : nullptr;
-    };
-    api.debug_document_get_directory = [](const void *document) -> const char * {
-        return g_api && g_api->il2cpp_debug_document_get_directory && document
-                   ? g_api->il2cpp_debug_document_get_directory((const Il2CppDebugDocument *)document)
-                   : nullptr;
-    };
     api.debug_get_method_info = [](const void *method) -> const void * {
-        return g_api && g_api->il2cpp_debug_get_method_info && method
-                   ? g_api->il2cpp_debug_get_method_info((const Il2CppMethod *)method)
-                   : nullptr;
-    };
-    api.debug_method_get_document = [](const void *info) -> const void * {
-        return g_api && g_api->il2cpp_debug_method_get_document && info
-                   ? g_api->il2cpp_debug_method_get_document((const Il2CppDebugMethodInfo *)info)
-                   : nullptr;
-    };
-    api.debug_method_get_offset_table = [](const void *info) -> const int32_t * {
-        return g_api && g_api->il2cpp_debug_method_get_offset_table && info
-                   ? g_api->il2cpp_debug_method_get_offset_table((const Il2CppDebugMethodInfo *)info)
-                   : nullptr;
+        // The export fills a caller-owned struct, so the mod ABI's pointer
+        // return has to point at storage this layer owns. It stays valid until
+        // the same thread asks for another method.
+        thread_local Il2CppDebugMethodInfo info{};
+        if (!g_api || !g_api->il2cpp_debug_get_method_info || !method)
+            return nullptr;
+        info = {};
+        if (!g_api->il2cpp_debug_get_method_info((const Il2CppMethod *)method, &info))
+            return nullptr;
+        return &info;
     };
     api.debug_method_get_code_size = [](const void *info) -> size_t {
-        return g_api && g_api->il2cpp_debug_method_get_code_size && info
-                   ? g_api->il2cpp_debug_method_get_code_size((const Il2CppDebugMethodInfo *)info)
-                   : 0;
-    };
-    api.debug_update_frame_il_offset = [](int32_t il_offset) {
-        if (g_api && g_api->il2cpp_debug_update_frame_il_offset)
-            g_api->il2cpp_debug_update_frame_il_offset(il_offset);
-    };
-    api.debug_method_get_locals_info = [](const void *info) -> const void ** {
-        return g_api && g_api->il2cpp_debug_method_get_locals_info && info
-                   ? reinterpret_cast<const void **>(
-                         g_api->il2cpp_debug_method_get_locals_info((const Il2CppDebugMethodInfo *)info))
-                   : nullptr;
-    };
-    api.debug_local_get_type = [](const void *info) -> const void * {
-        return g_api && g_api->il2cpp_debug_local_get_type && info
-                   ? g_api->il2cpp_debug_local_get_type((const Il2CppDebugLocalsInfo *)info)
-                   : nullptr;
-    };
-    api.debug_local_get_name = [](const void *info) -> const char * {
-        return g_api && g_api->il2cpp_debug_local_get_name && info
-                   ? g_api->il2cpp_debug_local_get_name((const Il2CppDebugLocalsInfo *)info)
-                   : nullptr;
-    };
-    api.debug_local_get_start_offset = [](const void *info) -> uint32_t {
-        return g_api && g_api->il2cpp_debug_local_get_start_offset && info
-                   ? g_api->il2cpp_debug_local_get_start_offset((const Il2CppDebugLocalsInfo *)info)
-                   : 0;
-    };
-    api.debug_local_get_end_offset = [](const void *info) -> uint32_t {
-        return g_api && g_api->il2cpp_debug_local_get_end_offset && info
-                   ? g_api->il2cpp_debug_local_get_end_offset((const Il2CppDebugLocalsInfo *)info)
-                   : 0;
-    };
-    api.debug_method_get_param_value = [](const void *info, uint32_t position) -> void * {
-        return g_api && g_api->il2cpp_debug_method_get_param_value && info
-                   ? g_api->il2cpp_debug_method_get_param_value((const Il2CppStackFrameInfo *)info, position)
-                   : nullptr;
-    };
-    api.debug_frame_get_local_value = [](const void *info, uint32_t position) -> void * {
-        return g_api && g_api->il2cpp_debug_frame_get_local_value && info
-                   ? g_api->il2cpp_debug_frame_get_local_value((const Il2CppStackFrameInfo *)info, position)
-                   : nullptr;
-    };
-    api.debug_method_get_breakpoint_data_at = [](const void *info, int64_t uid, int32_t offset) -> void * {
-        return g_api && g_api->il2cpp_debug_method_get_breakpoint_data_at && info
-                   ? g_api->il2cpp_debug_method_get_breakpoint_data_at((const Il2CppDebugMethodInfo *)info, uid, offset)
-                   : nullptr;
-    };
-    api.debug_method_set_breakpoint_data_at = [](const void *info, uint64_t location, void *data) {
-        if (g_api && g_api->il2cpp_debug_method_set_breakpoint_data_at && info)
-            g_api->il2cpp_debug_method_set_breakpoint_data_at((const Il2CppDebugMethodInfo *)info, location, data);
-    };
-    api.debug_method_clear_breakpoint_data = [](const void *info) {
-        if (g_api && g_api->il2cpp_debug_method_clear_breakpoint_data && info)
-            g_api->il2cpp_debug_method_clear_breakpoint_data((const Il2CppDebugMethodInfo *)info);
-    };
-    api.debug_method_clear_breakpoint_data_at = [](const void *info, uint64_t location) {
-        if (g_api && g_api->il2cpp_debug_method_clear_breakpoint_data_at && info)
-            g_api->il2cpp_debug_method_clear_breakpoint_data_at((const Il2CppDebugMethodInfo *)info, location);
+        if (!info)
+            return 0;
+        // debug_get_method_info owns every pointer that reaches here and has
+        // already decoded the size, so read it back rather than handing this
+        // layer's own storage to an engine accessor.
+        const int32_t size = static_cast<const Il2CppDebugMethodInfo *>(info)->codeSize;
+        return size > 0 ? static_cast<size_t>(size) : 0;
     };
     api.attach_managed_method_hook = &Api_AttachManagedMethodHook;
     api.object_header_size = []() -> uint32_t {
@@ -3464,26 +3388,7 @@ bool Il2Cpp_BindExports(Il2CppApi &api, int timeoutMs) {
     BIND_OPTIONAL(il2cpp_stats_get_value);
     BIND_OPTIONAL(il2cpp_capture_memory_snapshot);
     BIND_OPTIONAL(il2cpp_free_captured_memory_snapshot);
-    BIND_OPTIONAL(il2cpp_debug_get_class_info);
-    BIND_OPTIONAL(il2cpp_debug_class_get_document);
-    BIND_OPTIONAL(il2cpp_debug_document_get_filename);
-    BIND_OPTIONAL(il2cpp_debug_document_get_directory);
     BIND_OPTIONAL(il2cpp_debug_get_method_info);
-    BIND_OPTIONAL(il2cpp_debug_method_get_document);
-    BIND_OPTIONAL(il2cpp_debug_method_get_offset_table);
-    BIND_OPTIONAL(il2cpp_debug_method_get_code_size);
-    BIND_OPTIONAL(il2cpp_debug_update_frame_il_offset);
-    BIND_OPTIONAL(il2cpp_debug_method_get_locals_info);
-    BIND_OPTIONAL(il2cpp_debug_local_get_type);
-    BIND_OPTIONAL(il2cpp_debug_local_get_name);
-    BIND_OPTIONAL(il2cpp_debug_local_get_start_offset);
-    BIND_OPTIONAL(il2cpp_debug_local_get_end_offset);
-    BIND_OPTIONAL(il2cpp_debug_method_get_param_value);
-    BIND_OPTIONAL(il2cpp_debug_frame_get_local_value);
-    BIND_OPTIONAL(il2cpp_debug_method_get_breakpoint_data_at);
-    BIND_OPTIONAL(il2cpp_debug_method_set_breakpoint_data_at);
-    BIND_OPTIONAL(il2cpp_debug_method_clear_breakpoint_data);
-    BIND_OPTIONAL(il2cpp_debug_method_clear_breakpoint_data_at);
 
 #undef BIND_OPTIONAL
     if (!ok) {

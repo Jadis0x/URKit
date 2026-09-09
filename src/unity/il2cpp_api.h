@@ -29,10 +29,14 @@ using Il2CppProfiler = void;
 using Il2CppManagedMemorySnapshot = void;
 using Il2CppAsyncResult = void;
 using Il2CppDelegate = void;
-using Il2CppDebugTypeInfo = void;
-using Il2CppDebugDocument = void;
-using Il2CppDebugMethodInfo = void;
-using Il2CppDebugLocalsInfo = void;
+// Unity's own il2cpp-api-types.h defines this out-parameter struct, and its
+// layout has not moved since 2019. Every other Il2CppDebug* handle below stays
+// opaque because no Unity release has ever exported an accessor for one.
+struct Il2CppDebugMethodInfo {
+    void *methodPointer;
+    int32_t codeSize;
+    const char *file;
+};
 
 struct Il2CppStackFrameInfo;
 struct Il2CppMemoryCallbacks;
@@ -312,28 +316,10 @@ IL2CPP_FN(Il2CppManagedMemorySnapshot *, il2cpp_capture_memory_snapshot, ());
 IL2CPP_FN(void, il2cpp_free_captured_memory_snapshot, (Il2CppManagedMemorySnapshot * snapshot));
 
 // debug
-IL2CPP_FN(const Il2CppDebugTypeInfo *, il2cpp_debug_get_class_info, (const Il2CppClass *klass));
-IL2CPP_FN(const Il2CppDebugDocument *, il2cpp_debug_class_get_document, (const Il2CppDebugTypeInfo *info));
-IL2CPP_FN(const char *, il2cpp_debug_document_get_filename, (const Il2CppDebugDocument *document));
-IL2CPP_FN(const char *, il2cpp_debug_document_get_directory, (const Il2CppDebugDocument *document));
-IL2CPP_FN(const Il2CppDebugMethodInfo *, il2cpp_debug_get_method_info, (const Il2CppMethod *method));
-IL2CPP_FN(const Il2CppDebugDocument *, il2cpp_debug_method_get_document, (const Il2CppDebugMethodInfo *info));
-IL2CPP_FN(const int32_t *, il2cpp_debug_method_get_offset_table, (const Il2CppDebugMethodInfo *info));
-IL2CPP_FN(size_t, il2cpp_debug_method_get_code_size, (const Il2CppDebugMethodInfo *info));
-IL2CPP_FN(void, il2cpp_debug_update_frame_il_offset, (int32_t il_offset));
-IL2CPP_FN(const Il2CppDebugLocalsInfo **, il2cpp_debug_method_get_locals_info, (const Il2CppDebugMethodInfo *info));
-IL2CPP_FN(const Il2CppClass *, il2cpp_debug_local_get_type, (const Il2CppDebugLocalsInfo *info));
-IL2CPP_FN(const char *, il2cpp_debug_local_get_name, (const Il2CppDebugLocalsInfo *info));
-IL2CPP_FN(uint32_t, il2cpp_debug_local_get_start_offset, (const Il2CppDebugLocalsInfo *info));
-IL2CPP_FN(uint32_t, il2cpp_debug_local_get_end_offset, (const Il2CppDebugLocalsInfo *info));
-IL2CPP_FN(Il2CppObject *, il2cpp_debug_method_get_param_value, (const Il2CppStackFrameInfo *info, uint32_t position));
-IL2CPP_FN(Il2CppObject *, il2cpp_debug_frame_get_local_value, (const Il2CppStackFrameInfo *info, uint32_t position));
-IL2CPP_FN(void *, il2cpp_debug_method_get_breakpoint_data_at,
-          (const Il2CppDebugMethodInfo *info, int64_t uid, int32_t offset));
-IL2CPP_FN(void, il2cpp_debug_method_set_breakpoint_data_at,
-          (const Il2CppDebugMethodInfo *info, uint64_t location, void *data));
-IL2CPP_FN(void, il2cpp_debug_method_clear_breakpoint_data, (const Il2CppDebugMethodInfo *info));
-IL2CPP_FN(void, il2cpp_debug_method_clear_breakpoint_data_at, (const Il2CppDebugMethodInfo *info, uint64_t location));
+// Unity exports this as bool(const MethodInfo*, Il2CppMethodDebugInfo* out) in
+// every release since 2019: the caller owns the struct and the return value is
+// only a success flag.
+IL2CPP_FN(bool, il2cpp_debug_get_method_info, (const Il2CppMethod *method, Il2CppDebugMethodInfo *info));
 
 #undef IL2CPP_FN
 
@@ -536,26 +522,7 @@ struct Il2CppApi {
     M(il2cpp_stats_get_value);
     M(il2cpp_capture_memory_snapshot);
     M(il2cpp_free_captured_memory_snapshot);
-    M(il2cpp_debug_get_class_info);
-    M(il2cpp_debug_class_get_document);
-    M(il2cpp_debug_document_get_filename);
-    M(il2cpp_debug_document_get_directory);
     M(il2cpp_debug_get_method_info);
-    M(il2cpp_debug_method_get_document);
-    M(il2cpp_debug_method_get_offset_table);
-    M(il2cpp_debug_method_get_code_size);
-    M(il2cpp_debug_update_frame_il_offset);
-    M(il2cpp_debug_method_get_locals_info);
-    M(il2cpp_debug_local_get_type);
-    M(il2cpp_debug_local_get_name);
-    M(il2cpp_debug_local_get_start_offset);
-    M(il2cpp_debug_local_get_end_offset);
-    M(il2cpp_debug_method_get_param_value);
-    M(il2cpp_debug_frame_get_local_value);
-    M(il2cpp_debug_method_get_breakpoint_data_at);
-    M(il2cpp_debug_method_set_breakpoint_data_at);
-    M(il2cpp_debug_method_clear_breakpoint_data);
-    M(il2cpp_debug_method_clear_breakpoint_data_at);
 #undef M
 
     bool valid() const;
