@@ -11,6 +11,7 @@
 #include "ui/graphics_dx12.inl"
 #include "ui/graphics_discovery.inl"
 #include "ui/win32_input.inl"
+#include "ui/imgui_win32_module_scope.inl"
 #include "ui/render_hook_api.inl"
 #include "ui/viewport_policy.inl"
 #include "ui/render_hook_source.inl"

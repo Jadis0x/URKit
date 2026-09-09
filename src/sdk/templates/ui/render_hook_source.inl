@@ -20,9 +20,11 @@ std::string RenderHookSourceModule() {
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <d3d11.h>
 #include <d3d12.h>
 #include <deque>
+#include <iterator>
 #include <dxgi.h>
 #include <dxgi1_4.h>
 #include <imgui.h>
@@ -325,14 +327,52 @@ inline bool query_swap_chain_desc(IDXGISwapChain *swap_chain, DXGI_SWAP_CHAIN_DE
     return SUCCEEDED(swap_chain->GetDesc(desc));
 }
 
+// Dear ImGui registers exactly one window class for its secondary Win32
+// viewports, and every viewport window it creates uses it. That class is the
+// only reliable way to tell another mod's viewport apart from the game's own
+// window: the IMGUI_CONTEXT property cannot do it, because
+// ImGui_ImplWin32_Init() also stamps it on the *main* window, so the first mod
+// in the process to initialize its backend would hide the game window from
+// every mod that installs later.
+inline bool is_imgui_viewport_window(HWND hwnd) {
+    if (!hwnd)
+        return false;
+    wchar_t class_name[32]{};
+    const int length = GetClassNameW(hwnd, class_name, static_cast<int>(std::size(class_name)));
+    return length > 0 && std::wcscmp(class_name, L"ImGui Platform") == 0;
+}
+
+// Multi-viewport support registers a window class, and a class atom is keyed on
+// (name, module). A mod whose backend named the executable would share that atom
+// with every other mod in the process and have its viewport windows dispatched by
+// whichever mod registered first. The Win32 backend is compiled through
+// third_party/imgui_win32_module_scope.cpp so the class belongs to this DLL; report
+// the result once so a regression there shows up in the log rather than only as a
+// crash inside another mod's ImGui.
+inline void log_viewport_class_ownership() {
+    static bool logged = false;
+    if (logged)
+        return;
+    logged = true;
+    static char anchor = 0;
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, &anchor,
+                       &self);
+    WNDCLASSEXW existing{};
+    existing.cbSize = sizeof(existing);
+    const bool owned = self != nullptr && GetClassInfoExW(self, L"ImGui Platform", &existing) != FALSE;
+    log(owned ? "Detached viewport window class is owned by this module."
+              : "Detached viewport window class is not owned by this module; viewport windows would be "
+                "dispatched by another mod's ImGui.");
+}
+
 inline bool is_process_main_window(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd || GetWindow(hwnd, GW_OWNER) != nullptr) {
         return false;
     }
-    // Dear ImGui marks every secondary Win32 viewport with this property. An
-    // injected process can contain several independent ImGui contexts, so a
+    // An injected process can contain several independent ImGui contexts, so a
     // late-installed hook must not adopt another mod's viewport swap chain.
-    if (GetPropA(hwnd, "IMGUI_CONTEXT") != nullptr)
+    if (is_imgui_viewport_window(hwnd))
         return false;
     DWORD process_id = 0;
     GetWindowThreadProcessId(hwnd, &process_id);
@@ -367,7 +407,7 @@ inline bool is_active_game_swap_chain(IDXGISwapChain *swap_chain) {
     // paying for two COM identity queries on every detached-window Present.
     DXGI_SWAP_CHAIN_DESC desc{};
     if (query_swap_chain_desc(swap_chain, &desc) && desc.OutputWindow &&
-        GetPropA(desc.OutputWindow, "IMGUI_CONTEXT") != nullptr)
+        is_imgui_viewport_window(desc.OutputWindow))
         return false;
     return same_com_identity(swap_chain, g_active_swap_chain);
 }
@@ -1707,6 +1747,7 @@ inline bool init_dx11_imgui(IDXGISwapChain *swap_chain) {
         release_device_objects();
         return false;
     }
+    log_viewport_class_ownership();
 
     if (!ImGui_ImplDX11_Init(g_device, g_context)) {
         log("ImGui DX11 backend initialization failed; UI disabled.");
@@ -1817,6 +1858,7 @@ inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
         g_dx12_resources.release_device_objects();
         return false;
     }
+    log_viewport_class_ownership();
     if (!install_platform_renderer_isolation()) {
         log("DX12 multi-monitor callback isolation failed; UI disabled to avoid an "
             "unsafe render path.");
@@ -1903,12 +1945,18 @@ inline void report_viewport_cost() {
     g_viewport_cost_tick = now;
 }
 
+// UpdatePlatformWindows() stamps the frame it ran for *before* it consults the
+// viewport flag, and the next NewFrame() asserts that the stamp is current. So
+// it has to run for every frame NewFrame() started, even while detached
+// viewports are off -- skipping it leaves the stamp stale, and turning the
+// toggle back on then trips that assert on the very next frame. Only the
+// detached-window bookkeeping below is conditional.
 inline void render_platform_windows() {
-    if ((ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) == 0)
-        return;
     PlatformRendererGuard platformGuard{};
     const LONGLONG started = performance_counter();
     ImGui::UpdatePlatformWindows();
+    if ((ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) == 0)
+        return;
     const LONGLONG afterUpdate = performance_counter();
     collect_platform_windows();
     apply_platform_window_policy();
@@ -1997,6 +2045,10 @@ inline void render_dx12_frame(IDXGISwapChain *swap_chain) {
     submission.commandList->ResourceBarrier(1, &barrier);
     if (!g_dx12_resources.submit_frame(submission)) {
         log("DX12 overlay command submission failed; UI frame synchronization is unavailable.");
+        // The only early return past NewFrame(). Dear ImGui still expects the
+        // platform-window update for the frame it started, so give it one
+        // before leaving rather than stranding the frame stamp.
+        render_platform_windows();
         return;
     }
     render_platform_windows();
@@ -2214,6 +2266,7 @@ inline bool init_opengl_imgui(HDC device_context) {
         g_hwnd = nullptr;
         return false;
     }
+    log_viewport_class_ownership();
     if (!install_window_message_handler()) {
         log("Window-message handler installation failed; UI disabled.");
         ImGui_ImplOpenGL3_Shutdown();

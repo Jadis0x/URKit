@@ -173,7 +173,10 @@ std::string CMakeLists(const ModuleProjectOptions &options, const std::vector<fs
         << "    ${imgui_SOURCE_DIR}/imgui_draw.cpp\n"
         << "    ${imgui_SOURCE_DIR}/imgui_tables.cpp\n"
         << "    ${imgui_SOURCE_DIR}/imgui_widgets.cpp\n"
-        << "    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp\n"
+        << "    # The Win32 backend is compiled through a shim that binds its viewport\n"
+        << "    # window class to this module instead of to the game executable, so two\n"
+        << "    # injected mods do not contend for a single window class atom.\n"
+        << "    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui_win32_module_scope.cpp\n"
         << "    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp\n"
         << "    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp\n"
         << "    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp\n"
@@ -737,6 +740,8 @@ bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error)
          Win32MessagePumpHeaderModule(), true, true},
         {"mod/hooks/win32_message_pump.cpp", OutputFilePolicy::GeneratedOverwrite,
          Win32MessagePumpSourceModule(), true, false},
+        {"third_party/imgui_win32_module_scope.cpp", OutputFilePolicy::GeneratedOverwrite,
+         ImGuiWin32ModuleScopeSourceModule(), true, false},
         {"mod/hooks/win32_viewport_policy.h", OutputFilePolicy::GeneratedOverwrite,
          Win32ViewportPolicyHeaderModule(), true, true},
         {"mod/hooks/win32_viewport_policy.cpp", OutputFilePolicy::GeneratedOverwrite,

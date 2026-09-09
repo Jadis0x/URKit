@@ -155,6 +155,7 @@ set(URK_SDK_TEMPLATE_FILES
     ${URK_SRC_DIR}/sdk/templates/ui/graphics_dx12.inl
     ${URK_SRC_DIR}/sdk/templates/ui/graphics_discovery.inl
     ${URK_SRC_DIR}/sdk/templates/ui/win32_input.inl
+    ${URK_SRC_DIR}/sdk/templates/ui/imgui_win32_module_scope.inl
     ${URK_SRC_DIR}/sdk/templates/ui/render_hook_api.inl
     ${URK_SRC_DIR}/sdk/templates/ui/viewport_policy.inl
     ${URK_SRC_DIR}/sdk/templates/ui/render_hook_source.inl

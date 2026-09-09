@@ -2688,6 +2688,73 @@ bool Il2CppApi::TryRecoverMetadataAccess() {
     return true;
 }
 
+namespace {
+
+// MethodPointer() is called once per method when a tool indexes a whole domain
+// -- upwards of a hundred thousand times in a stock Unity build. Validating a
+// target with VirtualQuery plus GetModuleHandleEx costs far more than the
+// metadata read it guards (GetModuleHandleEx walks the loader's module list
+// under the loader lock), and it dominated the wall time of a full index. The
+// executable ranges of the only two modules a managed method may live in do
+// not change once they are mapped, so they are measured once from the section
+// headers and consulted directly; anything outside them still takes the
+// original path, which is also where the diagnostic messages live.
+constexpr size_t kMaxImageExecutableRanges = 16;
+
+struct ImageExecutableRanges {
+    HMODULE module = nullptr;
+    uintptr_t begin[kMaxImageExecutableRanges]{};
+    uintptr_t end[kMaxImageExecutableRanges]{};
+    size_t count = 0;
+};
+
+void MeasureExecutableRanges(HMODULE module, ImageExecutableRanges &out) {
+    out = {};
+    out.module = module;
+    const auto base = reinterpret_cast<uintptr_t>(module);
+    if (!base)
+        return;
+    // A mapped image always has its headers resident, so this needs no guard.
+    const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return;
+    const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>(base + static_cast<uintptr_t>(dos->e_lfanew));
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return;
+    const IMAGE_SECTION_HEADER *section = IMAGE_FIRST_SECTION(nt);
+    for (WORD index = 0; index < nt->FileHeader.NumberOfSections && out.count < kMaxImageExecutableRanges;
+         ++index, ++section) {
+        if ((section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0)
+            continue;
+        const DWORD size = section->Misc.VirtualSize ? section->Misc.VirtualSize : section->SizeOfRawData;
+        if (size == 0)
+            continue;
+        out.begin[out.count] = base + section->VirtualAddress;
+        out.end[out.count] = out.begin[out.count] + size;
+        ++out.count;
+    }
+}
+
+bool AddressInExecutableImage(const void *address, HMODULE gameAssembly, HMODULE unityPlayer) {
+    static ImageExecutableRanges cache[2];
+    const HMODULE modules[2] = {gameAssembly, unityPlayer};
+    const auto value = reinterpret_cast<uintptr_t>(address);
+    for (int slot = 0; slot < 2; ++slot) {
+        if (!modules[slot])
+            continue;
+        // A reload maps the module somewhere else; re-measure rather than
+        // trusting ranges that belong to a previous mapping.
+        if (cache[slot].module != modules[slot])
+            MeasureExecutableRanges(modules[slot], cache[slot]);
+        for (size_t range = 0; range < cache[slot].count; ++range)
+            if (value >= cache[slot].begin[range] && value < cache[slot].end[range])
+                return true;
+    }
+    return false;
+}
+
+} // namespace
+
 void *Il2CppApi::MethodPointer(const Il2CppMethod *method) const {
     if (!method) {
         SetError("IL2CPP: native method target resolution requires a non-null MethodInfo");
@@ -2708,6 +2775,11 @@ void *Il2CppApi::MethodPointer(const Il2CppMethod *method) const {
     if (!target) {
         SetError(std::string("IL2CPP: MethodInfo::methodPointer is null for method=") + PtrString(method));
         return nullptr;
+    }
+
+    if (AddressInExecutableImage(target, gameAssembly, unityPlayer)) {
+        g_lastError.clear();
+        return target;
     }
 
     MEMORY_BASIC_INFORMATION memory{};
