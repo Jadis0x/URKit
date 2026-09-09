@@ -1824,6 +1824,45 @@ a target's `Renderer`, materials, shaders, render layer, or GameObject ever
 changes. It's ImGui draw commands, submitted by the generated native render
 hook straight to the game's graphics back end.
 
+### The two calls it comes down to
+
+Everything below is background. The part you actually write is this, from
+`ModRuntime::update()` on the Unity main thread:
+
+```cpp
+#include "ui/highlight.h"
+
+namespace {
+ModUI::Highlight::HighlightId g_marker = 0;
+}
+
+// create once, get an ID back
+g_marker = ModUI::Highlight::enqueue_add_world_point(world, "Target", style);
+
+// then move that entry for the rest of its life
+ModUI::Highlight::enqueue_set_world_point(g_marker, world);
+
+// and drop it when the thing it points at is gone
+ModUI::Highlight::enqueue_remove(g_marker);
+g_marker = 0;
+```
+
+A highlight is an entry you own, not a draw call you repeat. Calling
+`enqueue_add_world_point` every frame is the one mistake worth naming up
+front: it creates a fresh marker each time instead of moving the one you
+already have, and the overlay fills up with stacked duplicates.
+
+The `enqueue_` prefix is the thread boundary. Those calls copy plain data into
+a mutex-protected queue that the render thread drains at the start of its
+frame, which is what lets you read Unity where Unity lives and still draw from
+the presentation hook. The unprefixed `add`/`remove`/`set_*` variants mutate
+render-owned state immediately and belong to code already running inside the
+render callback.
+
+[Getting Started step 8](GETTING_STARTED.md#8-draw-a-box-on-it) builds this up
+end to end: one marker on the player, styling it, one ID per enemy across a
+whole scene, scene-change cleanup, and what to check when nothing appears.
+
 ### Where a highlight is actually rendered
 
 On a DirectX game the generated project installs DXGI presentation hooks, and
