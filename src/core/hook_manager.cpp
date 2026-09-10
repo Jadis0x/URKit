@@ -7,6 +7,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <vector>
 #include <windows.h>
 #include <tlhelp32.h>
@@ -140,7 +141,14 @@ DetoursResult UpdateTransactionThreads(std::vector<HANDLE> *opened_threads) {
 
         const LONG update_result = DetourUpdateThread(thread);
         if (update_result != NO_ERROR) {
+            // A thread that ends between the snapshot and the suspend fails with
+            // ERROR_ACCESS_DENIED. It runs no code we could relocate an IP out from
+            // under, so skip it. Anything still running is a real failure.
+            DWORD exit_code = 0;
+            const bool exited = GetExitCodeThread(thread, &exit_code) && exit_code != STILL_ACTIVE;
             CloseHandle(thread);
+            if (exited)
+                continue;
             result = {update_result, "DetourUpdateThread", entry.th32ThreadID};
             break;
         }
@@ -167,7 +175,20 @@ void CloseThreadHandles(std::vector<HANDLE> *threads) {
     threads->clear();
 }
 
-DetoursResult RunDetoursTransaction(void **original, void *detour, bool attach) {
+// Enlistment suspends every thread in the snapshot, so any thread starting or
+// ending during the walk fails the transaction for reasons unrelated to the
+// target. Retry before reporting it as an unhookable target.
+constexpr int kTransactionAttempts = 4;
+
+bool IsRetriableTransactionStage(const DetoursResult &result) {
+    if (result.error == NO_ERROR || !result.stage)
+        return false;
+    return std::string_view(result.stage) == "DetourUpdateThread" ||
+           std::string_view(result.stage) == "OpenThread" ||
+           std::string_view(result.stage) == "DetourTransactionBegin";
+}
+
+DetoursResult RunDetoursTransactionOnce(void **original, void *detour, bool attach) {
     if (!original || !*original || !detour)
         return {ERROR_INVALID_PARAMETER, "argument validation"};
 
@@ -201,7 +222,19 @@ DetoursResult RunDetoursTransaction(void **original, void *detour, bool attach) 
     return {};
 }
 
-DetoursResult RunDetoursBatch(const std::vector<HookRecord *> &records, bool attach) {
+DetoursResult RunDetoursTransaction(void **original, void *detour, bool attach) {
+    DetoursResult result{};
+    for (int attempt = 0; attempt < kTransactionAttempts; ++attempt) {
+        result = RunDetoursTransactionOnce(original, detour, attach);
+        if (result.error == NO_ERROR || !IsRetriableTransactionStage(result))
+            return result;
+        // Let whatever thread was starting or ending finish doing so.
+        Sleep(1);
+    }
+    return result;
+}
+
+DetoursResult RunDetoursBatchOnce(const std::vector<HookRecord *> &records, bool attach) {
     if (records.empty())
         return {};
 
@@ -253,6 +286,17 @@ DetoursResult RunDetoursBatch(const std::vector<HookRecord *> &records, bool att
     if (commit_result != NO_ERROR)
         return {commit_result, "DetourTransactionCommit(batch)"};
     return {};
+}
+
+DetoursResult RunDetoursBatch(const std::vector<HookRecord *> &records, bool attach) {
+    DetoursResult result{};
+    for (int attempt = 0; attempt < kTransactionAttempts; ++attempt) {
+        result = RunDetoursBatchOnce(records, attach);
+        if (result.error == NO_ERROR || !IsRetriableTransactionStage(result))
+            return result;
+        Sleep(1);
+    }
+    return result;
 }
 
 std::vector<HookRecord *> RecordsForTarget(void *target) {
