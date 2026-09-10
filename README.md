@@ -49,6 +49,8 @@ New to URKit? Start with [Getting Started](docs/GETTING_STARTED.md). It
 walks through writing an actual mod, from "hello log" to reading and changing
 game state, step by step.
 
+For a video walkthrough, check out the [URKit SDK Tutorial Series](https://youtube.com/playlist?list=PLP9lUXoova70&si=ATR-n7l7tVEliZlN).
+
 Once you know the basics, [docs/SDK_HANDBOOK.md](docs/SDK_HANDBOOK.md) is the
 full reference: object search, threading rules, hooks, the render/highlight
 pipeline, caching, and a diagnostics chapter for when something doesn't work.
