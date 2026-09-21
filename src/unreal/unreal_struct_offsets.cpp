@@ -40,6 +40,21 @@ std::int32_t FirstOffsetPastHeader(const ObjectOffsets &offsets) {
     return AlignUp(highest + static_cast<std::int32_t>(sizeof(std::int32_t)), static_cast<std::int32_t>(sizeof(Address)));
 }
 
+std::uint64_t CastFlagsOf(const ObjectFinder &finder, const StructOffsets &structs, Address object) {
+    if (object == kNullAddress || structs.castFlags == kOffsetNotFound)
+        return 0;
+    const Address classObject = finder.ClassOf(object);
+    if (classObject == kNullAddress)
+        return 0;
+    const std::optional<std::uint64_t> flags =
+        finder.Reader().ReadAs<std::uint64_t>(classObject + structs.castFlags);
+    return flags ? *flags : 0;
+}
+
+bool ObjectIs(const ObjectFinder &finder, const StructOffsets &structs, Address object, std::uint64_t flag) {
+    return (CastFlagsOf(finder, structs, object) & flag) == flag;
+}
+
 bool UsesFPropertySystem(const ObjectFinder &finder) {
     for (const auto &probe : kLegacyPropertyProbes) {
         if (finder.FindInOuter(probe.member, probe.owner) != kNullAddress)

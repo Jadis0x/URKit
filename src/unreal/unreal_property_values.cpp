@@ -1,0 +1,589 @@
+#include "unreal_property_values.h"
+
+#include <array>
+#include <vector>
+
+namespace URK::Unreal {
+namespace {
+
+// How far past Offset_Internal the tail can be. FProperty ends with a handful
+// of chain pointers, and shipped builds add none.
+constexpr std::int32_t kMinTailGap = 0x08;
+constexpr std::int32_t kMaxTailGap = 0x60;
+
+// Enough of each kind to make an accidental agreement unlikely, few enough that
+// the walk stops early in a game holding hundreds of thousands of objects.
+constexpr std::size_t kSamplesPerKind = 4;
+constexpr std::int32_t kMaxObjectsWalked = 0x4000;
+constexpr std::int32_t kMaxChainLength = 0x200;
+
+// A bool describes itself: one byte wide, and a mask that is either a single
+// bit of a bitfield or the whole byte.
+bool PlausibleBoolTail(const MemoryReader &reader, Address field, std::int32_t offset) {
+    const std::optional<std::uint8_t> fieldSize = reader.ReadAs<std::uint8_t>(field + offset);
+    const std::optional<std::uint8_t> byteOffset = reader.ReadAs<std::uint8_t>(field + offset + 1);
+    const std::optional<std::uint8_t> byteMask = reader.ReadAs<std::uint8_t>(field + offset + 2);
+    const std::optional<std::uint8_t> fieldMask = reader.ReadAs<std::uint8_t>(field + offset + 3);
+    if (!fieldSize || !byteOffset || !byteMask || !fieldMask)
+        return false;
+
+    if (*fieldSize != 1 || *byteOffset > 0x7)
+        return false;
+    if (*byteMask == 0 || *byteMask != *fieldMask)
+        return false;
+    const bool singleBit = (*byteMask & (*byteMask - 1)) == 0;
+    return singleBit || *byteMask == 0xFF;
+}
+
+// The pointer at the tail leads to an object of this kind. Being an object at
+// all is most of the test: FProperty ends with links to other properties, and
+// an FField is not in the object array however much it looks like a pointer.
+bool PointsToObjectWithFlags(const ObjectFinder &finder, const StructOffsets &structs, Address field,
+                             std::int32_t offset, std::uint64_t required) {
+    const std::optional<Address> target = finder.Reader().ReadPointer(field + offset);
+    if (!target || !IsLiveObject(finder, *target))
+        return false;
+    return ObjectIs(finder, structs, *target, required);
+}
+
+// The pointer at the tail leads to another FField that is itself a property.
+bool PointsToProperty(const MemoryReader &reader, const FieldOffsets &fields, Address field, std::int32_t offset) {
+    const std::optional<Address> target = reader.ReadPointer(field + offset);
+    if (!target || *target == kNullAddress)
+        return false;
+    const std::optional<Address> fieldClass = reader.ReadPointer(*target + fields.fieldClass);
+    if (!fieldClass || *fieldClass == kNullAddress)
+        return false;
+    const std::optional<std::uint64_t> castFlags =
+        reader.ReadAs<std::uint64_t>(*fieldClass + fields.fieldClassCastFlags);
+    return castFlags && (*castFlags & kCastFlagProperty) != 0;
+}
+
+// An array keeps its element property past the tail rather than at it, so
+// where is measured instead of assumed. The first offset every array agrees on
+// is the one, and the tail itself is tried first.
+std::int32_t FindArrayInnerOffset(const MemoryReader &reader, const FieldOffsets &fields,
+                                  const std::vector<Address> &arrays, std::int32_t tail) {
+    if (arrays.empty())
+        return kOffsetNotFound;
+
+    constexpr std::int32_t kMaxInnerGap = 0x20;
+    for (std::int32_t offset = tail; offset <= tail + kMaxInnerGap;
+         offset += static_cast<std::int32_t>(sizeof(Address))) {
+        bool satisfied = true;
+        for (const Address field : arrays)
+            satisfied = satisfied && PointsToProperty(reader, fields, field, offset);
+        if (satisfied)
+            return offset;
+    }
+    return kOffsetNotFound;
+}
+
+struct Samples {
+    std::vector<Address> bools;
+    std::vector<Address> objects;
+    std::vector<Address> structs;
+    std::vector<Address> arrays;
+
+    // Arrays are excluded: they do not share the tail, so they cannot help
+    // decide where it is.
+    std::size_t Kinds() const {
+        return static_cast<std::size_t>(!bools.empty()) + static_cast<std::size_t>(!objects.empty()) +
+               static_cast<std::size_t>(!structs.empty());
+    }
+
+    bool Full() const {
+        return bools.size() >= kSamplesPerKind && objects.size() >= kSamplesPerKind &&
+               structs.size() >= kSamplesPerKind && arrays.size() >= kSamplesPerKind;
+    }
+};
+
+void Collect(std::vector<Address> &into, Address field) {
+    if (into.size() < kSamplesPerKind)
+        into.push_back(field);
+}
+
+// Every property the graph holds, sorted by the kind whose tail says something
+// checkable about itself.
+Samples CollectSamples(const ObjectFinder &finder, const StructOffsets &structs, const FieldOffsets &fields) {
+    const MemoryReader &reader = finder.Reader();
+    const ObjectArray &objects = finder.Objects();
+    const PropertyChain chain(reader, finder.Names(), structs, fields);
+
+    Samples samples;
+    const std::int32_t total = objects.Num();
+    const std::int32_t walked = total < kMaxObjectsWalked ? total : kMaxObjectsWalked;
+
+    for (std::int32_t index = 0; index < walked; ++index) {
+        const Address object = objects.ObjectAt(index);
+        if (object == kNullAddress)
+            continue;
+        if (!ObjectIs(finder, structs, object, kCastFlagStruct))
+            continue;
+
+        Address field = chain.First(object);
+        for (std::int32_t step = 0; field != kNullAddress && step < kMaxChainLength; ++step) {
+            const Address fieldClass = chain.ClassOf(field);
+            const std::optional<std::uint64_t> fieldFlags =
+                reader.ReadAs<std::uint64_t>(fieldClass + fields.fieldClassCastFlags);
+            if (fieldFlags) {
+                if ((*fieldFlags & kCastFlagBoolProperty) != 0)
+                    Collect(samples.bools, field);
+                else if ((*fieldFlags & kCastFlagArrayProperty) != 0)
+                    Collect(samples.arrays, field);
+                else if ((*fieldFlags & kCastFlagStructProperty) != 0)
+                    Collect(samples.structs, field);
+                else if ((*fieldFlags & kCastFlagObjectProperty) != 0)
+                    Collect(samples.objects, field);
+            }
+            if (samples.Full())
+                return samples;
+            field = chain.Next(field);
+        }
+    }
+
+    return samples;
+}
+
+template <typename T> std::optional<std::int64_t> ReadWidened(const MemoryReader &reader, Address address) {
+    const std::optional<T> value = reader.ReadAs<T>(address);
+    if (!value)
+        return std::nullopt;
+    return static_cast<std::int64_t>(*value);
+}
+
+} // namespace
+
+const char *PropertyKindName(PropertyKind kind) {
+    switch (kind) {
+    case PropertyKind::Bool:
+        return "bool";
+    case PropertyKind::Byte:
+        return "byte";
+    case PropertyKind::Int8:
+        return "int8";
+    case PropertyKind::Int16:
+        return "int16";
+    case PropertyKind::Int32:
+        return "int32";
+    case PropertyKind::Int64:
+        return "int64";
+    case PropertyKind::UInt16:
+        return "uint16";
+    case PropertyKind::UInt32:
+        return "uint32";
+    case PropertyKind::UInt64:
+        return "uint64";
+    case PropertyKind::Float:
+        return "float";
+    case PropertyKind::Double:
+        return "double";
+    case PropertyKind::Enum:
+        return "enum";
+    case PropertyKind::Name:
+        return "name";
+    case PropertyKind::String:
+        return "string";
+    case PropertyKind::Text:
+        return "text";
+    case PropertyKind::Object:
+        return "object";
+    case PropertyKind::Class:
+        return "class";
+    case PropertyKind::WeakObject:
+        return "weak object";
+    case PropertyKind::SoftObject:
+        return "soft object";
+    case PropertyKind::Interface:
+        return "interface";
+    case PropertyKind::Struct:
+        return "struct";
+    case PropertyKind::Array:
+        return "array";
+    case PropertyKind::Set:
+        return "set";
+    case PropertyKind::Map:
+        return "map";
+    case PropertyKind::Delegate:
+        return "delegate";
+    case PropertyKind::Unknown:
+        break;
+    }
+    return "unknown";
+}
+
+PropertyKind ClassifyProperty(std::uint64_t castFlags) {
+    // Most derived first: FClassProperty also carries FObjectProperty, and
+    // every numeric kind also carries FNumericProperty.
+    struct Mapping {
+        std::uint64_t flag;
+        PropertyKind kind;
+    };
+    static constexpr std::array kMappings = {
+        Mapping{kCastFlagBoolProperty, PropertyKind::Bool},
+        Mapping{kCastFlagEnumProperty, PropertyKind::Enum},
+        Mapping{kCastFlagClassProperty, PropertyKind::Class},
+        Mapping{kCastFlagSoftClassProperty, PropertyKind::SoftObject},
+        Mapping{kCastFlagSoftObjectProperty, PropertyKind::SoftObject},
+        Mapping{kCastFlagWeakObjectProperty, PropertyKind::WeakObject},
+        Mapping{kCastFlagLazyObjectProperty, PropertyKind::WeakObject},
+        Mapping{kCastFlagObjectProperty, PropertyKind::Object},
+        Mapping{kCastFlagInterfaceProperty, PropertyKind::Interface},
+        Mapping{kCastFlagStructProperty, PropertyKind::Struct},
+        Mapping{kCastFlagArrayProperty, PropertyKind::Array},
+        Mapping{kCastFlagSetProperty, PropertyKind::Set},
+        Mapping{kCastFlagMapProperty, PropertyKind::Map},
+        Mapping{kCastFlagNameProperty, PropertyKind::Name},
+        Mapping{kCastFlagStrProperty, PropertyKind::String},
+        Mapping{kCastFlagTextProperty, PropertyKind::Text},
+        Mapping{kCastFlagDelegateProperty, PropertyKind::Delegate},
+        Mapping{kCastFlagMulticastDelegateProperty, PropertyKind::Delegate},
+        Mapping{kCastFlagDoubleProperty, PropertyKind::Double},
+        Mapping{kCastFlagFloatProperty, PropertyKind::Float},
+        Mapping{kCastFlagInt64Property, PropertyKind::Int64},
+        Mapping{kCastFlagUInt64Property, PropertyKind::UInt64},
+        Mapping{kCastFlagIntProperty, PropertyKind::Int32},
+        Mapping{kCastFlagUInt32Property, PropertyKind::UInt32},
+        Mapping{kCastFlagInt16Property, PropertyKind::Int16},
+        Mapping{kCastFlagUInt16Property, PropertyKind::UInt16},
+        Mapping{kCastFlagInt8Property, PropertyKind::Int8},
+        Mapping{kCastFlagByteProperty, PropertyKind::Byte},
+    };
+
+    for (const Mapping &mapping : kMappings) {
+        if ((castFlags & mapping.flag) != 0)
+            return mapping.kind;
+    }
+    return PropertyKind::Unknown;
+}
+
+PropertyTailOffsets FindPropertyTailOffsets(const ObjectFinder &finder, const StructOffsets &structs,
+                                            const FieldOffsets &fields) {
+    PropertyTailOffsets resolved;
+    if (!fields.Resolved())
+        return resolved;
+
+    const Samples samples = CollectSamples(finder, structs, fields);
+    // One kind agreeing with itself is not agreement: padding satisfies a bool
+    // mask often enough, and a chain pointer is a property pointer.
+    if (samples.Kinds() < 2)
+        return resolved;
+
+    const MemoryReader &reader = finder.Reader();
+    const std::int32_t start = ((fields.offsetInternal + kMinTailGap) + 0x7) & ~0x7;
+
+    for (std::int32_t offset = start; offset <= fields.offsetInternal + kMaxTailGap;
+         offset += static_cast<std::int32_t>(sizeof(Address))) {
+        bool satisfied = true;
+
+        for (const Address field : samples.bools)
+            satisfied = satisfied && PlausibleBoolTail(reader, field, offset);
+        for (const Address field : samples.objects)
+            satisfied = satisfied && PointsToObjectWithFlags(finder, structs, field, offset, kCastFlagClass);
+        for (const Address field : samples.structs)
+            satisfied = satisfied && PointsToObjectWithFlags(finder, structs, field, offset, kCastFlagScriptStruct);
+        if (!satisfied)
+            continue;
+
+        resolved.tail = offset;
+        resolved.arrayInner = FindArrayInnerOffset(reader, fields, samples.arrays, offset);
+        return resolved;
+    }
+
+    return resolved;
+}
+
+std::optional<PropertyInfo> PropertyValues::Describe(Address field) const {
+    if (field == kNullAddress || !fields_.Resolved())
+        return std::nullopt;
+
+    const std::optional<Address> fieldClass = reader_->ReadPointer(field + fields_.fieldClass);
+    if (!fieldClass || *fieldClass == kNullAddress)
+        return std::nullopt;
+
+    const std::optional<std::uint64_t> castFlags =
+        reader_->ReadAs<std::uint64_t>(*fieldClass + fields_.fieldClassCastFlags);
+    const std::optional<std::int32_t> offset = reader_->ReadInt32(field + fields_.offsetInternal);
+    const std::optional<std::int32_t> elementSize = reader_->ReadInt32(field + fields_.elementSize);
+    const std::optional<std::int32_t> arrayDim = reader_->ReadInt32(field + fields_.arrayDim);
+    const std::optional<std::uint64_t> propertyFlags = reader_->ReadAs<std::uint64_t>(field + fields_.propertyFlags);
+    if (!castFlags || !offset || !elementSize || !arrayDim)
+        return std::nullopt;
+
+    PropertyInfo info;
+    info.field = field;
+    info.castFlags = *castFlags;
+    info.kind = ClassifyProperty(*castFlags);
+    info.offset = *offset;
+    info.elementSize = *elementSize;
+    info.arrayDim = *arrayDim > 0 ? *arrayDim : 1;
+    info.propertyFlags = propertyFlags ? *propertyFlags : 0;
+
+    if (!tail_.Resolved())
+        return info;
+
+    if (info.kind == PropertyKind::Bool) {
+        const std::optional<std::uint8_t> fieldSize = reader_->ReadAs<std::uint8_t>(field + tail_.boolFieldSize());
+        const std::optional<std::uint8_t> byteOffset = reader_->ReadAs<std::uint8_t>(field + tail_.boolByteOffset());
+        const std::optional<std::uint8_t> byteMask = reader_->ReadAs<std::uint8_t>(field + tail_.boolByteMask());
+        const std::optional<std::uint8_t> fieldMask = reader_->ReadAs<std::uint8_t>(field + tail_.boolFieldMask());
+        if (!fieldSize || !byteOffset || !byteMask || !fieldMask)
+            return std::nullopt;
+        info.boolLayout = BoolLayout{*fieldSize, *byteOffset, *byteMask, *fieldMask};
+        return info;
+    }
+
+    switch (info.kind) {
+    case PropertyKind::Object:
+    case PropertyKind::Class:
+    case PropertyKind::WeakObject:
+    case PropertyKind::SoftObject:
+    case PropertyKind::Struct:
+    case PropertyKind::Enum:
+        if (const std::optional<Address> inner = reader_->ReadPointer(field + tail_.firstPointer()))
+            info.inner = *inner;
+        break;
+    case PropertyKind::Array:
+        if (tail_.arrayInner != kOffsetNotFound) {
+            if (const std::optional<Address> inner = reader_->ReadPointer(field + tail_.arrayInner))
+                info.inner = *inner;
+        }
+        break;
+    default:
+        break;
+    }
+
+    return info;
+}
+
+Address PropertyValues::ValueAddress(Address instance, const PropertyInfo &info, std::int32_t index) const {
+    if (instance == kNullAddress || !info.Resolved())
+        return kNullAddress;
+    if (index < 0 || index >= info.arrayDim)
+        return kNullAddress;
+    return instance + static_cast<Address>(info.offset) +
+           static_cast<Address>(index) * static_cast<Address>(info.elementSize);
+}
+
+std::optional<std::int64_t> PropertyValues::ReadInteger(Address instance, const PropertyInfo &info,
+                                                        std::int32_t index) const {
+    const Address value = ValueAddress(instance, info, index);
+    if (value == kNullAddress)
+        return std::nullopt;
+
+    switch (info.kind) {
+    case PropertyKind::Int8:
+        return ReadWidened<std::int8_t>(*reader_, value);
+    case PropertyKind::Byte:
+        return ReadWidened<std::uint8_t>(*reader_, value);
+    case PropertyKind::Int16:
+        return ReadWidened<std::int16_t>(*reader_, value);
+    case PropertyKind::UInt16:
+        return ReadWidened<std::uint16_t>(*reader_, value);
+    case PropertyKind::Int32:
+        return ReadWidened<std::int32_t>(*reader_, value);
+    case PropertyKind::UInt32:
+        return ReadWidened<std::uint32_t>(*reader_, value);
+    case PropertyKind::Int64:
+    case PropertyKind::UInt64:
+        return ReadWidened<std::int64_t>(*reader_, value);
+    case PropertyKind::Enum:
+        // An enum property is a numeric property wearing a name; its width is
+        // whatever the property underneath it takes up.
+        switch (info.elementSize) {
+        case 1:
+            return ReadWidened<std::uint8_t>(*reader_, value);
+        case 2:
+            return ReadWidened<std::uint16_t>(*reader_, value);
+        case 4:
+            return ReadWidened<std::int32_t>(*reader_, value);
+        case 8:
+            return ReadWidened<std::int64_t>(*reader_, value);
+        default:
+            return std::nullopt;
+        }
+    default:
+        return std::nullopt;
+    }
+}
+
+std::optional<double> PropertyValues::ReadFloating(Address instance, const PropertyInfo &info,
+                                                   std::int32_t index) const {
+    const Address value = ValueAddress(instance, info, index);
+    if (value == kNullAddress)
+        return std::nullopt;
+
+    if (info.kind == PropertyKind::Float) {
+        const std::optional<float> single = reader_->ReadAs<float>(value);
+        return single ? std::optional<double>(static_cast<double>(*single)) : std::nullopt;
+    }
+    if (info.kind == PropertyKind::Double)
+        return reader_->ReadAs<double>(value);
+    return std::nullopt;
+}
+
+std::optional<bool> PropertyValues::ReadBool(Address instance, const PropertyInfo &info, std::int32_t index) const {
+    const Address value = ValueAddress(instance, info, index);
+    if (value == kNullAddress || info.kind != PropertyKind::Bool || info.boolLayout.fieldMask == 0)
+        return std::nullopt;
+
+    const std::optional<std::uint8_t> byte =
+        reader_->ReadAs<std::uint8_t>(value + static_cast<Address>(info.boolLayout.byteOffset));
+    if (!byte)
+        return std::nullopt;
+    return (*byte & info.boolLayout.fieldMask) != 0;
+}
+
+Address PropertyValues::ReadObject(Address instance, const PropertyInfo &info, std::int32_t index) const {
+    const Address value = ValueAddress(instance, info, index);
+    if (value == kNullAddress)
+        return kNullAddress;
+    if (info.kind != PropertyKind::Object && info.kind != PropertyKind::Class)
+        return kNullAddress;
+
+    const std::optional<Address> object = reader_->ReadPointer(value);
+    return object ? *object : kNullAddress;
+}
+
+std::optional<std::string> PropertyValues::ReadName(Address instance, const PropertyInfo &info,
+                                                    std::int32_t index) const {
+    const Address value = ValueAddress(instance, info, index);
+    if (value == kNullAddress || info.kind != PropertyKind::Name)
+        return std::nullopt;
+    return names_->ReadFName(value);
+}
+
+std::optional<std::string> PropertyValues::ReadString(Address instance, const PropertyInfo &info,
+                                                      std::int32_t index) const {
+    const Address value = ValueAddress(instance, info, index);
+    if (value == kNullAddress || info.kind != PropertyKind::String)
+        return std::nullopt;
+
+    const std::optional<Address> data = reader_->ReadPointer(value);
+    const std::optional<std::int32_t> num = reader_->ReadInt32(value + sizeof(Address));
+    if (!data || !num)
+        return std::nullopt;
+    if (*data == kNullAddress || *num <= 0)
+        return std::string();
+
+    // The count includes the terminator the engine always stores.
+    std::string text;
+    text.reserve(static_cast<std::size_t>(*num - 1));
+    for (std::int32_t i = 0; i + 1 < *num; ++i) {
+        const std::optional<std::uint16_t> unit =
+            reader_->ReadAs<std::uint16_t>(*data + static_cast<Address>(i) * 2);
+        if (!unit)
+            return std::nullopt;
+        text.push_back(*unit < 0x80 ? static_cast<char>(*unit) : '?');
+    }
+    return text;
+}
+
+std::optional<ArrayView> PropertyValues::ReadArray(Address instance, const PropertyInfo &info,
+                                                   std::int32_t index) const {
+    const Address value = ValueAddress(instance, info, index);
+    if (value == kNullAddress || info.kind != PropertyKind::Array)
+        return std::nullopt;
+
+    const std::optional<Address> data = reader_->ReadPointer(value);
+    const std::optional<std::int32_t> num = reader_->ReadInt32(value + sizeof(Address));
+    const std::optional<std::int32_t> max = reader_->ReadInt32(value + sizeof(Address) + sizeof(std::int32_t));
+    if (!data || !num || !max || *num < 0 || *num > *max)
+        return std::nullopt;
+
+    ArrayView view;
+    view.data = *data;
+    view.num = *num;
+    view.max = *max;
+    view.inner = info.inner;
+
+    if (info.inner != kNullAddress) {
+        if (const std::optional<std::int32_t> elementSize = reader_->ReadInt32(info.inner + fields_.elementSize))
+            view.elementSize = *elementSize;
+    }
+    return view;
+}
+
+bool PropertyValues::WriteInteger(MemoryWriter &writer, Address instance, const PropertyInfo &info,
+                                  std::int64_t value, std::int32_t index) const {
+    const Address at = ValueAddress(instance, info, index);
+    if (at == kNullAddress)
+        return false;
+
+    switch (info.kind) {
+    case PropertyKind::Int8:
+        return writer.WriteAs<std::int8_t>(at, static_cast<std::int8_t>(value));
+    case PropertyKind::Byte:
+        return writer.WriteAs<std::uint8_t>(at, static_cast<std::uint8_t>(value));
+    case PropertyKind::Int16:
+        return writer.WriteAs<std::int16_t>(at, static_cast<std::int16_t>(value));
+    case PropertyKind::UInt16:
+        return writer.WriteAs<std::uint16_t>(at, static_cast<std::uint16_t>(value));
+    case PropertyKind::Int32:
+        return writer.WriteAs<std::int32_t>(at, static_cast<std::int32_t>(value));
+    case PropertyKind::UInt32:
+        return writer.WriteAs<std::uint32_t>(at, static_cast<std::uint32_t>(value));
+    case PropertyKind::Int64:
+    case PropertyKind::UInt64:
+        return writer.WriteAs<std::int64_t>(at, value);
+    case PropertyKind::Enum:
+        switch (info.elementSize) {
+        case 1:
+            return writer.WriteAs<std::uint8_t>(at, static_cast<std::uint8_t>(value));
+        case 2:
+            return writer.WriteAs<std::uint16_t>(at, static_cast<std::uint16_t>(value));
+        case 4:
+            return writer.WriteAs<std::int32_t>(at, static_cast<std::int32_t>(value));
+        case 8:
+            return writer.WriteAs<std::int64_t>(at, value);
+        default:
+            return false;
+        }
+    default:
+        return false;
+    }
+}
+
+bool PropertyValues::WriteFloating(MemoryWriter &writer, Address instance, const PropertyInfo &info, double value,
+                                   std::int32_t index) const {
+    const Address at = ValueAddress(instance, info, index);
+    if (at == kNullAddress)
+        return false;
+
+    if (info.kind == PropertyKind::Float)
+        return writer.WriteAs<float>(at, static_cast<float>(value));
+    if (info.kind == PropertyKind::Double)
+        return writer.WriteAs<double>(at, value);
+    return false;
+}
+
+bool PropertyValues::WriteBool(MemoryWriter &writer, Address instance, const PropertyInfo &info, bool value,
+                               std::int32_t index) const {
+    const Address at = ValueAddress(instance, info, index);
+    if (at == kNullAddress || info.kind != PropertyKind::Bool || info.boolLayout.fieldMask == 0)
+        return false;
+
+    // A bitfield shares its byte with its neighbours, so the byte is read back
+    // and only this property's bits are touched.
+    const Address byteAddress = at + static_cast<Address>(info.boolLayout.byteOffset);
+    const std::optional<std::uint8_t> current = reader_->ReadAs<std::uint8_t>(byteAddress);
+    if (!current)
+        return false;
+
+    const auto updated = static_cast<std::uint8_t>(value ? (*current | info.boolLayout.fieldMask)
+                                                         : (*current & static_cast<std::uint8_t>(
+                                                                           ~info.boolLayout.fieldMask)));
+    return writer.WriteAs<std::uint8_t>(byteAddress, updated);
+}
+
+bool PropertyValues::WriteObject(MemoryWriter &writer, Address instance, const PropertyInfo &info, Address value,
+                                 std::int32_t index) const {
+    const Address at = ValueAddress(instance, info, index);
+    if (at == kNullAddress)
+        return false;
+    if (info.kind != PropertyKind::Object && info.kind != PropertyKind::Class)
+        return false;
+    return writer.WriteAs<Address>(at, value);
+}
+
+} // namespace URK::Unreal

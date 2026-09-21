@@ -107,6 +107,25 @@ Address PropertyChain::FindMember(Address structObject, std::string_view name) c
     return kNullAddress;
 }
 
+Address PropertyChain::FindMemberDeep(Address structObject, std::string_view name) const {
+    // Deep enough for any engine hierarchy, shallow enough that a corrupted
+    // chain cannot become a loop.
+    constexpr int kMaxDepth = 0x40;
+
+    Address current = structObject;
+    for (int depth = 0; depth < kMaxDepth && current != kNullAddress; ++depth) {
+        if (const Address member = FindMember(current, name); member != kNullAddress)
+            return member;
+        if (structs_.superStruct == kOffsetNotFound)
+            break;
+        const std::optional<Address> super = reader_->ReadPointer(current + structs_.superStruct);
+        if (!super || *super == current)
+            break;
+        current = *super;
+    }
+    return kNullAddress;
+}
+
 std::int32_t FindChildPropertiesOffset(const ObjectFinder &finder, const StructOffsets &structs) {
     if (structs.children == kOffsetNotFound)
         return kOffsetNotFound;

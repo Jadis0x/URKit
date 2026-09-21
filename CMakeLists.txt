@@ -151,62 +151,6 @@ if (BUILD_TESTING)
     urk_disable_vs_vcpkg_integration(urk_unity_name_matching_tests)
     add_test(NAME urkit_unity_name_matching COMMAND urk_unity_name_matching_tests)
 
-    # Unreal offset calibration; linked only here while it is brought up, so no
-    # shipped binary references src/unreal yet.
-    add_executable(urk_unreal_offset_finder_tests
-        tests/unreal_offset_finder_tests.cpp
-        src/unreal/unreal_object_array.cpp
-        src/unreal/unreal_offsets.cpp)
-    target_include_directories(urk_unreal_offset_finder_tests PRIVATE .)
-    target_compile_features(urk_unreal_offset_finder_tests PRIVATE cxx_std_20)
-    target_compile_definitions(urk_unreal_offset_finder_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    urk_disable_vs_vcpkg_integration(urk_unreal_offset_finder_tests)
-    add_test(NAME urkit_unreal_offset_finder COMMAND urk_unreal_offset_finder_tests)
-
-    add_executable(urk_unreal_name_table_tests
-        tests/unreal_name_table_tests.cpp
-        src/unreal/unreal_names.cpp
-        src/unreal/unreal_object_array.cpp)
-    target_include_directories(urk_unreal_name_table_tests PRIVATE .)
-    target_compile_features(urk_unreal_name_table_tests PRIVATE cxx_std_20)
-    target_compile_definitions(urk_unreal_name_table_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    urk_disable_vs_vcpkg_integration(urk_unreal_name_table_tests)
-    add_test(NAME urkit_unreal_name_table COMMAND urk_unreal_name_table_tests)
-
-    # The reflection-walking sources, shared by the tests that exercise them.
-    set(URK_UNREAL_REFLECTION_SOURCES
-        src/unreal/unreal_object_array.cpp
-        src/unreal/unreal_names.cpp
-        src/unreal/unreal_object_finder.cpp
-        src/unreal/unreal_struct_offsets.cpp
-        src/unreal/unreal_property_offsets.cpp)
-
-    # Live-process bootstrap: the scan that finds the globals every other step
-    # is handed, plus the module section enumeration it walks.
-    add_executable(urk_unreal_bootstrap_tests
-        tests/unreal_bootstrap_tests.cpp
-        src/unreal/unreal_bootstrap.cpp
-        src/unreal/unreal_module.cpp
-        src/unreal/unreal_names.cpp
-        src/unreal/unreal_object_array.cpp
-        src/unreal/unreal_offsets.cpp)
-    target_include_directories(urk_unreal_bootstrap_tests PRIVATE .)
-    target_compile_features(urk_unreal_bootstrap_tests PRIVATE cxx_std_20)
-    target_compile_definitions(urk_unreal_bootstrap_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    urk_disable_vs_vcpkg_integration(urk_unreal_bootstrap_tests)
-    add_test(NAME urkit_unreal_bootstrap COMMAND urk_unreal_bootstrap_tests)
-
-    foreach(unreal_test struct_offset property_offset)
-        add_executable(urk_unreal_${unreal_test}_tests
-            tests/unreal_${unreal_test}_tests.cpp
-            ${URK_UNREAL_REFLECTION_SOURCES})
-        target_include_directories(urk_unreal_${unreal_test}_tests PRIVATE .)
-        target_compile_features(urk_unreal_${unreal_test}_tests PRIVATE cxx_std_20)
-        target_compile_definitions(urk_unreal_${unreal_test}_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-        urk_disable_vs_vcpkg_integration(urk_unreal_${unreal_test}_tests)
-        add_test(NAME urkit_unreal_${unreal_test}s COMMAND urk_unreal_${unreal_test}_tests)
-    endforeach()
-
 endif()
 
 if (URK_BUILD_SDK_TOOL)

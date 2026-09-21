@@ -38,4 +38,8 @@ std::vector<ModuleSection> ReadModuleSections(const MemoryReader &reader, Addres
 // the link-support sections that hold nothing a scan wants.
 std::vector<ScanRegion> ModuleDataRegions(const MemoryReader &reader, Address moduleBase);
 
+// The sections that can be executed, which is what tells a pointer to a native
+// function from any other pointer.
+std::vector<ScanRegion> ModuleCodeRegions(const MemoryReader &reader, Address moduleBase);
+
 } // namespace URK::Unreal

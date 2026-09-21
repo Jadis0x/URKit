@@ -33,6 +33,8 @@ class ObjectFinder {
     Address FindInOuter(std::string_view name, std::string_view outerName) const;
 
     const MemoryReader &Reader() const { return objects_->Reader(); }
+    const ObjectArray &Objects() const { return *objects_; }
+    const NameTable &Names() const { return *names_; }
     const ObjectOffsets &Offsets() const { return offsets_; }
     std::size_t IndexedCount() const { return count_; }
 
@@ -46,5 +48,10 @@ class ObjectFinder {
     std::unordered_map<std::string, std::vector<Address>> byName_;
     std::size_t count_ = 0;
 };
+
+// Whether the address holds an object the array agrees is there. An object
+// knows which slot holds it and the array has to agree, which a pointer into
+// the middle of an object, or at an FField, or at a destroyed object, does not.
+bool IsLiveObject(const ObjectFinder &finder, Address candidate);
 
 } // namespace URK::Unreal

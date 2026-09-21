@@ -72,6 +72,17 @@ std::int32_t FindAnchoredOffset(const MemoryReader &reader, const std::vector<An
 // First offset past the UObject header, which is where UField begins.
 std::int32_t FirstOffsetPastHeader(const ObjectOffsets &offsets);
 
+// What an object is, read off the class it belongs to.
+//
+// ClassCastFlags describes a class's *instances*, not the class object holding
+// it - AActor's flags say "an actor", not "a class" - and only UClass declares
+// the field at all, so asking an object for its own flags asks a different
+// question and asks it of memory that may not be a UClass. The flags that
+// describe an object are its class's.
+std::uint64_t CastFlagsOf(const ObjectFinder &finder, const StructOffsets &structs, Address object);
+
+bool ObjectIs(const ObjectFinder &finder, const StructOffsets &structs, Address object, std::uint64_t flag);
+
 // Properties are UObjects before UE4.25 and FFields after, so looking for a
 // known property in the object array tells the two systems apart.
 bool UsesFPropertySystem(const ObjectFinder &finder);

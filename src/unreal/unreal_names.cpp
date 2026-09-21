@@ -393,13 +393,8 @@ std::optional<std::string> NameTable::Read(std::uint32_t comparisonIndex) const 
     return ReadFromEntryArray(comparisonIndex);
 }
 
-std::optional<std::string> NameTable::ObjectName(const ObjectArray &objects, std::int32_t nameOffset,
-                                                 std::int32_t objectIndex) const {
-    const Address object = objects.ObjectAt(objectIndex);
-    if (object == kNullAddress)
-        return std::nullopt;
-
-    const std::optional<std::uint32_t> comparisonIndex = reader_->ReadUInt32(object + nameOffset);
+std::optional<std::string> NameTable::ReadFName(Address fname) const {
+    const std::optional<std::uint32_t> comparisonIndex = reader_->ReadUInt32(fname);
     if (!comparisonIndex)
         return std::nullopt;
 
@@ -407,10 +402,18 @@ std::optional<std::string> NameTable::ObjectName(const ObjectArray &objects, std
     if (!name)
         return std::nullopt;
 
-    const std::optional<std::int32_t> number = reader_->ReadInt32(object + nameOffset + sizeof(std::int32_t));
+    const std::optional<std::int32_t> number = reader_->ReadInt32(fname + sizeof(std::int32_t));
     if (number && *number > 0)
         name->append("_").append(std::to_string(*number - 1));
     return name;
+}
+
+std::optional<std::string> NameTable::ObjectName(const ObjectArray &objects, std::int32_t nameOffset,
+                                                 std::int32_t objectIndex) const {
+    const Address object = objects.ObjectAt(objectIndex);
+    if (object == kNullAddress)
+        return std::nullopt;
+    return ReadFName(object + nameOffset);
 }
 
 } // namespace URK::Unreal

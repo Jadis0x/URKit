@@ -54,4 +54,22 @@ class MemoryReader {
     }
 };
 
+// Kept apart from reading: the calibration measures a running game and must not
+// be able to change what it is measuring, so only the few paths that write ask
+// for this.
+class MemoryWriter {
+  public:
+    virtual ~MemoryWriter() = default;
+
+    // Returns false without writing anything if any byte is not writable.
+    virtual bool Write(Address address, const void *data, std::size_t size) = 0;
+
+    virtual bool Writable(Address address, std::size_t size) const = 0;
+
+    template <typename T> bool WriteAs(Address address, const T &value) {
+        static_assert(std::is_trivially_copyable_v<T>, "MemoryWriter copies raw bytes");
+        return Write(address, &value, sizeof(T));
+    }
+};
+
 } // namespace URK::Unreal

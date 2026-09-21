@@ -20,6 +20,20 @@ ObjectFinder ObjectFinder::Build(const ObjectArray &objects, const NameTable &na
     return finder;
 }
 
+bool IsLiveObject(const ObjectFinder &finder, Address candidate) {
+    if (candidate == kNullAddress)
+        return false;
+
+    const ObjectOffsets &offsets = finder.Offsets();
+    if (offsets.index == kOffsetNotFound)
+        return false;
+
+    const std::optional<std::int32_t> index = finder.Reader().ReadInt32(candidate + offsets.index);
+    if (!index || *index < 0)
+        return false;
+    return finder.Objects().ObjectAt(*index) == candidate;
+}
+
 Address ObjectFinder::ClassOf(Address object) const {
     if (object == kNullAddress || offsets_.classPointer == kOffsetNotFound)
         return kNullAddress;

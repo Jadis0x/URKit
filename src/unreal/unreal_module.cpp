@@ -120,6 +120,16 @@ std::vector<ModuleSection> ReadModuleSections(const MemoryReader &reader, Addres
     return sections;
 }
 
+std::vector<ScanRegion> ModuleCodeRegions(const MemoryReader &reader, Address moduleBase) {
+    std::vector<ScanRegion> regions;
+    for (const ModuleSection &section : ReadModuleSections(reader, moduleBase)) {
+        if (!section.Executable())
+            continue;
+        regions.push_back(ScanRegion{.start = section.start, .size = section.size});
+    }
+    return regions;
+}
+
 std::vector<ScanRegion> ModuleDataRegions(const MemoryReader &reader, Address moduleBase) {
     std::vector<ScanRegion> regions;
     for (const ModuleSection &section : ReadModuleSections(reader, moduleBase)) {

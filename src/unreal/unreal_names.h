@@ -57,6 +57,9 @@ class NameTable {
 
     std::optional<std::string> Read(std::uint32_t comparisonIndex) const;
 
+    // The FName stored at this address - comparison index and number - as text.
+    std::optional<std::string> ReadFName(Address fname) const;
+
     // The object's name with FName's number suffix applied.
     std::optional<std::string> ObjectName(const ObjectArray &objects, std::int32_t nameOffset,
                                           std::int32_t objectIndex) const;

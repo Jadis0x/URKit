@@ -28,7 +28,10 @@ inline constexpr std::uint64_t kCastFlagNumericProperty = 0x1000000;
 // Property flags the engine assigns to a plain edit-exposed POD member.
 inline constexpr std::uint64_t kPropertyFlagEdit = 0x1;
 inline constexpr std::uint64_t kPropertyFlagBlueprintVisible = 0x4;
+inline constexpr std::uint64_t kPropertyFlagParm = 0x80;
+inline constexpr std::uint64_t kPropertyFlagOutParm = 0x100;
 inline constexpr std::uint64_t kPropertyFlagZeroConstructor = 0x200;
+inline constexpr std::uint64_t kPropertyFlagReturnParm = 0x400;
 inline constexpr std::uint64_t kPropertyFlagSaveGame = 0x1000000;
 inline constexpr std::uint64_t kPropertyFlagIsPlainOldData = 0x40000000;
 inline constexpr std::uint64_t kPropertyFlagNoDestructor = 0x1000000000;
@@ -64,11 +67,17 @@ class PropertyChain {
                   const FieldOffsets &fields)
         : reader_(&reader), names_(&names), structs_(structs), fields_(fields) {}
 
+    const MemoryReader &Reader() const { return *reader_; }
+
     Address First(Address structObject) const;
     Address Next(Address field) const;
     Address ClassOf(Address field) const;
     std::optional<std::string> NameOf(Address field) const;
     Address FindMember(Address structObject, std::string_view name) const;
+
+    // The same, continued up the Super chain: a member is usually declared by
+    // a class further up than the one an instance reports.
+    Address FindMemberDeep(Address structObject, std::string_view name) const;
 
   private:
     const MemoryReader *reader_;
