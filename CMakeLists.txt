@@ -181,6 +181,21 @@ if (BUILD_TESTING)
         src/unreal/unreal_struct_offsets.cpp
         src/unreal/unreal_property_offsets.cpp)
 
+    # Live-process bootstrap: the scan that finds the globals every other step
+    # is handed, plus the module section enumeration it walks.
+    add_executable(urk_unreal_bootstrap_tests
+        tests/unreal_bootstrap_tests.cpp
+        src/unreal/unreal_bootstrap.cpp
+        src/unreal/unreal_module.cpp
+        src/unreal/unreal_names.cpp
+        src/unreal/unreal_object_array.cpp
+        src/unreal/unreal_offsets.cpp)
+    target_include_directories(urk_unreal_bootstrap_tests PRIVATE .)
+    target_compile_features(urk_unreal_bootstrap_tests PRIVATE cxx_std_20)
+    target_compile_definitions(urk_unreal_bootstrap_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    urk_disable_vs_vcpkg_integration(urk_unreal_bootstrap_tests)
+    add_test(NAME urkit_unreal_bootstrap COMMAND urk_unreal_bootstrap_tests)
+
     foreach(unreal_test struct_offset property_offset)
         add_executable(urk_unreal_${unreal_test}_tests
             tests/unreal_${unreal_test}_tests.cpp
