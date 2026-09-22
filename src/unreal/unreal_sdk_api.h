@@ -36,6 +36,13 @@ class UnrealEngine {
 
     static constexpr std::uint64_t kRetryCooldownMs = 2000;
 
+    // Version resource and module layout only, no scan. Cached; the answer
+    // cannot change while the process lives.
+    const UnrealPresence &Presence();
+
+    // This process can never be Unreal, so waiting for it is pointless.
+    bool RuledOut() const;
+
     bool Available() const;
     const EngineVersion &Version() const { return version_; }
 
@@ -60,6 +67,8 @@ class UnrealEngine {
     std::atomic<bool> ruledOut_{false};
     std::atomic<std::uint64_t> lastAttemptMs_{0};
     std::mutex bootstrapMutex_;
+    std::mutex presenceMutex_;
+    std::optional<UnrealPresence> presence_;
 
     ProcessMemory memory_;
     EngineVersion version_;

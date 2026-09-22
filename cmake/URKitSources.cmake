@@ -16,6 +16,7 @@ set(URK_INCLUDE_DIRS
     ${URK_SRC_DIR}/core
     ${URK_SRC_DIR}/core/loader
     ${URK_SRC_DIR}/unity
+    ${URK_SRC_DIR}/unreal
     ${URK_SRC_DIR}/ui
     ${URK_SRC_DIR}/sdk
     ${URK_SRC_DIR}/proxy
@@ -48,6 +49,8 @@ set(URK_CORE_SRC
     ${URK_SRC_DIR}/core/loader/runtime_discovery.cpp
     ${URK_SRC_DIR}/core/loader/runtime_events.cpp
     ${URK_SRC_DIR}/core/loader/steam_identity.cpp
+    ${URK_SRC_DIR}/core/loader/unreal_mod_context.cpp
+    ${URK_SRC_DIR}/core/loader/unreal_runtime_backend.cpp
     ${URK_SRC_DIR}/core/loader/window_message_dispatcher.cpp
     ${URK_SRC_DIR}/core/logger.cpp
     ${URK_SRC_DIR}/core/mod_api.cpp
@@ -63,6 +66,35 @@ set(URK_UNITY_SRC
     ${URK_SRC_DIR}/unity/il2cpp_api.cpp
     ${URK_SRC_DIR}/unity/mono_api.cpp
 )
+
+# unreal_remote_memory.cpp is deliberately absent: the out-of-process reader
+# belongs to the probe tooling, not to a loader that runs inside the game.
+set(URK_UNREAL_SRC
+    ${URK_SRC_DIR}/unreal/unreal_bootstrap.cpp
+    ${URK_SRC_DIR}/unreal/unreal_engine_detect.cpp
+    ${URK_SRC_DIR}/unreal/unreal_functions.cpp
+    ${URK_SRC_DIR}/unreal/unreal_module.cpp
+    ${URK_SRC_DIR}/unreal/unreal_names.cpp
+    ${URK_SRC_DIR}/unreal/unreal_object_array.cpp
+    ${URK_SRC_DIR}/unreal/unreal_object_finder.cpp
+    ${URK_SRC_DIR}/unreal/unreal_offsets.cpp
+    ${URK_SRC_DIR}/unreal/unreal_process_event.cpp
+    ${URK_SRC_DIR}/unreal/unreal_process_event_hook.cpp
+    ${URK_SRC_DIR}/unreal/unreal_process_memory.cpp
+    ${URK_SRC_DIR}/unreal/unreal_property_offsets.cpp
+    ${URK_SRC_DIR}/unreal/unreal_property_values.cpp
+    ${URK_SRC_DIR}/unreal/unreal_sdk_api.cpp
+    ${URK_SRC_DIR}/unreal/unreal_struct_offsets.cpp
+    ${URK_SRC_DIR}/unreal/unreal_type_queries.cpp
+    ${URK_SRC_DIR}/unreal/unreal_world.cpp
+)
+
+# clang ignores __try for asynchronous faults unless asked; the reader's SEH
+# guard is what keeps a scan over stale pages from killing the game.
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set_source_files_properties(${URK_SRC_DIR}/unreal/unreal_process_memory.cpp
+        PROPERTIES COMPILE_OPTIONS "-fasync-exceptions")
+endif()
 
 set(URK_UI_SRC
     ${URK_SRC_DIR}/ui/intro.cpp
@@ -176,6 +208,7 @@ list(APPEND URK_UPDATER_SRC ${URK_SDK_TEMPLATE_FILES})
 set(URK_COMMON_SRC
     ${URK_CORE_SRC}
     ${URK_UNITY_SRC}
+    ${URK_UNREAL_SRC}
     ${URK_UI_SRC}
 )
 
@@ -231,6 +264,25 @@ set(URK_HEADER_CANDIDATES
 
     ${URK_SRC_DIR}/unity/mono_api.h
     ${URK_SRC_DIR}/unity/il2cpp_export_policy.h
+
+    ${URK_SRC_DIR}/unreal/unreal_bootstrap.h
+    ${URK_SRC_DIR}/unreal/unreal_engine_detect.h
+    ${URK_SRC_DIR}/unreal/unreal_functions.h
+    ${URK_SRC_DIR}/unreal/unreal_memory.h
+    ${URK_SRC_DIR}/unreal/unreal_module.h
+    ${URK_SRC_DIR}/unreal/unreal_names.h
+    ${URK_SRC_DIR}/unreal/unreal_object_array.h
+    ${URK_SRC_DIR}/unreal/unreal_object_finder.h
+    ${URK_SRC_DIR}/unreal/unreal_offsets.h
+    ${URK_SRC_DIR}/unreal/unreal_process_event.h
+    ${URK_SRC_DIR}/unreal/unreal_process_event_hook.h
+    ${URK_SRC_DIR}/unreal/unreal_process_memory.h
+    ${URK_SRC_DIR}/unreal/unreal_property_offsets.h
+    ${URK_SRC_DIR}/unreal/unreal_property_values.h
+    ${URK_SRC_DIR}/unreal/unreal_sdk_api.h
+    ${URK_SRC_DIR}/unreal/unreal_struct_offsets.h
+    ${URK_SRC_DIR}/unreal/unreal_type_queries.h
+    ${URK_SRC_DIR}/unreal/unreal_world.h
 
 
     ${URK_SDK_DIR}/mod_sdk.h

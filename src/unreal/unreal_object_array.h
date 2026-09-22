@@ -37,6 +37,15 @@ struct ChunkedObjectArrayLayout {
 std::span<const FixedObjectArrayLayout> KnownFixedLayouts();
 std::span<const ChunkedObjectArrayLayout> KnownChunkedLayouts();
 
+// Bytes of a candidate that the header-only prefilter looks at.
+inline constexpr std::size_t kObjectArrayHeaderBytes = 0x24;
+
+// The part of validation that reads only the candidate's own header - the
+// counts and their agreement with each other. A necessary condition, so a
+// scan can reject with it before paying for the pointers a full validation
+// follows, which is most of what a scan does.
+bool HeaderMightBeObjectArray(std::span<const std::uint8_t> header);
+
 // Probed, not assumed: FUObjectItem gained fields over successive versions.
 struct ObjectItemLayout {
     std::int32_t pointerOffset = kOffsetNotFound;

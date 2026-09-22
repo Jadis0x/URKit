@@ -72,7 +72,6 @@ std::optional<Expected> ExpectedOf(const PropertyChain &chain, const PropertyVal
 std::vector<Expected> CollectFunctions(const ObjectFinder &finder, const StructOffsets &structs,
                                        const PropertyChain &chain, const PropertyValues &values) {
     std::vector<Expected> samples;
-    const MemoryReader &reader = finder.Reader();
     const ObjectArray &objects = finder.Objects();
 
     const auto sameShape = [](const Expected &left, const Expected &right) {

@@ -26,7 +26,7 @@ struct BackendResolution {
 };
 
 bool RunUnavailable(Config &) {
-    Log("[runtime][ERROR] No Unity scripting runtime was loaded in this process.");
+    Log("[runtime][ERROR] No supported scripting runtime was found in this process.");
     return false;
 }
 
@@ -39,6 +39,8 @@ BackendResolution ResolveLoadedBackend() {
         return {RuntimeBackend_Il2Cpp(), RuntimeDiscovery_RuntimeReason(snapshot)};
     case RuntimeModuleKind::Mono:
         return {RuntimeBackend_Mono(), RuntimeDiscovery_RuntimeReason(snapshot)};
+    case RuntimeModuleKind::Unreal:
+        return {RuntimeBackend_Unreal(), RuntimeDiscovery_RuntimeReason(snapshot)};
     case RuntimeModuleKind::None:
         return {kUnavailableBackend, RuntimeDiscovery_RuntimeReason(snapshot)};
     }
@@ -51,6 +53,8 @@ BackendResolution ResolveBackend(const Config &config) {
         return {RuntimeBackend_Il2Cpp(), "explicit config"};
     if (configured == "mono")
         return {RuntimeBackend_Mono(), "explicit config"};
+    if (configured == "unreal")
+        return {RuntimeBackend_Unreal(), "explicit config"};
 
     const ULONGLONG started = GetTickCount64();
     const ULONGLONG deadline = started + kBackendDiscoveryTimeoutMs;

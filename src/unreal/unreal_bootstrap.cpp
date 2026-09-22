@@ -8,9 +8,6 @@
 namespace URK::Unreal {
 namespace {
 
-// Both globals are pointer aligned, so nothing in between is worth probing.
-constexpr Address kScanStep = sizeof(Address);
-
 // Room for a stale array or a second pool without letting a noisy section turn
 // the pairing into a long search.
 constexpr std::size_t kMaxCandidates = 0x20;
@@ -34,35 +31,8 @@ constexpr std::size_t kMaxNameLength = 0x80;
 constexpr std::int32_t kConfirmedNumerator = 3;
 constexpr std::int32_t kConfirmedDenominator = 4;
 
-// Every known array layout keeps its object pointer at one of these, so a
-// candidate holding no readable pointer at any of them cannot be one.
-const std::vector<std::int32_t> &ObjectsOffsets() {
-    static const std::vector<std::int32_t> offsets = [] {
-        std::vector<std::int32_t> distinct;
-        for (const FixedObjectArrayLayout &layout : KnownFixedLayouts())
-            distinct.push_back(layout.objectsOffset);
-        for (const ChunkedObjectArrayLayout &layout : KnownChunkedLayouts())
-            distinct.push_back(layout.objectsOffset);
-        std::sort(distinct.begin(), distinct.end());
-        distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
-        return distinct;
-    }();
-    return offsets;
-}
-
-bool MightHoldObjectArray(const MemoryReader &reader, Address address) {
-    for (const std::int32_t offset : ObjectsOffsets()) {
-        if (reader.PointsToReadable(address + offset))
-            return true;
-    }
-    return false;
-}
-
-// One read rather than a walk: the entry is within the first bytes of a block.
-bool HoldsNoneEntry(const MemoryReader &reader, Address block) {
-    std::array<std::uint8_t, kEntryWindow> bytes{};
-    if (!reader.Read(block, bytes.data(), bytes.size()))
-        return false;
+// The entry is within the first bytes of a block, so one read covers it.
+bool HoldsNoneEntry(std::span<const std::uint8_t> bytes) {
     for (std::size_t offset = 0; offset + sizeof(kNoneBytes) <= bytes.size(); offset += 2) {
         std::uint32_t word = 0;
         std::memcpy(&word, bytes.data() + offset, sizeof(word));
@@ -72,21 +42,30 @@ bool HoldsNoneEntry(const MemoryReader &reader, Address block) {
     return false;
 }
 
-// Cheap gate before the full name-table probe: reach "None" in one hop (pool
-// block table) or two (entry array chunk).
-bool MightHoldNameTable(const MemoryReader &reader, Address address) {
-    for (Address slot = 0; slot < kPrefilterSlots; slot += sizeof(Address)) {
-        const std::optional<Address> pointer = reader.ReadPointer(address + slot);
-        // Prefilter before Readable(), which is a kernel call.
-        if (!pointer || !MemoryReader::PlausiblePointer(*pointer) || !reader.Readable(*pointer, kEntryWindow))
-            continue;
-        if (HoldsNoneEntry(reader, *pointer))
-            return true;
-        const std::optional<Address> entry = reader.ReadPointer(*pointer);
-        if (entry && MemoryReader::PlausiblePointer(*entry) && HoldsNoneEntry(reader, *entry))
-            return true;
-    }
-    return false;
+// What one scanned word is worth knowing, asked once per word rather than
+// once per candidate whose window covers it.
+//
+// Reaching "None" in one hop is a pool block table, in two an entry array
+// chunk of entry pointers. The first hop's read serves both: its own bytes
+// answer the one-hop question and its first word is the second hop, so the
+// scan pays one read per hop rather than one per question.
+bool ReachesNoneEntry(const MemoryReader &reader, Address value) {
+    if (!MemoryReader::PlausiblePointer(value))
+        return false;
+
+    std::array<std::uint8_t, kEntryWindow> bytes{};
+    if (!reader.Read(value, bytes.data(), bytes.size()))
+        return false;
+    if (HoldsNoneEntry(bytes))
+        return true;
+
+    Address entry = 0;
+    std::memcpy(&entry, bytes.data(), sizeof(entry));
+    if (!MemoryReader::PlausiblePointer(entry))
+        return false;
+
+    std::array<std::uint8_t, kEntryWindow> hop{};
+    return reader.Read(entry, hop.data(), hop.size()) && HoldsNoneEntry(hop);
 }
 
 bool PlausibleName(const std::string &name) {
@@ -147,40 +126,96 @@ bool Better(const Runtime &candidate, const Runtime &incumbent) {
     return candidate.objectArrayAddress > incumbent.objectArrayAddress;
 }
 
-std::vector<Address> Scan(const MemoryReader &reader, std::span<const ScanRegion> regions,
-                          bool (*accept)(const MemoryReader &, Address)) {
+enum class Looking { ObjectArray, NameTable };
+
+// Both globals are pointer aligned, so a scan steps by a word and a region is
+// just its words. Read in chunks: one reader call per word over a shipped
+// game's data sections is where the bootstrap used to spend its life.
+constexpr std::size_t kChunkWords = 0x8000;
+
+// Words past a chunk's last candidate that the candidate still looks at: the
+// name table's window of slots, or the object array's header.
+constexpr std::size_t kLookaheadWords =
+    std::max(kPrefilterSlots / sizeof(Address), (kObjectArrayHeaderBytes + sizeof(Address) - 1) / sizeof(Address));
+
+// A chunk straddling the end of a committed range is halved rather than read
+// a word at a time, so an unreadable tail does not cost the whole chunk.
+// Unreadable words stay zero, which no prefilter accepts.
+void ReadWords(const MemoryReader &reader, Address at, std::span<Address> words) {
+    if (words.empty() || reader.Read(at, words.data(), words.size() * sizeof(Address)))
+        return;
+    if (words.size() == 1) {
+        words[0] = 0;
+        return;
+    }
+    const std::size_t half = words.size() / 2;
+    ReadWords(reader, at, words.first(half));
+    ReadWords(reader, at + half * sizeof(Address), words.subspan(half));
+}
+
+// Whether a candidate is worth validating, from the chunk alone. The object
+// array is decided by its own header; the name table by whether any slot of
+// its window reached "None", which is the one question that costs a read and
+// so is answered per word rather than per candidate.
+bool Worth(std::span<const Address> words, std::span<const std::uint8_t> facts, std::size_t at, Looking looking) {
+    if (looking == Looking::ObjectArray) {
+        const auto *bytes = reinterpret_cast<const std::uint8_t *>(words.data() + at);
+        return HeaderMightBeObjectArray({bytes, kObjectArrayHeaderBytes});
+    }
+    for (std::size_t slot = 0; slot < kPrefilterSlots / sizeof(Address); ++slot) {
+        if (facts[at + slot])
+            return true;
+    }
+    return false;
+}
+
+bool Resolves(const MemoryReader &reader, Address address, Looking looking) {
+    return looking == Looking::NameTable ? NameTable::Resolve(reader, address).has_value()
+                                         : ResolveObjectArrayLayout(reader, address).has_value();
+}
+
+std::vector<Address> Scan(const MemoryReader &reader, std::span<const ScanRegion> regions, Looking looking) {
     std::vector<Address> found;
+    std::vector<Address> words;
+    std::vector<std::uint8_t> facts;
+
     for (const ScanRegion &region : regions) {
-        if (region.size < sizeof(Address))
-            continue;
-        const Address end = region.start + region.size - sizeof(Address);
-        for (Address address = region.start; address <= end; address += kScanStep) {
-            if (!accept(reader, address))
-                continue;
-            found.push_back(address);
-            if (found.size() >= kMaxCandidates)
-                return found;
+        const std::size_t regionWords = static_cast<std::size_t>(region.size / sizeof(Address));
+        for (std::size_t first = 0; first < regionWords; first += kChunkWords) {
+            const std::size_t candidates = std::min(kChunkWords, regionWords - first);
+            const Address base = region.start + first * sizeof(Address);
+
+            words.assign(candidates + kLookaheadWords, 0);
+            ReadWords(reader, base, std::span(words).first(candidates));
+            ReadWords(reader, base + candidates * sizeof(Address), std::span(words).subspan(candidates));
+
+            facts.assign(looking == Looking::NameTable ? words.size() : 0, 0);
+            for (std::size_t i = 0; i < facts.size(); ++i)
+                facts[i] = ReachesNoneEntry(reader, words[i]) ? 1 : 0;
+
+            for (std::size_t i = 0; i < candidates; ++i) {
+                if (!Worth(words, facts, i, looking))
+                    continue;
+                const Address address = base + i * sizeof(Address);
+                if (!Resolves(reader, address, looking))
+                    continue;
+                found.push_back(address);
+                if (found.size() >= kMaxCandidates)
+                    return found;
+            }
         }
     }
     return found;
 }
 
-bool AcceptObjectArray(const MemoryReader &reader, Address address) {
-    return MightHoldObjectArray(reader, address) && ResolveObjectArrayLayout(reader, address).has_value();
-}
-
-bool AcceptNameTable(const MemoryReader &reader, Address address) {
-    return MightHoldNameTable(reader, address) && NameTable::Resolve(reader, address).has_value();
-}
-
 } // namespace
 
 std::vector<Address> FindObjectArrayCandidates(const MemoryReader &reader, std::span<const ScanRegion> regions) {
-    return Scan(reader, regions, AcceptObjectArray);
+    return Scan(reader, regions, Looking::ObjectArray);
 }
 
 std::vector<Address> FindNameTableCandidates(const MemoryReader &reader, std::span<const ScanRegion> regions) {
-    return Scan(reader, regions, AcceptNameTable);
+    return Scan(reader, regions, Looking::NameTable);
 }
 
 std::optional<Runtime> BootstrapRuntime(const MemoryReader &reader, std::span<const ScanRegion> regions) {

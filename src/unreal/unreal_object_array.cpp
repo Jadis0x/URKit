@@ -1,6 +1,7 @@
 #include "unreal_object_array.h"
 
 #include <array>
+#include <cstring>
 
 namespace URK::Unreal {
 namespace {
@@ -61,11 +62,74 @@ constexpr std::int32_t kFixedItemStride = sizeof(Address) * 3;
 constexpr std::int32_t kFixedProbeIndex = 5;
 constexpr std::int32_t kFixedInternalIndexOffset = sizeof(Address) + sizeof(std::int32_t);
 
+template <typename T> T At(std::span<const std::uint8_t> header, std::int32_t offset) {
+    T value{};
+    std::memcpy(&value, header.data() + offset, sizeof(T));
+    return value;
+}
+
+// The count checks of the fixed layout's validation, and nothing else.
+bool HeaderFits(std::span<const std::uint8_t> header, const FixedObjectArrayLayout &layout) {
+    const Address objects = At<Address>(header, layout.objectsOffset);
+    const std::int32_t maxElements = At<std::int32_t>(header, layout.maxObjectsOffset);
+    const std::int32_t numElements = At<std::int32_t>(header, layout.numObjectsOffset);
+
+    if (numElements > maxElements || maxElements > kMaxPlausibleElements)
+        return false;
+    if (numElements < kMinFixedElements)
+        return false;
+    return MemoryReader::PlausiblePointer(objects);
+}
+
+bool HeaderFits(std::span<const std::uint8_t> header, const ChunkedObjectArrayLayout &layout) {
+    const Address objects = At<Address>(header, layout.objectsOffset);
+    const std::int32_t maxElements = At<std::int32_t>(header, layout.maxElementsOffset);
+    const std::int32_t numElements = At<std::int32_t>(header, layout.numElementsOffset);
+    const std::int32_t maxChunks = At<std::int32_t>(header, layout.maxChunksOffset);
+    const std::int32_t numChunks = At<std::int32_t>(header, layout.numChunksOffset);
+
+    if (numChunks > kMaxChunks || numChunks < kMinChunks)
+        return false;
+    if (maxChunks > kMaxMaxChunks || maxChunks < kMinMaxChunks)
+        return false;
+    if (numElements <= kMinChunkedElements || maxElements <= kMinChunkedMaxElements)
+        return false;
+    if (numElements > maxElements || numChunks > maxChunks)
+        return false;
+    if ((maxElements % 0x10) != 0)
+        return false;
+
+    const std::int32_t elementsPerChunk = maxElements / maxChunks;
+    if ((elementsPerChunk % 0x10) != 0)
+        return false;
+    if (elementsPerChunk < kMinElementsPerChunk || elementsPerChunk > kMaxElementsPerChunk)
+        return false;
+    if (((numElements / elementsPerChunk) + 1) != numChunks)
+        return false;
+    if ((maxElements / elementsPerChunk) != maxChunks)
+        return false;
+    return MemoryReader::PlausiblePointer(objects);
+}
+
 } // namespace
 
 std::span<const FixedObjectArrayLayout> KnownFixedLayouts() { return kFixedLayouts; }
 
 std::span<const ChunkedObjectArrayLayout> KnownChunkedLayouts() { return kChunkedLayouts; }
+
+bool HeaderMightBeObjectArray(std::span<const std::uint8_t> header) {
+    if (header.size() < kObjectArrayHeaderBytes)
+        return false;
+    for (const FixedObjectArrayLayout &layout : kFixedLayouts) {
+        if (HeaderFits(header, layout))
+            return true;
+    }
+    for (const ChunkedObjectArrayLayout &layout : kChunkedLayouts) {
+        if (HeaderFits(header, layout))
+            return true;
+    }
+    return false;
+}
 
 bool ValidateLayout(const MemoryReader &reader, Address address, const FixedObjectArrayLayout &layout) {
     const std::optional<Address> objects = reader.ReadPointer(address + layout.objectsOffset);

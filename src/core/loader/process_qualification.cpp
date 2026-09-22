@@ -6,23 +6,24 @@
 #include <windows.h>
 
 namespace {
-void Refresh(ProcessQualification *qualification) {
+RuntimeModuleSnapshot Refresh(ProcessQualification *qualification) {
     const RuntimeModuleSnapshot snapshot = RuntimeDiscovery_Snapshot();
     qualification->unityPlayerLoaded = snapshot.unityPlayerLoaded;
     qualification->il2cppLoaded = snapshot.il2cppLoaded;
     qualification->monoLoaded = snapshot.monoLoaded;
-    qualification->isUnityProcess = snapshot.IsUnityProcess();
+    qualification->unrealDetected = snapshot.unrealDetected;
+    qualification->isSupportedRuntime = snapshot.IsSupportedProcess();
+    return snapshot;
 }
 } // namespace
 
-ProcessQualification ProcessQualification_WaitForUnity(unsigned timeoutMs) {
+ProcessQualification ProcessQualification_WaitForRuntime(unsigned timeoutMs) {
     ProcessQualification qualification;
     const ULONGLONG deadline = GetTickCount64() + timeoutMs;
     for (;;) {
-        Refresh(&qualification);
-        if (qualification.isUnityProcess) {
-            qualification.reason = RuntimeDiscovery_UnityReason(
-                {qualification.unityPlayerLoaded, qualification.il2cppLoaded, qualification.monoLoaded});
+        const RuntimeModuleSnapshot snapshot = Refresh(&qualification);
+        if (qualification.isSupportedRuntime) {
+            qualification.reason = RuntimeDiscovery_QualificationReason(snapshot);
             return qualification;
         }
         if (LoaderLifecycle_StopRequested()) {
@@ -31,7 +32,7 @@ ProcessQualification ProcessQualification_WaitForUnity(unsigned timeoutMs) {
         }
         const ULONGLONG now = GetTickCount64();
         if (now >= deadline) {
-            qualification.reason = "no Unity runtime module loaded in the current process";
+            qualification.reason = "no supported runtime in the current process";
             return qualification;
         }
 

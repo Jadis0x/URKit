@@ -13,3 +13,4 @@ bool RuntimeBackend_Run(const RuntimeBackendDescriptor &backend, Config &config)
 
 const RuntimeBackendDescriptor &RuntimeBackend_Mono();
 const RuntimeBackendDescriptor &RuntimeBackend_Il2Cpp();
+const RuntimeBackendDescriptor &RuntimeBackend_Unreal();

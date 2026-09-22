@@ -29,6 +29,9 @@ struct ModuleSection {
 struct ScanRegion {
     Address start = kNullAddress;
     std::uint64_t size = 0;
+    // A global the engine constructs at runtime has to live somewhere it can
+    // be written, which is what lets a scan look there first.
+    bool writable = false;
 };
 
 // Empty unless the headers are a plausible 64-bit image.

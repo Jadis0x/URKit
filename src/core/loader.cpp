@@ -66,8 +66,8 @@ class IntroSession {
 
 LoaderRunStatus Loader_Run(LoaderStartMode mode) {
     const ProcessQualification qualification =
-        ProcessQualification_WaitForUnity(kProcessQualificationTimeoutMs);
-    if (!qualification.isUnityProcess) {
+        ProcessQualification_WaitForRuntime(kProcessQualificationTimeoutMs);
+    if (!qualification.isSupportedRuntime) {
         DebugSkip(qualification.reason);
         return LoaderRunStatus::Skipped;
     }
@@ -99,9 +99,10 @@ LoaderRunStatus Loader_Run(LoaderStartMode mode) {
 
     for (const std::string &warning : g_cfg.warnings)
         Log("[config][WARNING] %s", warning.c_str());
-    Log("[process] qualification=%s unityPlayer=%s gameAssembly=%s mono=%s.", qualification.reason.c_str(),
+    Log("[process] qualification=%s unityPlayer=%s gameAssembly=%s mono=%s unreal=%s.", qualification.reason.c_str(),
         qualification.unityPlayerLoaded ? "loaded" : "not-loaded",
-        qualification.il2cppLoaded ? "loaded" : "not-loaded", qualification.monoLoaded ? "loaded" : "not-loaded");
+        qualification.il2cppLoaded ? "loaded" : "not-loaded", qualification.monoLoaded ? "loaded" : "not-loaded",
+        qualification.unrealDetected ? "detected" : "not-detected");
     LogConfigSummary(backend);
     IntroStage(kIntroLogReady, "Runtime log ready");
 

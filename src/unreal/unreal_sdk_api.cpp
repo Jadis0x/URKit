@@ -431,15 +431,6 @@ bool UnrealEngine::EnsureBootstrapped() {
         return false;
     lastAttemptMs_.store(GetTickCount64(), std::memory_order_release);
 
-    const Address base = MainModuleBase();
-    char pathBuffer[MAX_PATH]{};
-    const DWORD length = GetModuleFileNameA(nullptr, pathBuffer, sizeof(pathBuffer));
-    std::string path(pathBuffer, length < sizeof(pathBuffer) ? length : sizeof(pathBuffer) - 1);
-    std::string name = path;
-    const std::size_t slash = name.find_last_of("\\/");
-    if (slash != std::string::npos)
-        name = name.substr(slash + 1);
-
     // Partial state is left behind but never read while available_ is false.
     // The cooldown is restamped on every failure path so a polling caller
     // cannot re-scan back to back.
@@ -448,13 +439,9 @@ bool UnrealEngine::EnsureBootstrapped() {
         return false;
     };
 
-    const ModuleCandidate self{name, path, base};
-    const UnrealPresence presence = DetectUnreal(memory_, std::span<const ModuleCandidate>(&self, 1));
-    if (!presence.WorthScanning() || presence.runtimeModules.empty()) {
-        // Not a UBT process; waiting will not change that.
-        ruledOut_.store(true, std::memory_order_release);
+    const UnrealPresence &presence = Presence();
+    if (!presence.WorthScanning() || presence.runtimeModules.empty())
         return false;
-    }
     version_ = presence.version;
 
     std::vector<ScanRegion> dataRegions;
@@ -491,6 +478,29 @@ bool UnrealEngine::EnsureBootstrapped() {
     available_.store(true, std::memory_order_release);
     return true;
 }
+
+const UnrealPresence &UnrealEngine::Presence() {
+    std::lock_guard<std::mutex> lock(presenceMutex_);
+    if (presence_)
+        return *presence_;
+
+    char pathBuffer[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameA(nullptr, pathBuffer, sizeof(pathBuffer));
+    std::string path(pathBuffer, length < sizeof(pathBuffer) ? length : sizeof(pathBuffer) - 1);
+    std::string name = path;
+    const std::size_t slash = name.find_last_of("\\/");
+    if (slash != std::string::npos)
+        name = name.substr(slash + 1);
+
+    const ModuleCandidate self{name, path, MainModuleBase()};
+    presence_ = DetectUnreal(memory_, std::span<const ModuleCandidate>(&self, 1));
+    // Not a UBT process; waiting will not change that.
+    if (!presence_->WorthScanning() || presence_->runtimeModules.empty())
+        ruledOut_.store(true, std::memory_order_release);
+    return *presence_;
+}
+
+bool UnrealEngine::RuledOut() const { return ruledOut_.load(std::memory_order_acquire); }
 
 bool UnrealEngine::Available() const { return available_.load(std::memory_order_acquire); }
 

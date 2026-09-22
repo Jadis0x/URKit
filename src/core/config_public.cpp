@@ -87,7 +87,7 @@ void ReadPublicConfig(const std::string &ini, Config &c) {
 
 void NormalizeAndClamp(Config &c) {
     c.initDelayMs = std::clamp(c.initDelayMs, 0, 120000);
-    if (!NormalizeChoice(c.runtime, "auto", {"auto", "mono", "il2cpp"}))
+    if (!NormalizeChoice(c.runtime, "auto", {"auto", "mono", "il2cpp", "unreal"}))
         c.warnings.push_back("Runtime selection was invalid; using auto.");
     if (c.modsDir.empty()) {
         c.modsDir = "Mods";

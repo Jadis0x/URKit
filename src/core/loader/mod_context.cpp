@@ -195,6 +195,13 @@ const URK_HookApi g_hookApi = {
     &Ctx_MidHookSetEnabled,
 };
 
+bool HasCompatibleUnrealApi(uint32_t runtimeBackend, const URK_UnrealApi *api) {
+    const size_t requiredSize = offsetof(URK_UnrealApi, post_to_game_thread) + sizeof(api->post_to_game_thread);
+    return runtimeBackend == URK_RUNTIME_BACKEND_UNREAL && api && api->version >= URK_UNREAL_API_VERSION &&
+           api->size >= requiredSize && api->is_available && api->find_object && api->class_of && api->name_of &&
+           api->describe_property && api->post_to_game_thread;
+}
+
 bool HasCompatibleIl2CppApi(uint32_t runtimeBackend, const URK_Il2CppApi *api) {
     const size_t requiredSize = offsetof(URK_Il2CppApi, last_error) + sizeof(api->last_error);
     return runtimeBackend == URK_RUNTIME_BACKEND_IL2CPP && api && api->version >= URK_IL2CPP_API_VERSION &&
@@ -216,6 +223,9 @@ URK_ModContext &ModContext_Build(const Config &, const ModContextBuildOptions &o
     if (HasCompatibleIl2CppApi(options.runtimeBackend, options.apis.il2cpp)) {
         capabilities |= URK_RUNTIME_CAP_IL2CPP_API;
     }
+    if (HasCompatibleUnrealApi(options.runtimeBackend, options.apis.unreal)) {
+        capabilities |= URK_RUNTIME_CAP_UNREAL_API;
+    }
     if (NetworkHttp_Available())
         capabilities |= URK_RUNTIME_CAP_NETWORK;
     if (Hook_MidAvailable())
@@ -236,6 +246,7 @@ URK_ModContext &ModContext_Build(const Config &, const ModContextBuildOptions &o
     g_modContext.runtimeCapabilities = capabilities;
     g_modContext.runtime = &g_runtimeApi;
     g_modContext.il2cpp = options.apis.il2cpp;
+    g_modContext.unreal = options.apis.unreal;
     g_modContext.runtimeBackendModuleBase = options.modules.backendModuleBase;
     g_modContext.unityPlayerModuleBase = options.modules.unityPlayerModuleBase;
     g_modContext.gameAssemblyModuleBase = options.modules.gameAssemblyModuleBase;
