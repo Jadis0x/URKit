@@ -1,11 +1,9 @@
 #pragma once
 
-// UObject header calibration. There are no exports and no symbols, and Epic
-// moves these fields between versions, so each offset is derived from a property
-// only the right field satisfies: Flags recurs at one value across most objects,
-// Index stores its own slot number, Class reaches a fixed point when followed,
-// Outer is a shared pointer member past Class, Name is what is left with
-// FName-like spread. Order matters - later steps exclude earlier claims.
+// UObject header calibration, each offset derived from a property only the
+// right field satisfies: Index stores its own slot number, Class reaches a
+// fixed point, Outer is a shared pointer past Class, Name has FName spread.
+// Order matters - later steps exclude earlier claims.
 
 #include "unreal_object_array.h"
 

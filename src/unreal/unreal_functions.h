@@ -1,18 +1,10 @@
 #pragma once
 
-// What a call needs before it can be made: which parameters a function takes,
-// how large the block holding them is, and where the returned value lands in
-// it.
+// What a call needs: the parameters, the block size, the return offset.
 //
-// None of those numbers has to be trusted to a guessed offset, because the
-// property chain already knows what they must be - the parameters are the
-// properties flagged as such, the block is as large as the last of them ends,
-// and the return value is the one flagged as returned. So the offsets are found
-// by looking for where the engine happens to store numbers it has already
-// agreed with. Two functions with different numbers are enough to pin them.
-//
-// Making the call itself is not here: that needs ProcessEvent, which cannot be
-// located without a real game to locate it in.
+// The property chain already knows what those must be, so the offsets are
+// found by looking for where the engine stores numbers that agree with it.
+// Two functions with different numbers pin them.
 
 #include "unreal_module.h"
 #include "unreal_property_values.h"
@@ -47,9 +39,7 @@ struct FunctionOffsets {
     }
 };
 
-// The counts the engine stores, and what they must equal. codeRegions may be
-// empty, in which case the native entry point is left unresolved and everything
-// else is still measured.
+// codeRegions may be empty: only the native entry point goes unresolved then.
 FunctionOffsets FindFunctionOffsets(const ObjectFinder &finder, const StructOffsets &structs,
                                     const FieldOffsets &fields, const PropertyTailOffsets &tail,
                                     std::span<const ScanRegion> codeRegions = {});
@@ -60,8 +50,7 @@ struct FunctionParameter {
     bool returned = false;
 };
 
-// One function, ready to be called: its parameters in declaration order, the
-// block they sit in, and which of them the call answers with.
+// One function, ready to be called; parameters in declaration order.
 struct FunctionInfo {
     Address function = kNullAddress;
     std::uint32_t flags = 0;
@@ -81,13 +70,11 @@ struct FunctionInfo {
     }
 };
 
-// Reads a function's parameters out of its chain. The size the engine stores is
-// preferred, and what the parameters imply is used when it is not resolved.
+// Prefers the stored ParmsSize; falls back to what the parameters imply.
 std::optional<FunctionInfo> DescribeFunction(const PropertyChain &chain, const PropertyValues &values,
                                              const FunctionOffsets &offsets, Address function);
 
-// Clears a parameter block before it is filled. The engine reads every byte of
-// it, including the ones no parameter covers.
+// The engine reads every byte, padding included, so zero it whole.
 bool ClearFrame(MemoryWriter &writer, Address frame, const FunctionInfo &info);
 
 } // namespace URK::Unreal

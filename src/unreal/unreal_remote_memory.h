@@ -1,16 +1,8 @@
 #pragma once
 
-// MemoryReader over another process.
-//
-// The calibration is meant to run inside the game, but proving it against a
-// real title does not need to: reading the game from outside asks nothing of it
-// and changes nothing in it, which is what a first run against someone's own
-// build should do.
-//
-// Reading across the process boundary is a syscall, and the scan makes millions
-// of small reads, so whole pages are fetched and served from there. A page kept
-// that way can go stale while the game runs; for a bootstrap that is the same
-// trade the in-process reader makes with its ranges, and Forget() drops them.
+// MemoryReader over another process, for proving the calibration against a
+// real title without touching it. Whole pages are cached because each crossing
+// is a syscall; a cached page can go stale, and Forget() drops them.
 
 #include "unreal_memory.h"
 

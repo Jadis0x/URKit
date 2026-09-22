@@ -38,25 +38,32 @@ class MemoryReader {
     std::optional<std::int32_t> ReadInt32(Address address) const { return ReadAs<std::int32_t>(address); }
     std::optional<std::uint32_t> ReadUInt32(Address address) const { return ReadAs<std::uint32_t>(address); }
 
+    // Free prefilter before the kernel call in Readable(). Windows x64 keeps
+    // user-mode addresses below 2^47, so nothing real is rejected, while
+    // random data survives only ~1 time in 2^17. Without it the scan spends
+    // millions of VirtualQuery calls on ints and padding.
+    static bool PlausiblePointer(Address value) {
+        constexpr Address kUserSpaceCeiling = Address{1} << 47;
+        constexpr Address kFirstAllocatableAddress = 0x10000;
+        return value >= kFirstAllocatableAddress && value < kUserSpaceCeiling;
+    }
+
     // Holds a non-null pointer into mapped memory.
     bool PointsToReadable(Address address, std::size_t size = sizeof(Address)) const {
         const std::optional<Address> pointer = ReadPointer(address);
-        return pointer && *pointer != kNullAddress && Readable(*pointer, size);
+        return pointer && PlausiblePointer(*pointer) && Readable(*pointer, size);
     }
 
-    // As above, and the target itself starts with a readable pointer. Every
-    // UObject starts with a vtable, so this rejects non-object data.
+    // As above, plus a readable pointer at the target: every UObject has a vtable.
     bool PointsToObject(Address address) const {
         const std::optional<Address> pointer = ReadPointer(address);
-        if (!pointer || *pointer == kNullAddress)
+        if (!pointer || !PlausiblePointer(*pointer))
             return false;
         return PointsToReadable(*pointer);
     }
 };
 
-// Kept apart from reading: the calibration measures a running game and must not
-// be able to change what it is measuring, so only the few paths that write ask
-// for this.
+// Kept apart from reading so calibration cannot change what it measures.
 class MemoryWriter {
   public:
     virtual ~MemoryWriter() = default;

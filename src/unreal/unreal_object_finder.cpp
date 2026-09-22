@@ -89,4 +89,19 @@ Address ObjectFinder::FindInOuter(std::string_view name, std::string_view outerN
     return kNullAddress;
 }
 
+Address ObjectFinder::FindInOuter(std::string_view name, Address outer) const {
+    if (outer == kNullAddress)
+        return kNullAddress;
+
+    const auto entry = byName_.find(std::string(name));
+    if (entry == byName_.end())
+        return kNullAddress;
+
+    for (const Address candidate : entry->second) {
+        if (OuterOf(candidate) == outer)
+            return candidate;
+    }
+    return kNullAddress;
+}
+
 } // namespace URK::Unreal

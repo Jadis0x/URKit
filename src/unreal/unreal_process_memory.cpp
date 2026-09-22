@@ -16,13 +16,9 @@ constexpr DWORD kWritableProtections = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EX
                                        PAGE_EXECUTE_WRITECOPY;
 constexpr DWORD kBlockingProtections = PAGE_GUARD | PAGE_NOACCESS;
 
-// A leaf with nothing to unwind: cl.exe rejects __try in a frame holding an
-// object with a destructor, and the copy is the only thing that may fault.
-//
-// This handler only runs for a fault if the translation unit is built with
-// asynchronous exceptions on - clang needs -fasync-exceptions, cl.exe needs
-// nothing. Built without it, a freed page crashes the game instead of failing
-// the read, which is the one thing this file exists to prevent.
+// A leaf with nothing to unwind: cl.exe rejects __try in a frame holding a
+// non-trivial destructor. Needs -fasync-exceptions under clang, or a fault
+// crashes the game instead of failing the read.
 bool CopyGuarded(const void *source, void *out, std::size_t size) {
     __try {
         std::memcpy(out, source, size);
@@ -34,9 +30,14 @@ bool CopyGuarded(const void *source, void *out, std::size_t size) {
 
 } // namespace
 
-const ProcessMemory::Range *ProcessMemory::Remembered(Address address) const {
-    for (const Range &range : ranges_) {
-        if (range.Holds(address) && !range.Expired(probes_))
+ProcessMemory::Cache &ProcessMemory::ThreadCache() {
+    thread_local Cache cache;
+    return cache;
+}
+
+const ProcessMemory::Range *ProcessMemory::Remembered(Cache &cache, Address address) const {
+    for (const Range &range : cache.ranges) {
+        if (range.Holds(address) && !range.Expired(cache.probes))
             return &range;
     }
     return nullptr;
@@ -44,24 +45,25 @@ const ProcessMemory::Range *ProcessMemory::Remembered(Address address) const {
 
 // A range that is being re-asked takes its old slot back, so an expired answer
 // cannot sit alongside the answer that replaced it.
-ProcessMemory::Range &ProcessMemory::SlotFor(Address address) const {
-    for (Range &range : ranges_) {
+ProcessMemory::Range &ProcessMemory::SlotFor(Cache &cache, Address address) const {
+    for (Range &range : cache.ranges) {
         if (range.Holds(address))
             return range;
     }
-    Range &slot = ranges_[next_];
-    next_ = (next_ + 1) % kRememberedRanges;
+    Range &slot = cache.ranges[cache.next];
+    cache.next = (cache.next + 1) % kRememberedRanges;
     return slot;
 }
 
 const ProcessMemory::Range &ProcessMemory::Resolve(Address address) const {
-    ++probes_;
-    if (const Range *remembered = Remembered(address)) {
-        ++hits_;
+    Cache &cache = ThreadCache();
+    ++cache.probes;
+    if (const Range *remembered = Remembered(cache, address)) {
+        hits_.fetch_add(1, std::memory_order_relaxed);
         return *remembered;
     }
 
-    ++queries_;
+    queries_.fetch_add(1, std::memory_order_relaxed);
     Range resolved;
     MEMORY_BASIC_INFORMATION info{};
     if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &info, sizeof(info)) == sizeof(info)) {
@@ -79,16 +81,17 @@ const ProcessMemory::Range &ProcessMemory::Resolve(Address address) const {
     }
 
     if (!resolved.readable)
-        resolved.expires = probes_ + unreadableLifetime_;
+        resolved.expires = cache.probes + unreadableLifetime_;
 
-    Range &slot = SlotFor(address);
+    Range &slot = SlotFor(cache, address);
     slot = resolved;
     return slot;
 }
 
 void ProcessMemory::Forget() const {
-    ranges_ = {};
-    next_ = 0;
+    Cache &cache = ThreadCache();
+    cache.ranges = {};
+    cache.next = 0;
 }
 
 // A range can end mid-request, so the walk continues into the next one:

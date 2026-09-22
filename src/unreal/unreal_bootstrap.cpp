@@ -72,18 +72,18 @@ bool HoldsNoneEntry(const MemoryReader &reader, Address block) {
     return false;
 }
 
-// Running the full name-table probe everywhere would be far too slow, so a
-// candidate first has to reach "None": one hop for the pool block table, two
-// for the entry array chunk of entry pointers.
+// Cheap gate before the full name-table probe: reach "None" in one hop (pool
+// block table) or two (entry array chunk).
 bool MightHoldNameTable(const MemoryReader &reader, Address address) {
     for (Address slot = 0; slot < kPrefilterSlots; slot += sizeof(Address)) {
         const std::optional<Address> pointer = reader.ReadPointer(address + slot);
-        if (!pointer || *pointer == kNullAddress || !reader.Readable(*pointer, kEntryWindow))
+        // Prefilter before Readable(), which is a kernel call.
+        if (!pointer || !MemoryReader::PlausiblePointer(*pointer) || !reader.Readable(*pointer, kEntryWindow))
             continue;
         if (HoldsNoneEntry(reader, *pointer))
             return true;
         const std::optional<Address> entry = reader.ReadPointer(*pointer);
-        if (entry && *entry != kNullAddress && HoldsNoneEntry(reader, *entry))
+        if (entry && MemoryReader::PlausiblePointer(*entry) && HoldsNoneEntry(reader, *entry))
             return true;
     }
     return false;
@@ -137,10 +137,8 @@ std::int32_t ConfirmNames(const ObjectArray &objects, const NameTable &names, co
     return plausible;
 }
 
-// A scan reaches a global's aliases before the global itself: a few bytes
-// ahead of it a different header offset describes the same block table and
-// reads back the same names, so equally confirmed pairs are settled by taking
-// the last address that still confirms.
+// A scan reaches a global's aliases first, so ties are settled by taking the
+// last address that still confirms.
 bool Better(const Runtime &candidate, const Runtime &incumbent) {
     if (candidate.confirmedNames != incumbent.confirmedNames)
         return candidate.confirmedNames > incumbent.confirmedNames;

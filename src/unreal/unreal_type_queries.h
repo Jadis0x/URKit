@@ -1,12 +1,8 @@
 #pragma once
 
-// Asking what an object is, and finding the objects that are something.
-//
-// The chain of Super pointers is already calibrated, so a type test is a walk
-// up it. What is not yet known is where a class keeps its default object, and
-// that is measured by the relation that holds for every class in every build:
-// the pointer leads to an object whose own class is that class, and which the
-// engine named after it.
+// Type tests walk the calibrated Super chain. ClassDefaultObject is measured
+// by the relation that holds in every build: it points at an object whose own
+// class is that class, named after it.
 
 #include "unreal_object_finder.h"
 #include "unreal_struct_offsets.h"

@@ -1,11 +1,8 @@
 #pragma once
 
-// UField and UStruct layout calibration, the rung above the UObject header.
-//
-// Each field is pinned by anchoring on engine objects whose value is fixed by
-// the engine itself: FColor is always four bytes, FGuid sixteen, AActor's class
-// carries exactly the Actor cast flag. An offset that satisfies every anchor at
-// once is the field.
+// UField/UStruct layout, anchored on values the engine fixes: FColor is four
+// bytes, FGuid sixteen, AActor's class carries the Actor cast flag. The offset
+// that satisfies every anchor is the field.
 
 #include "unreal_object_finder.h"
 
@@ -72,13 +69,8 @@ std::int32_t FindAnchoredOffset(const MemoryReader &reader, const std::vector<An
 // First offset past the UObject header, which is where UField begins.
 std::int32_t FirstOffsetPastHeader(const ObjectOffsets &offsets);
 
-// What an object is, read off the class it belongs to.
-//
-// ClassCastFlags describes a class's *instances*, not the class object holding
-// it - AActor's flags say "an actor", not "a class" - and only UClass declares
-// the field at all, so asking an object for its own flags asks a different
-// question and asks it of memory that may not be a UClass. The flags that
-// describe an object are its class's.
+// Read off the object's class: ClassCastFlags describes a class's instances,
+// and only UClass declares the field at all.
 std::uint64_t CastFlagsOf(const ObjectFinder &finder, const StructOffsets &structs, Address object);
 
 bool ObjectIs(const ObjectFinder &finder, const StructOffsets &structs, Address object, std::uint64_t flag);

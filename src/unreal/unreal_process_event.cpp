@@ -7,18 +7,13 @@
 namespace URK::Unreal {
 namespace {
 
-// Far enough to cover ProcessEvent, which is one of the larger UObject methods.
+// Far enough to cover ProcessEvent, one of the larger UObject methods.
 constexpr std::size_t kMaxBodyBytes = 0x1000;
 constexpr std::size_t kMinBodyBytes = 0x100;
-// A vtable long enough for any UObject; the walk stops at the first entry that
-// is not code anyway.
 constexpr std::int32_t kMaxVtableSlots = 256;
 
-// How often a memory operand in this code carries the given displacement.
-//
-// x86 encodes a displacement after the ModRM byte, or after the SIB byte when
-// ModRM asks for one, and only mod=10 carries a full 32 bits. Checking that is
-// what tells an operand from four bytes of something else that happen to match.
+// Memory operands carrying this disp32. Only mod=10 encodes a full 32 bits,
+// which is what separates an operand from four coincidental bytes.
 std::int32_t CountDisplacement(const std::vector<std::uint8_t> &code, std::int32_t displacement) {
     if (displacement == kOffsetNotFound || code.size() < 6)
         return 0;
@@ -46,9 +41,7 @@ bool InRegions(std::span<const ScanRegion> regions, Address address) {
     return false;
 }
 
-// The class every other class derives from, found by climbing rather than by
-// trusting a name: "Object" is the name UObject carries in every build, but the
-// climb costs nothing and works if it ever is not.
+// UObject, by name first and by climbing Super as a fallback.
 Address RootClass(const ObjectFinder &finder, const TypeQueries &types) {
     Address root = finder.Find("Object");
     if (root != kNullAddress)
@@ -79,14 +72,9 @@ std::vector<Address> ReadVtable(const MemoryReader &reader, std::span<const Scan
     return slots;
 }
 
-// Addresses the code itself treats as the start of a function: everything a
-// direct call lands on, plus every value the engine stored in a UFunction::Func
-// and the vtable entries.
-//
-// This is only used to say where one slot's body stops. Without it a slot's
-// window runs into whatever was linked after it, and a reference belonging to
-// the next function is counted as this one's - which is enough to make more
-// than one slot look like it reads ParmsSize.
+// Every address the code treats as a function entry: call rel32 targets plus
+// UFunction::Func values. Used to bound a slot's body - without it a window
+// runs into the next function and miscounts its references.
 std::set<Address> KnownFunctionEntries(const ObjectFinder &finder, const StructOffsets &structs,
                                        const FunctionOffsets &functions, std::span<const ScanRegion> code) {
     constexpr std::size_t kChunk = 0x10000;
@@ -94,8 +82,7 @@ std::set<Address> KnownFunctionEntries(const ObjectFinder &finder, const StructO
 
     std::set<Address> entries;
 
-    // call rel32 is the one encoding that always names a function entry; a jmp
-    // rel32 is as often a tail of one, so it is left out.
+    // jmp rel32 is left out: as often a tail call as an entry.
     std::vector<std::uint8_t> buffer(kChunk + kCallLength);
     for (const ScanRegion &region : code) {
         for (std::uint64_t offset = 0; offset < region.size; offset += kChunk) {
@@ -157,18 +144,14 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
     entries.insert(slots.begin(), slots.end());
     const std::vector<Address> sorted(entries.begin(), entries.end());
 
-    // A frame is described by three fields at once: how large it is, where the
-    // answer lands in it, and what kind of function is being called. Other
-    // slots touch one of them in passing - ParmsSize alone is not rare enough
-    // to name a function by - but only the one that builds a frame needs all
-    // of them, and it is the only place any of them are needed together.
+    // ParmsSize alone is not rare enough; only a frame builder needs it
+    // together with ReturnValueOffset.
     std::vector<ProcessEventLocation> candidates;
     std::vector<std::uint8_t> body;
     for (std::size_t slot = 0; slot < slots.size(); ++slot) {
         const Address target = slots[slot];
 
-        // Stop at the next address the code treats as a function, so the count
-        // belongs to this slot and not to whatever was linked after it.
+        // Stop at the next function entry so the count belongs to this slot.
         const auto next = std::upper_bound(sorted.begin(), sorted.end(), target);
         const std::size_t span =
             next == sorted.end() ? kMaxBodyBytes : static_cast<std::size_t>(*next - target);
@@ -212,7 +195,38 @@ Address ProcessEventFor(const MemoryReader &reader, const ProcessEventLocation &
     return entry.value_or(kNullAddress);
 }
 
-const FunctionParameter *CallFrame::Find(std::string_view name) const { return info_->Parameter(name); }
+std::vector<Address> ProcessEventImplementations(const ObjectFinder &finder, const TypeQueries &types,
+                                                 const StructOffsets &structs,
+                                                 const ProcessEventLocation &location) {
+    std::vector<Address> implementations;
+    if (!location.Resolved())
+        return implementations;
+
+    // Base first: a caller that patches only one should patch the common one.
+    implementations.push_back(location.baseImplementation);
+
+    const MemoryReader &reader = finder.Reader();
+    const ObjectArray &objects = finder.Objects();
+    const std::int32_t count = objects.Num();
+    for (std::int32_t i = 0; i < count; ++i) {
+        const Address object = objects.ObjectAt(i);
+        if (object == kNullAddress || !ObjectIs(finder, structs, object, kCastFlagClass))
+            continue;
+
+        const Address cdo = types.DefaultObjectOf(object);
+        if (cdo == kNullAddress)
+            continue;
+
+        const Address entry = ProcessEventFor(reader, location, cdo);
+        if (entry == kNullAddress)
+            continue;
+        if (std::find(implementations.begin(), implementations.end(), entry) == implementations.end())
+            implementations.push_back(entry);
+    }
+    return implementations;
+}
+
+const FunctionParameter *CallFrame::Find(std::string_view name) const { return info_.Parameter(name); }
 
 bool CallFrame::Set(std::string_view name, const void *value, std::size_t size) {
     const FunctionParameter *parameter = Find(name);
@@ -256,8 +270,7 @@ bool InvokeProcessEvent(const ProcessEventLocation &location, Address object, Ad
     if (!location.Resolved() || object == kNullAddress || function == kNullAddress)
         return false;
 
-    // In-process: the addresses are this process's own, so they are followed
-    // rather than read through a reader.
+    // In-process: addresses are ours, so follow them directly.
     auto **vtable = *reinterpret_cast<void ***>(static_cast<std::uintptr_t>(object));
     if (!vtable)
         return false;

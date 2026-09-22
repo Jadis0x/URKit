@@ -1,19 +1,13 @@
 #pragma once
 
-// Reading and writing a member's value once the field layout is calibrated.
+// Reading and writing a member once the field layout is calibrated.
 //
-// What a property means lives in two places. Its FFieldClass cast flags say
-// which kind it is, and everything past FProperty belongs to that kind: the
-// mask of a bool, the class an object reference points at, the struct a struct
-// member holds. Those begin where FProperty ends, and that offset is measured
-// the way the rungs below measure everything else - by demanding that one
-// offset satisfy what several different kinds each know about their own first
-// member. Padding and the chain pointers FProperty ends with cannot satisfy all
-// of them at once.
+// Cast flags say which kind a property is; everything past FProperty belongs
+// to that kind. That tail offset is measured by demanding one offset satisfy
+// several kinds at once, which padding cannot do.
 //
-// An array's element property is not among them: in a shipped UE5 build it sits
-// further in than the tail, so it is measured on its own. Assuming it shared
-// the tail is what a real game disproved.
+// An array's element property sits further in than the tail in shipped UE5, so
+// it is measured separately - a real game disproved assuming otherwise.
 
 #include "unreal_property_offsets.h"
 
@@ -90,13 +84,8 @@ const char *PropertyKindName(PropertyKind kind);
 // flag its bases carry, so the most derived match wins.
 PropertyKind ClassifyProperty(std::uint64_t castFlags);
 
-// Where a property's kind-specific members begin, and what each kind keeps
-// there.
-//
-// Most kinds put their first member at the end of FProperty and are measured
-// together. An array does not: shipped UE5 builds keep something ahead of the
-// element property, so where that element property sits is measured separately
-// rather than assumed to be the same place.
+// Where a property's kind-specific members begin. Most kinds share the tail;
+// an array's element property is measured separately.
 struct PropertyTailOffsets {
     std::int32_t tail = kOffsetNotFound;
     std::int32_t arrayInner = kOffsetNotFound;
@@ -114,10 +103,8 @@ struct PropertyTailOffsets {
     std::int32_t firstPointer() const { return tail; }
 };
 
-// Walks the graph for properties of several kinds and returns the lowest offset
-// every one of them is satisfied at, then looks for where an array keeps its
-// element property. Needs at least two kinds to agree on the tail, so a graph
-// holding only one kind of property fails rather than guessing.
+// Lowest offset that satisfies every kind found, plus the array element slot.
+// Needs two kinds to agree, so a one-kind graph fails rather than guesses.
 PropertyTailOffsets FindPropertyTailOffsets(const ObjectFinder &finder, const StructOffsets &structs,
                                             const FieldOffsets &fields);
 
@@ -144,9 +131,8 @@ struct PropertyInfo {
 
     BoolLayout boolLayout{};
 
-    // Object and Class: the UClass a reference must be. Struct: the
-    // UScriptStruct. Array: the element property. Enum: the numeric property
-    // underneath it. A set or a map keeps more than one and is left alone.
+    // Object/Class: the UClass. Struct: UScriptStruct. Array: the element
+    // property. Enum: the underlying numeric. Sets and maps are left alone.
     Address inner = kNullAddress;
 
     bool Resolved() const { return field != kNullAddress && offset != kOffsetNotFound; }
@@ -166,9 +152,7 @@ struct ArrayView {
     }
 };
 
-// Reads and writes members of one running game. Reading needs the layout only;
-// writing needs somewhere to write, which is asked for per call so a caller
-// that only reads cannot accidentally hold the means to change the game.
+// Writing takes a MemoryWriter per call, so a read-only caller never holds one.
 class PropertyValues {
   public:
     PropertyValues(const MemoryReader &reader, const NameTable &names, const StructOffsets &structs,
@@ -188,15 +172,13 @@ class PropertyValues {
     Address ReadObject(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
     std::optional<std::string> ReadName(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
 
-    // FString is a TArray of characters; the text is copied out of whatever it
-    // points at, which belongs to the game and is not touched.
+    // FString is a TArray of characters; the text is copied out, never touched.
     std::optional<std::string> ReadString(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
 
     std::optional<ArrayView> ReadArray(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
 
-    // Writes are for values that fit where they already are. FString, TArray,
-    // TMap and FText own allocations the engine's allocator made, so changing
-    // one means calling into the game rather than writing memory.
+    // In-place only. FString/TArray/TMap/FText own engine allocations, so
+    // changing one means calling into the game, not writing memory.
     bool WriteInteger(MemoryWriter &writer, Address instance, const PropertyInfo &info, std::int64_t value,
                       std::int32_t index = 0) const;
     bool WriteFloating(MemoryWriter &writer, Address instance, const PropertyInfo &info, double value,

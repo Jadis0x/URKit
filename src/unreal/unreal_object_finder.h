@@ -32,6 +32,11 @@ class ObjectFinder {
     // unique by name, so this is how a member is addressed.
     Address FindInOuter(std::string_view name, std::string_view outerName) const;
 
+    // The same, when the outer is already an address rather than a name - a
+    // caller holding a class object asking for one of its members, which is
+    // the shape the SDK's find_function takes.
+    Address FindInOuter(std::string_view name, Address outer) const;
+
     const MemoryReader &Reader() const { return objects_->Reader(); }
     const ObjectArray &Objects() const { return *objects_; }
     const NameTable &Names() const { return *names_; }

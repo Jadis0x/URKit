@@ -7,11 +7,8 @@
 namespace URK::Unreal {
 namespace {
 
-// UFunction declares its counts past everything UStruct does, and every version
-// declares them in one order: the flags, then the parameter count, then the
-// block size, then where the return value sits in it. The order is not taken on
-// trust - each of the three is checked against what the parameters say it must
-// be, for every function sampled.
+// UFunction's counts sit past UStruct in a fixed order, but the order is not
+// trusted: each is checked against what the parameters say it must be.
 constexpr std::int32_t kNumParmsToParmsSize = 2;
 constexpr std::int32_t kNumParmsToReturnValueOffset = 4;
 constexpr std::int32_t kFunctionFlagsToNumParms = 4;
@@ -69,13 +66,9 @@ std::optional<Expected> ExpectedOf(const PropertyChain &chain, const PropertyVal
     return expected;
 }
 
-// The functions the graph holds, with what their chains say about them.
-//
-// Which functions are taken matters more than how many: a game's first
-// hundred are delegate signatures that all take one parameter of eight bytes,
-// and a hundred functions agreeing on every number pin no offset at all. So a
-// shape already collected is skipped, and one that answers with a value is
-// preferred, because that is what anchors where the answer goes.
+// Which functions are sampled matters more than how many: a game's first
+// hundred are delegate signatures with identical shapes, which pin nothing.
+// So duplicate shapes are skipped and ones with a return value preferred.
 std::vector<Expected> CollectFunctions(const ObjectFinder &finder, const StructOffsets &structs,
                                        const PropertyChain &chain, const PropertyValues &values) {
     std::vector<Expected> samples;
@@ -135,12 +128,9 @@ bool PointsIntoRegions(Address pointer, std::span<const ScanRegion> regions) {
     return false;
 }
 
-// The entry point is the one pointer a function keeps into the module's code.
-//
-// Not "the one native functions keep": a script function keeps one too, at the
-// engine's own interpreter, which is why the flags cannot be used to tell the
-// offset - every function has an entry point, and what differs is where it
-// leads. Everything else a UFunction keeps past its counts points at the heap.
+// The one pointer a UFunction keeps into code. Script functions have one too
+// (the interpreter), so flags cannot identify it; everything else past the
+// counts points at the heap.
 std::int32_t FindFuncOffset(const MemoryReader &reader, const std::vector<Expected> &samples,
                             std::span<const ScanRegion> codeRegions, std::int32_t start) {
     if (codeRegions.empty() || samples.empty())
@@ -177,11 +167,8 @@ FunctionOffsets FindFunctionOffsets(const ObjectFinder &finder, const StructOffs
     const PropertyValues values(reader, finder.Names(), structs, fields, tail);
 
     const std::vector<Expected> samples = CollectFunctions(finder, structs, chain, values);
-    // Defensive rather than demonstrated: a function's numbers are small, and a
-    // real UStruct is full of small numbers, so one sample could match an
-    // earlier offset by chance. The synthetic graph is too sparse for that to
-    // happen, so this guard is reasoning about shipped builds, not a measured
-    // requirement.
+    // Defensive: a function's numbers are small and a real UStruct is full of
+    // small numbers, so one sample could match an earlier offset by chance.
     const bool differ = std::any_of(samples.begin(), samples.end(), [&](const Expected &other) {
         return other.numParms != samples.front().numParms || other.parmsSize != samples.front().parmsSize;
     });
@@ -211,8 +198,7 @@ FunctionOffsets FindFunctionOffsets(const ObjectFinder &finder, const StructOffs
                 satisfied = false;
                 break;
             }
-            // A function answering with nothing leaves the field alone, so it
-            // is only evidence when there is a return value to point at.
+            // Only evidence when there is a return value to point at.
             if (sample.hasReturnValue && *returnValueOffset != sample.returnValueOffset) {
                 satisfied = false;
                 break;
@@ -255,8 +241,7 @@ std::optional<FunctionInfo> DescribeFunction(const PropertyChain &chain, const P
         if (!property)
             return std::nullopt;
 
-        // Only the parameters belong to the block; anything else the function
-        // declares is not part of a call.
+        // Only parameters belong to the block; locals do not.
         if (IsParameter(*property)) {
             FunctionParameter parameter;
             parameter.info = *property;

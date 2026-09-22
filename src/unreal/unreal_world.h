@@ -1,18 +1,10 @@
 #pragma once
 
-// Finding the world, and walking from it to the actors in it.
+// Finding the world and walking to its actors.
 //
-// The world is not reached through the object array: a game holds several
-// UWorld objects over its lifetime - the menu's, the level's, one being
-// streamed - and the one that matters is whichever the global currently points
-// at. So the global is what is looked for, in the same data sections the
-// bootstrap scanned, and it is recognised by what it points at rather than by a
-// signature: an object that the object array itself agrees is at that address,
-// whose class derives from World.
-//
-// Everything past that is reflection. PersistentLevel and Actors are ordinary
-// reflected members, so they are looked up by name and read through the
-// calibrated property layout rather than through offsets of their own.
+// A game holds several UWorlds at once, so the global is what is looked for -
+// recognised by pointing at an object the array agrees derives from World,
+// not by a signature. Everything past it is ordinary reflection.
 
 #include "unreal_module.h"
 #include "unreal_property_values.h"
@@ -33,8 +25,7 @@ struct WorldLocation {
     std::size_t references = 0;
 };
 
-// Scans the regions for a pointer to a world. The world most globals agree on
-// wins, because the engine keeps more than one pointer to the live one.
+// The world most globals agree on wins; the engine keeps several pointers.
 std::optional<WorldLocation> FindWorldGlobal(const ObjectFinder &finder, const TypeQueries &types,
                                              std::span<const ScanRegion> regions);
 
@@ -51,13 +42,11 @@ class WorldView {
     // Every actor in the level, by whichever route the build allows.
     std::vector<Address> ActorsInLevel(Address level) const;
 
-    // The list the level keeps, when it keeps one the engine reflects. UE5
-    // ships ULevel::Actors as a plain member, so on those builds this finds
-    // nothing and says so rather than guessing at an offset.
+    // UE5 ships ULevel::Actors unreflected, so this finds nothing there.
     std::vector<Address> ReflectedActorList(Address level) const;
 
-    // Every actor the level owns, found through the object array instead: an
-    // actor's outer is the level it lives in. Slower, and always available.
+    // Through the object array instead: an actor's outer is its level.
+    // Slower, always available.
     std::vector<Address> ActorsOwnedBy(Address level) const;
 
     // The two steps together.

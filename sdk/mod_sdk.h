@@ -6,12 +6,13 @@
 extern "C" {
 #endif
 
-#define URK_SDK_VERSION 32
+#define URK_SDK_VERSION 33
 #define URK_MONO_API_VERSION 8
 #define URK_RUNTIME_API_VERSION 10
 #define URK_IL2CPP_API_VERSION 7
 #define URK_NETWORK_API_VERSION 1
 #define URK_HOOK_API_VERSION 1
+#define URK_UNREAL_API_VERSION 1
 
 #define URK_SCENE_NAME_MAX 128
 #define URK_OBJECT_NAME_MAX 128
@@ -32,7 +33,8 @@ typedef const URK_ModInfo *(*URK_GetModInfoFn)();
 typedef enum URK_RuntimeBackend {
     URK_RUNTIME_BACKEND_UNKNOWN = 0,
     URK_RUNTIME_BACKEND_MONO = 1,
-    URK_RUNTIME_BACKEND_IL2CPP = 2
+    URK_RUNTIME_BACKEND_IL2CPP = 2,
+    URK_RUNTIME_BACKEND_UNREAL = 3
 } URK_RuntimeBackend;
 
 typedef enum URK_RuntimeCapabilityFlags {
@@ -48,7 +50,8 @@ typedef enum URK_RuntimeCapabilityFlags {
     URK_RUNTIME_CAP_GRAPHICS_DEVICE_TYPE = 1ull << 10,
     URK_RUNTIME_CAP_OBJECT_DESTROY_REQUEST_EVENTS = 1ull << 11,
     URK_RUNTIME_CAP_STEAM_IDENTITY = 1ull << 12,
-    URK_RUNTIME_CAP_MID_HOOKS = 1ull << 13
+    URK_RUNTIME_CAP_MID_HOOKS = 1ull << 13,
+    URK_RUNTIME_CAP_UNREAL_API = 1ull << 14
 } URK_RuntimeCapabilityFlags;
 
 typedef enum URK_RuntimeModuleKind {
@@ -733,6 +736,260 @@ static_assert(offsetof(URK_MonoApi, method_is_generic) > offsetof(URK_MonoApi, v
               "URK_MonoApi generic method helper must stay appended.");
 #endif
 
+/*
+ * An Unreal object, or a UFunction, or a UClass, or the value of one - a
+ * bare address in the target's own space. Never a pointer this side of the
+ * ABI is allowed to dereference: everything it can mean is behind one of the
+ * functions below, the same way the calibration this API is built on never
+ * assumes what a field holds without asking the game.
+ * URK_UNREAL_NULL_OBJECT marks "not found" everywhere one of these is
+ * returned.
+ */
+typedef uint64_t URK_UnrealObject;
+#define URK_UNREAL_NULL_OBJECT ((URK_UnrealObject)0)
+
+typedef enum URK_UnrealPropertyKind {
+    URK_UNREAL_PROPERTY_UNKNOWN = 0,
+    URK_UNREAL_PROPERTY_BOOL = 1,
+    URK_UNREAL_PROPERTY_BYTE = 2,
+    URK_UNREAL_PROPERTY_INT8 = 3,
+    URK_UNREAL_PROPERTY_INT16 = 4,
+    URK_UNREAL_PROPERTY_INT32 = 5,
+    URK_UNREAL_PROPERTY_INT64 = 6,
+    URK_UNREAL_PROPERTY_UINT16 = 7,
+    URK_UNREAL_PROPERTY_UINT32 = 8,
+    URK_UNREAL_PROPERTY_UINT64 = 9,
+    URK_UNREAL_PROPERTY_FLOAT = 10,
+    URK_UNREAL_PROPERTY_DOUBLE = 11,
+    URK_UNREAL_PROPERTY_ENUM = 12,
+    URK_UNREAL_PROPERTY_NAME = 13,
+    URK_UNREAL_PROPERTY_STRING = 14,
+    URK_UNREAL_PROPERTY_TEXT = 15,
+    URK_UNREAL_PROPERTY_OBJECT = 16,
+    URK_UNREAL_PROPERTY_CLASS = 17,
+    URK_UNREAL_PROPERTY_WEAK_OBJECT = 18,
+    URK_UNREAL_PROPERTY_SOFT_OBJECT = 19,
+    URK_UNREAL_PROPERTY_INTERFACE = 20,
+    URK_UNREAL_PROPERTY_STRUCT = 21,
+    URK_UNREAL_PROPERTY_ARRAY = 22,
+    URK_UNREAL_PROPERTY_SET = 23,
+    URK_UNREAL_PROPERTY_MAP = 24,
+    URK_UNREAL_PROPERTY_DELEGATE = 25
+} URK_UnrealPropertyKind;
+
+/*
+ * One member's shape, as the calibrated property chain describes it - what
+ * FindMember/FindMemberDeep resolve to before any value is touched. size is
+ * the per-element byte width; a fixed C array reports array_dim above 1 and
+ * value_index selects into it.
+ */
+typedef struct URK_UnrealPropertyInfo {
+    uint32_t size;
+    int32_t kind;
+    int32_t element_size;
+    int32_t array_dim;
+    /* Object/Class: the required UClass. Struct: the UScriptStruct. Array:
+     * the element property. Enum: the underlying numeric property. */
+    URK_UnrealObject inner;
+} URK_UnrealPropertyInfo;
+
+/*
+ * A reflected function's parameter block, built once and reused across calls:
+ * BuildFrame measures it from the function, and every set/get after that is
+ * named lookup and a bounds-checked copy, never a raw offset the caller
+ * worked out itself.
+ */
+typedef struct URK_UnrealCallFrame URK_UnrealCallFrame;
+
+/*
+ * Called from inside UObject::ProcessEvent, on whichever thread the engine
+ * made the call from - almost always the game thread, which is the point of
+ * being handed one at all. Returning zero drops the call; the engine never
+ * sees it. Do as little as this signature allows: anything heavier belongs on
+ * a callback registered through unreal_post_to_game_thread instead.
+ */
+typedef int (*URK_UnrealProcessEventObserverFn)(void *user_data, URK_UnrealObject object, URK_UnrealObject function,
+                                                void *parms);
+
+/*
+ * Runs on the thread URK_UnrealApi identified as the engine's own, the same
+ * thread ProcessEvent is called from. This is how a mod reaches Unreal safely
+ * from a timer, a network callback, or any other thread it does not control.
+ */
+typedef void (*URK_UnrealPostedWorkFn)(void *user_data);
+
+typedef struct URK_UnrealApi {
+    uint32_t version;
+    uint32_t size;
+
+    /*
+     * Non-zero once the calibration ladder has resolved against this process:
+     * the object array, the name table, and the field layout the rest of this
+     * API depends on. Every other entry returns a null object or zero when
+     * this is false rather than touching unmeasured memory.
+     */
+    int (*is_available)();
+
+    /* The engine build this was measured against. Zero fields when unknown. */
+    void (*engine_version)(int32_t *major, int32_t *minor, int32_t *patch);
+    /* True from 4.25 on, where properties left the UObject graph for FField.
+     * Informational: every entry below already accounts for it. */
+    int (*uses_field_properties)();
+
+    /*
+     * First object carrying this name in the object array. UE names are not
+     * unique on their own - find_in_outer disambiguates by outer chain, the
+     * way a member of a class is addressed.
+     */
+    URK_UnrealObject (*find_object)(const char *name);
+    URK_UnrealObject (*find_object_in_outer)(const char *name, const char *outer_name);
+    URK_UnrealObject (*class_of)(URK_UnrealObject object);
+    URK_UnrealObject (*outer_of)(URK_UnrealObject object);
+    /* Writes a NUL-terminated name, truncated to fit. Returns non-zero on
+     * success; object being null or unresolved is not success. */
+    int (*name_of)(URK_UnrealObject object, char *output, size_t output_size);
+
+    /* Whether struct_object derives from base or is base itself. */
+    int (*is_child_of)(URK_UnrealObject struct_object, URK_UnrealObject base);
+    /* The same question asked of an instance, through its class. */
+    int (*is_a)(URK_UnrealObject object, URK_UnrealObject class_object);
+    URK_UnrealObject (*default_object_of)(URK_UnrealObject class_object);
+    /*
+     * Fills output with up to output_capacity live instances of class_object
+     * and returns how many the game actually has, which may exceed the
+     * capacity given - callers size their buffer from a first call with
+     * capacity zero. exact restricts the result to that exact class, excluding
+     * its subclasses.
+     */
+    size_t (*instances_of)(URK_UnrealObject class_object, URK_UnrealObject *output, size_t output_capacity,
+                           int exact);
+
+    /*
+     * The named member's shape on this object's class, or its bases - a
+     * struct's fields are usually declared above the class an instance
+     * reports. Returns zero and leaves *info untouched when no such member is
+     * reflected.
+     */
+    int (*describe_property)(URK_UnrealObject object, const char *member_name, URK_UnrealPropertyInfo *info);
+
+    /*
+     * Value access by member name, resolved through describe_property rather
+     * than an offset the caller supplies. Each returns zero without touching
+     * output when the member does not exist, is the wrong kind for the call,
+     * or the array index is out of range for a fixed C array member.
+     */
+    int (*read_integer)(URK_UnrealObject object, const char *member_name, int32_t index, int64_t *output);
+    int (*read_floating)(URK_UnrealObject object, const char *member_name, int32_t index, double *output);
+    int (*read_bool)(URK_UnrealObject object, const char *member_name, int32_t index, int *output);
+    URK_UnrealObject (*read_object)(URK_UnrealObject object, const char *member_name, int32_t index);
+    /* FName text, or FString text copied out of the allocation it points at -
+     * the game's own allocation is left untouched either way. */
+    int (*read_name)(URK_UnrealObject object, const char *member_name, int32_t index, char *output,
+                     size_t output_size);
+    int (*read_string)(URK_UnrealObject object, const char *member_name, int32_t index, char *output,
+                       size_t output_size);
+
+    /*
+     * Writes are for values that fit where they already are. FString, TArray,
+     * TMap and FText own allocations the engine's allocator made and are not
+     * writable through this entry; describe_property reports their kind so a
+     * caller can tell before trying.
+     */
+    int (*write_integer)(URK_UnrealObject object, const char *member_name, int32_t index, int64_t value);
+    int (*write_floating)(URK_UnrealObject object, const char *member_name, int32_t index, double value);
+    int (*write_bool)(URK_UnrealObject object, const char *member_name, int32_t index, int value);
+    int (*write_object)(URK_UnrealObject object, const char *member_name, int32_t index, URK_UnrealObject value);
+
+    /*
+     * A function by name on owner_class or a base of it - what UFunction the
+     * name refers to, not yet anything that can be called.
+     */
+    URK_UnrealObject (*find_function)(URK_UnrealObject owner_class, const char *name);
+
+    /*
+     * Measures function's parameter block and returns a frame sized to hold
+     * it, zeroed. The engine reads every byte of the block including padding
+     * no parameter covers, which is why this exists instead of a caller
+     * allocating parameter_bytes itself. Returns NULL when function is not a
+     * UFunction or its layout did not resolve.
+     */
+    URK_UnrealCallFrame *(*call_frame_create)(URK_UnrealObject function);
+    void (*call_frame_destroy)(URK_UnrealCallFrame *frame);
+    /*
+     * Sets or reads one parameter by its declared name. size must equal the
+     * parameter's element_size from describe_property; a mismatch is refused
+     * rather than partially applied, because a short write would corrupt
+     * whatever the frame holds after it.
+     */
+    int (*call_frame_set)(URK_UnrealCallFrame *frame, const char *parameter_name, const void *value, size_t size);
+    int (*call_frame_get)(const URK_UnrealCallFrame *frame, const char *parameter_name, void *output, size_t size);
+
+    /*
+     * Calls the frame's function on object through UObject::ProcessEvent,
+     * dispatched through object's own vtable so a class that overrides
+     * ProcessEvent - as AActor does - reaches its own implementation. Must be
+     * called from the thread unreal_game_thread_id names; calling it from
+     * anywhere else is calling into the engine from a thread it does not
+     * expect, which is undefined the same way calling any other Unreal API
+     * off-thread is. Returns zero without calling anything when that is not
+     * the calling thread, when object or the frame's function is null, or
+     * when ProcessEvent has not been hooked.
+     */
+    int (*call)(URK_UnrealObject object, URK_UnrealCallFrame *frame);
+
+    /*
+     * Installs the ProcessEvent hook that observation, game-thread dispatch,
+     * and call all depend on. Idempotent: calling this again while already
+     * installed returns non-zero and changes nothing. Every class's own
+     * override is patched, not only UObject's base implementation, so no
+     * reflected call anywhere in the game is missed.
+     */
+    int (*hook_install)();
+    int (*hook_installed)();
+    /*
+     * Takes the hook back out, once the reflected calls already inside it have
+     * finished. Returns zero when they did not finish in time: the hook is
+     * reported uninstalled and stops observing and dispatching either way, but
+     * the patch itself is left in place, because removing it out from under a
+     * call still running in it is what would take the game down. A mod that
+     * gets zero here must not unload its own image - the patch still points
+     * into it.
+     */
+    int (*hook_remove)();
+
+    /*
+     * Registers the callback ProcessEvent calls out to on its way through.
+     * Only one is held; registering again replaces it. Pass NULL to clear it.
+     * The callback must not itself call back into any *_call or *_post entry
+     * on the same thread from inside the outermost invocation - see the
+     * reentrancy note on URK_UnrealProcessEventObserverFn.
+     */
+    void (*process_event_observe)(URK_UnrealProcessEventObserverFn observer, void *user_data);
+
+    /*
+     * The thread ProcessEvent has been observed called from most often, which
+     * is how the engine's own game thread is told apart from whichever thread
+     * happened to make the first call. Zero until the hook has seen enough
+     * calls to be sure.
+     */
+    uint32_t (*game_thread_id)();
+    /*
+     * Queues work for that thread. Returns zero and queues nothing when the
+     * hook is not installed, the game thread is not yet identified, or the
+     * queue is full - this is a bounded mailbox, not a general task queue.
+     */
+    int (*post_to_game_thread)(URK_UnrealPostedWorkFn work, void *user_data);
+} URK_UnrealApi;
+
+#ifdef __cplusplus
+static_assert(offsetof(URK_UnrealApi, is_available) > offsetof(URK_UnrealApi, size),
+              "URK_UnrealApi must keep version and size before callable entries.");
+static_assert(offsetof(URK_UnrealApi, hook_install) > offsetof(URK_UnrealApi, call),
+              "URK_UnrealApi new fields must be appended.");
+static_assert(offsetof(URK_UnrealApi, post_to_game_thread) > offsetof(URK_UnrealApi, game_thread_id),
+              "URK_UnrealApi new fields must be appended.");
+#endif
+
 typedef enum URK_HookBackend {
     URK_HOOK_BACKEND_AUTO = 0,
     URK_HOOK_BACKEND_DETOURS = 1,
@@ -835,12 +1092,18 @@ typedef struct URK_ModContext {
     uintptr_t gameAssemblyModuleBase;
     const URK_NetworkApi *network;
     const URK_HookApi *hooks;
+    /* Null on every backend but Unreal, and null there until the engine's
+     * calibration has resolved. Mods must check this before use rather than
+     * assuming it follows from runtimeBackend == URK_RUNTIME_BACKEND_UNREAL. */
+    const URK_UnrealApi *unreal;
 } URK_ModContext;
 
 static_assert(offsetof(URK_HookApi, mid_attach) > offsetof(URK_HookApi, size),
               "URK_HookApi must stay append-only.");
 static_assert(offsetof(URK_ModContext, hooks) > offsetof(URK_ModContext, network),
               "URK_ModContext hook API pointer must stay appended.");
+static_assert(offsetof(URK_ModContext, unreal) > offsetof(URK_ModContext, hooks),
+              "URK_ModContext unreal API pointer must stay appended.");
 
 /* Required initialization export. Loaders reject a module when it is missing
  * or returns zero. */
@@ -874,5 +1137,12 @@ using OnObjectDestroyRequestedFn = URK_OnObjectDestroyRequestedFn;
 using Il2CppApi = URK_Il2CppApi;
 using MonoApi = URK_MonoApi;
 using ModInfo = URK_ModInfo;
+using UnrealApi = URK_UnrealApi;
+using UnrealObject = URK_UnrealObject;
+using UnrealPropertyKind = URK_UnrealPropertyKind;
+using UnrealPropertyInfo = URK_UnrealPropertyInfo;
+using UnrealCallFrame = URK_UnrealCallFrame;
+using UnrealProcessEventObserverFn = URK_UnrealProcessEventObserverFn;
+using UnrealPostedWorkFn = URK_UnrealPostedWorkFn;
 } // namespace URK
 #endif

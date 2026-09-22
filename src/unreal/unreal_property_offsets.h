@@ -1,14 +1,9 @@
 #pragma once
 
-// FField and FProperty layout calibration.
-//
-// From UE4.25 properties stopped being UObjects: they live in a separate FField
-// chain hanging off UStruct::ChildProperties and carry no vtable-bearing class
-// object, so none of the UObject machinery applies to them.
-//
-// The anchors are engine structs whose field order and sizes are fixed by their
-// C++ declaration: FColor is declared B, G, R, A as bytes, FGuid as four int32s.
-// That pins names, offsets, sizes and flags all at once.
+// FField/FProperty layout calibration. From 4.25 properties are not UObjects:
+// they hang off UStruct::ChildProperties with no class object. Anchored on
+// structs whose C++ declaration fixes everything - FColor is B,G,R,A bytes,
+// FGuid four int32s - which pins names, offsets, sizes and flags at once.
 
 #include "unreal_struct_offsets.h"
 

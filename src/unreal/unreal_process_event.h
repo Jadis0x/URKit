@@ -1,23 +1,9 @@
 #pragma once
 
-// Calling a reflected function.
-//
-// Everything below this file reads the game; this is where it can be asked to
-// do something. A reflected call goes through UObject::ProcessEvent, which a
-// shipped title neither exports nor names, so it has to be recognised.
-//
-// It is recognised by the one thing it cannot avoid doing. To call a function
-// ProcessEvent must build that function's parameter frame, and the sizes it
-// needs are the fields the ladder has already measured - NumParms, ParmsSize,
-// ReturnValueOffset. A UObject virtual that reads ParmsSize is doing the only
-// job that field exists for, and no other slot in the vtable touches it. So the
-// search is for a slot whose code refers to offsets this build was measured to
-// use, not for bytes some compiler happened to emit.
-//
-// What is calibrated is the slot *index*, never the address behind it. Classes
-// override ProcessEvent - AActor does - and an override is the implementation a
-// call on one of its instances has to reach, so the address is read from the
-// object's own vtable at call time.
+// UObject::ProcessEvent, found by the fields it must read to build a parameter
+// frame (ParmsSize + ReturnValueOffset) rather than by a byte pattern.
+// Calibrated value is the vtable *index*; the address is read per object,
+// because classes override it (AActor does).
 
 #include "unreal_functions.h"
 #include "unreal_module.h"
@@ -30,22 +16,20 @@
 #include <span>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace URK::Unreal {
 
 struct ProcessEventLocation {
-    // Slot in the UObject vtable. What is stable across classes.
     std::int32_t vtableIndex = kOffsetNotFound;
-    // UObject's own implementation, which classes that do not override it use.
     Address baseImplementation = kNullAddress;
 
-    // What the slot was chosen by, kept so a caller can see the margin.
+    // Why this slot won, so a caller can judge the margin.
     std::int32_t parmsSizeReferences = 0;
     std::int32_t flagsReferences = 0;
     std::int32_t returnOffsetReferences = 0;
-    // Other slots that also referred to ParmsSize. Any at all means the field
-    // stopped naming one function, so the answer is not trusted.
+    // Any rival means the fields stopped naming one function; answer untrusted.
     std::vector<std::int32_t> rivalSlots;
 
     bool Unique() const { return rivalSlots.empty(); }
@@ -54,9 +38,8 @@ struct ProcessEventLocation {
     }
 };
 
-// Walks the UObject vtable looking for the slot that reads ParmsSize. Returns
-// nothing when no slot does; returns an unresolved location, rivals listed,
-// when more than one does, so a caller can see why rather than only that.
+// Nothing when no slot qualifies; an unresolved location with rivals listed
+// when more than one does.
 std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder, const TypeQueries &types,
                                                      const StructOffsets &structs, const FunctionOffsets &functions,
                                                      std::span<const ScanRegion> codeRegions);
@@ -64,25 +47,29 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
 // The implementation this object dispatches to, read from its own vtable.
 Address ProcessEventFor(const MemoryReader &reader, const ProcessEventLocation &location, Address object);
 
-// The parameter block a call is made with.
-//
-// The engine reads every byte of it, including the padding no parameter covers,
-// so it is zeroed whole rather than only where parameters sit. Out parameters
-// are read back from it after the call, which is also where a return value is.
+// Every distinct implementation across the game's classes, base first. Hooking
+// only the base would miss every actor.
+std::vector<Address> ProcessEventImplementations(const ObjectFinder &finder, const TypeQueries &types,
+                                                 const StructOffsets &structs,
+                                                 const ProcessEventLocation &location);
+
+// The parameter block a call is made with. Zeroed whole, padding included,
+// because the engine reads every byte of it.
 class CallFrame {
   public:
-    explicit CallFrame(const FunctionInfo &info) : info_(&info), bytes_(static_cast<std::size_t>(info.parmsSize), 0) {}
+    // Owns its FunctionInfo: a frame handed out through the ABI outlives the
+    // caller's copy, and holding a pointer to it crashed the game.
+    explicit CallFrame(FunctionInfo info)
+        : info_(std::move(info)), bytes_(static_cast<std::size_t>(info_.parmsSize), 0) {}
 
-    const FunctionInfo &Function() const { return *info_; }
+    const FunctionInfo &Function() const { return info_; }
     void *Data() { return bytes_.empty() ? nullptr : bytes_.data(); }
     const void *Data() const { return bytes_.empty() ? nullptr : bytes_.data(); }
     std::size_t Size() const { return bytes_.size(); }
 
     void Clear() { std::fill(bytes_.begin(), bytes_.end(), std::uint8_t{0}); }
 
-    // Writes a value into the slot the named parameter occupies. The size has
-    // to match what the property says it is: a call whose frame is the wrong
-    // shape corrupts the ones after it.
+    // Size must match the property's; a wrong-shaped frame corrupts later calls.
     bool Set(std::string_view name, const void *value, std::size_t size);
     template <typename T> bool Set(std::string_view name, const T &value) {
         static_assert(std::is_trivially_copyable_v<T>, "the frame holds raw bytes");
@@ -98,29 +85,23 @@ class CallFrame {
         return value;
     }
 
-    // Whatever the function answers with, when it answers with something.
     template <typename T> std::optional<T> Returned() const {
-        const FunctionParameter *parameter = info_->Returned();
+        const FunctionParameter *parameter = info_.Returned();
         return parameter ? Get<T>(parameter->name) : std::nullopt;
     }
 
   private:
     const FunctionParameter *Find(std::string_view name) const;
 
-    const FunctionInfo *info_;
+    // Declared before bytes_, which is sized from it.
+    FunctionInfo info_;
     std::vector<std::uint8_t> bytes_;
 };
 
-// Calls a function on an object.
-//
-// This one is in-process only, and deliberately so: the frame has to live at an
-// address the game can read, and the call has to happen on a thread the engine
-// owns. Reading a game from outside asks nothing of it, and calling into one
-// cannot be made to ask nothing, so the two are not offered through the same
-// door.
+// In-process only: the frame must live where the game can read it, and the call
+// must run on a thread the engine owns.
 bool InvokeProcessEvent(const ProcessEventLocation &location, Address object, Address function, void *frame);
 
-// The same, with the frame the caller filled.
 inline bool InvokeProcessEvent(const ProcessEventLocation &location, Address object, CallFrame &frame) {
     return InvokeProcessEvent(location, object, frame.Function().function, frame.Data());
 }

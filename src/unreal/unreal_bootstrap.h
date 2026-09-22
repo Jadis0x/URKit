@@ -1,13 +1,8 @@
 #pragma once
 
-// Live-process bootstrap. Every step above this file starts from a known
-// GUObjectArray or FNamePool address, and a shipped game exports neither, so
-// both are found by scanning the module's data sections.
-//
-// Neither global is accepted on its own: a structure can satisfy the array's
-// invariants and still be a stale copy, and a block table can look like a name
-// pool. They are accepted as a pair, once the objects the array reports read
-// back through the pool as names the engine is known to register.
+// Finds GUObjectArray and FNamePool by scanning data sections, since a shipped
+// game exports neither. Accepted only as a pair: either can be faked alone, but
+// the array's objects must read back through the pool as known engine names.
 
 #include "unreal_module.h"
 #include "unreal_names.h"
