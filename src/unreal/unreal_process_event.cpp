@@ -159,6 +159,10 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
     std::vector<std::uint8_t> body;
     for (std::size_t slot = 0; slot < slots.size(); ++slot) {
         const Address target = slots[slot];
+        // Without RTTI vtables abut, so a subclass's copy of the same function follows.
+        if (std::any_of(candidates.begin(), candidates.end(),
+                        [target](const ProcessEventLocation &c) { return c.baseImplementation == target; }))
+            continue;
 
         // Stop where the function ends so the count belongs to this slot.
         std::size_t span = 0;

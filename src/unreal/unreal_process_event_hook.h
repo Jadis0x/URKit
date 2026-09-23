@@ -37,6 +37,17 @@ class ProcessEventHook {
     using FrameTick = void (*)(void *user);
     static constexpr std::uint64_t kUnclockedFrameMs = 16;
 
+    // The loader's own reflected calls, made while this lives on the calling
+    // thread, pass straight through: no observer, frame tick or posted work runs
+    // in the middle of an operation that has engine memory in flight.
+    class PassThrough {
+      public:
+        PassThrough();
+        ~PassThrough();
+        PassThrough(const PassThrough &) = delete;
+        PassThrough &operator=(const PassThrough &) = delete;
+    };
+
     static constexpr std::uint32_t kDefaultDrainTimeoutMs = 5000;
 
     // A detour carries no user pointer, hence a singleton.

@@ -128,7 +128,12 @@ using LogSink = void (*)(const char *message);
 void UnrealSdk_SetLog(LogSink log);
 
 // Game thread, once per frame: releases engine memory in call frames a mod
-// destroyed on another thread.
+// destroyed on another thread. The first call measures what engine memory
+// operations rely on and logs anything unavailable.
 void UnrealSdk_ReleasePending();
+
+class EnumNames;
+// Enum names once measured (the game thread measures them), else null.
+const EnumNames *UnrealSdk_Enums();
 
 } // namespace URK::Unreal

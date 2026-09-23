@@ -212,7 +212,7 @@ std::int32_t ObjectArray::Num() const {
     return count ? *count : 0;
 }
 
-Address ObjectArray::ObjectAt(std::int32_t index) const {
+Address ObjectArray::ItemAt(std::int32_t index) const {
     if (index < 0 || index >= Num())
         return kNullAddress;
 
@@ -226,8 +226,13 @@ Address ObjectArray::ObjectAt(std::int32_t index) const {
         reader_->ReadPointer(*objects + static_cast<Address>(chunk) * sizeof(Address));
     if (!chunkAddress || *chunkAddress == kNullAddress)
         return kNullAddress;
-    const Address itemBase = *chunkAddress + static_cast<Address>(indexInChunk) * layout_.item.stride;
+    return *chunkAddress + static_cast<Address>(indexInChunk) * layout_.item.stride;
+}
 
+Address ObjectArray::ObjectAt(std::int32_t index) const {
+    const Address itemBase = ItemAt(index);
+    if (itemBase == kNullAddress)
+        return kNullAddress;
     const std::optional<Address> object = reader_->ReadPointer(itemBase + layout_.item.pointerOffset);
     return object ? *object : kNullAddress;
 }

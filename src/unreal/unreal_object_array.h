@@ -68,6 +68,8 @@ class ObjectArray {
 
     // kNullAddress when out of range or any link in the chain is unreadable.
     Address ObjectAt(std::int32_t index) const;
+    // The FUObjectItem holding it.
+    Address ItemAt(std::int32_t index) const;
 
   private:
     const MemoryReader *reader_;

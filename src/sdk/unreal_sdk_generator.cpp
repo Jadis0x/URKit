@@ -32,8 +32,14 @@ std::string UnrealSdkReadme(const std::string &details) {
            "comes back empty.\n"
            "- Structs are values copied into the mod, so their header carries a layout. Before any copy it is "
            "checked against the running game; if an update changed the struct, accesses to it fail and the log "
-           "says to regenerate. Members that own engine memory (names, strings, arrays) are kept as bytes, and "
-           "the loader refuses a write that changes them.\n\n"
+           "says to regenerate. Members that own engine memory (strings, arrays, texts) are kept as bytes in the "
+           "copy and reached in place through the struct's static accessors: `S::Name(member.place())`.\n"
+           "- Strings, names and texts read and write as UTF-8 `std::string`; enums by name (`E::Value()`, looked "
+           "up in the running game); `ArrayMember`, `SetMember` and `MapMember` add, find, remove and replace "
+           "elements; soft and weak references, delegates (checked against their signature) and multicast "
+           "delegates are typed too. The engine's own code makes, changes and frees their memory, so changes run "
+           "on the game thread (`update()`, scene callbacks, `post_to_game_thread`), as do text and soft path "
+           "reads; numbers, names, strings and container reads work anywhere.\n\n"
            "`types/` is rewritten from the dump; do not edit it.\n\n"
         << details;
     return out.str();

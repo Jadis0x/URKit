@@ -1,4 +1,5 @@
 #include "unreal_property_values.h"
+#include "unreal_text.h"
 
 #include <array>
 #include <vector>
@@ -77,11 +78,31 @@ std::int32_t FindArrayInnerOffset(const MemoryReader &reader, const FieldOffsets
     return kOffsetNotFound;
 }
 
+// The first offset from start where every sample passes: a container's element
+// properties, or an enum property's UEnum.
+template <typename Test>
+std::int32_t FirstAgreeingOffset(const std::vector<Address> &samples, std::int32_t start, Test test) {
+    if (samples.empty())
+        return kOffsetNotFound;
+    constexpr std::int32_t kMaxGap = 0x20;
+    for (std::int32_t offset = start; offset <= start + kMaxGap; offset += static_cast<std::int32_t>(sizeof(Address))) {
+        bool satisfied = true;
+        for (const Address field : samples)
+            satisfied = satisfied && test(field, offset);
+        if (satisfied)
+            return offset;
+    }
+    return kOffsetNotFound;
+}
+
 struct Samples {
     std::vector<Address> bools;
     std::vector<Address> objects;
     std::vector<Address> structs;
     std::vector<Address> arrays;
+    std::vector<Address> sets;
+    std::vector<Address> maps;
+    std::vector<Address> enums;
 
     // Arrays are excluded: they do not share the tail, so they cannot help
     // decide where it is.
@@ -92,7 +113,8 @@ struct Samples {
 
     bool Full() const {
         return bools.size() >= kSamplesPerKind && objects.size() >= kSamplesPerKind &&
-               structs.size() >= kSamplesPerKind && arrays.size() >= kSamplesPerKind;
+               structs.size() >= kSamplesPerKind && arrays.size() >= kSamplesPerKind &&
+               sets.size() >= kSamplesPerKind && maps.size() >= kSamplesPerKind && enums.size() >= kSamplesPerKind;
     }
 };
 
@@ -129,6 +151,12 @@ Samples CollectSamples(const ObjectFinder &finder, const StructOffsets &structs,
                     Collect(samples.bools, field);
                 else if ((*fieldFlags & kCastFlagArrayProperty) != 0)
                     Collect(samples.arrays, field);
+                else if ((*fieldFlags & kCastFlagSetProperty) != 0)
+                    Collect(samples.sets, field);
+                else if ((*fieldFlags & kCastFlagMapProperty) != 0)
+                    Collect(samples.maps, field);
+                else if ((*fieldFlags & kCastFlagEnumProperty) != 0)
+                    Collect(samples.enums, field);
                 else if ((*fieldFlags & kCastFlagStructProperty) != 0)
                     Collect(samples.structs, field);
                 else if ((*fieldFlags & kCastFlagObjectProperty) != 0)
@@ -204,6 +232,16 @@ const char *PropertyKindName(PropertyKind kind) {
         return "map";
     case PropertyKind::Delegate:
         return "delegate";
+    case PropertyKind::MulticastDelegate:
+        return "multicast delegate";
+    case PropertyKind::SparseDelegate:
+        return "sparse delegate";
+    case PropertyKind::LazyObject:
+        return "lazy object";
+    case PropertyKind::Utf8String:
+        return "utf8 string";
+    case PropertyKind::AnsiString:
+        return "ansi string";
     case PropertyKind::Unknown:
         break;
     }
@@ -224,7 +262,7 @@ PropertyKind ClassifyProperty(std::uint64_t castFlags) {
         Mapping{kCastFlagSoftClassProperty, PropertyKind::SoftObject},
         Mapping{kCastFlagSoftObjectProperty, PropertyKind::SoftObject},
         Mapping{kCastFlagWeakObjectProperty, PropertyKind::WeakObject},
-        Mapping{kCastFlagLazyObjectProperty, PropertyKind::WeakObject},
+        Mapping{kCastFlagLazyObjectProperty, PropertyKind::LazyObject},
         Mapping{kCastFlagObjectProperty, PropertyKind::Object},
         Mapping{kCastFlagInterfaceProperty, PropertyKind::Interface},
         Mapping{kCastFlagStructProperty, PropertyKind::Struct},
@@ -233,9 +271,12 @@ PropertyKind ClassifyProperty(std::uint64_t castFlags) {
         Mapping{kCastFlagMapProperty, PropertyKind::Map},
         Mapping{kCastFlagNameProperty, PropertyKind::Name},
         Mapping{kCastFlagStrProperty, PropertyKind::String},
+        Mapping{kCastFlagUtf8StrProperty, PropertyKind::Utf8String},
+        Mapping{kCastFlagAnsiStrProperty, PropertyKind::AnsiString},
         Mapping{kCastFlagTextProperty, PropertyKind::Text},
         Mapping{kCastFlagDelegateProperty, PropertyKind::Delegate},
-        Mapping{kCastFlagMulticastDelegateProperty, PropertyKind::Delegate},
+        Mapping{kCastFlagMulticastSparseDelegateProperty, PropertyKind::SparseDelegate},
+        Mapping{kCastFlagMulticastDelegateProperty, PropertyKind::MulticastDelegate},
         Mapping{kCastFlagDoubleProperty, PropertyKind::Double},
         Mapping{kCastFlagFloatProperty, PropertyKind::Float},
         Mapping{kCastFlagInt64Property, PropertyKind::Int64},
@@ -285,6 +326,14 @@ PropertyTailOffsets FindPropertyTailOffsets(const ObjectFinder &finder, const St
 
         resolved.tail = offset;
         resolved.arrayInner = FindArrayInnerOffset(reader, fields, samples.arrays, offset);
+        const auto property = [&](Address field, std::int32_t at) { return PointsToProperty(reader, fields, field, at); };
+        resolved.setElement = FirstAgreeingOffset(samples.sets, offset, property);
+        resolved.mapKey = FirstAgreeingOffset(samples.maps, offset, property);
+        if (resolved.mapKey != kOffsetNotFound)
+            resolved.mapValue = FirstAgreeingOffset(samples.maps, resolved.mapKey + 8, property);
+        resolved.enumPropertyEnum = FirstAgreeingOffset(samples.enums, offset, [&](Address field, std::int32_t at) {
+            return PointsToObjectWithFlags(finder, structs, field, at, kCastFlagEnum);
+        });
         return resolved;
     }
 
@@ -331,21 +380,43 @@ std::optional<PropertyInfo> PropertyValues::Describe(Address field) const {
         return info;
     }
 
+    const auto pointerAt = [&](std::int32_t offset) {
+        if (offset == kOffsetNotFound)
+            return kNullAddress;
+        return reader_->ReadPointer(field + offset).value_or(kNullAddress);
+    };
     switch (info.kind) {
     case PropertyKind::Object:
     case PropertyKind::Class:
     case PropertyKind::WeakObject:
     case PropertyKind::SoftObject:
+    case PropertyKind::LazyObject:
     case PropertyKind::Struct:
+        info.inner = pointerAt(tail_.firstPointer());
+        info.typeObject = info.inner;
+        break;
     case PropertyKind::Enum:
-        if (const std::optional<Address> inner = reader_->ReadPointer(field + tail_.firstPointer()))
-            info.inner = *inner;
+        info.inner = pointerAt(tail_.firstPointer());
+        info.typeObject = pointerAt(tail_.enumPropertyEnum);
+        break;
+    case PropertyKind::Byte:
+        // Where FEnumProperty keeps UnderlyingProp a byte keeps its UEnum; null for a plain byte.
+        info.typeObject = pointerAt(tail_.firstPointer());
+        break;
+    case PropertyKind::Delegate:
+    case PropertyKind::MulticastDelegate:
+    case PropertyKind::SparseDelegate:
+        info.typeObject = pointerAt(tail_.firstPointer());
         break;
     case PropertyKind::Array:
-        if (tail_.arrayInner != kOffsetNotFound) {
-            if (const std::optional<Address> inner = reader_->ReadPointer(field + tail_.arrayInner))
-                info.inner = *inner;
-        }
+        info.inner = pointerAt(tail_.arrayInner);
+        break;
+    case PropertyKind::Set:
+        info.inner = pointerAt(tail_.setElement);
+        break;
+    case PropertyKind::Map:
+        info.inner = pointerAt(tail_.mapKey);
+        info.valueInner = pointerAt(tail_.mapValue);
         break;
     default:
         break;
@@ -361,6 +432,40 @@ Address PropertyValues::ValueAddress(Address instance, const PropertyInfo &info,
         return kNullAddress;
     return instance + static_cast<Address>(info.offset) +
            static_cast<Address>(index) * static_cast<Address>(info.elementSize);
+}
+
+std::int32_t PropertyValues::AlignmentOf(const PropertyInfo &info) const {
+    switch (info.kind) {
+    case PropertyKind::Bool:
+    case PropertyKind::Byte:
+    case PropertyKind::Int8:
+    case PropertyKind::SparseDelegate:
+        return 1;
+    case PropertyKind::Int16:
+    case PropertyKind::UInt16:
+        return 2;
+    case PropertyKind::Int32:
+    case PropertyKind::UInt32:
+    case PropertyKind::Float:
+    case PropertyKind::Name:
+    case PropertyKind::WeakObject:
+    case PropertyKind::LazyObject:
+    case PropertyKind::Delegate:
+        return 4;
+    case PropertyKind::Enum:
+        return info.elementSize > 0 && info.elementSize <= 8 ? info.elementSize : 0;
+    case PropertyKind::Struct: {
+        if (structs_.minAlignment == kOffsetNotFound || info.inner == kNullAddress)
+            return 0;
+        // int16 since UE5.x (int32 before; the low half is the same value).
+        const std::int32_t alignment = reader_->ReadAs<std::int16_t>(info.inner + structs_.minAlignment).value_or(0);
+        return alignment > 0 && alignment <= 256 && (alignment & (alignment - 1)) == 0 ? alignment : 0;
+    }
+    case PropertyKind::Unknown:
+        return 0;
+    default:
+        return 8;
+    }
 }
 
 std::optional<std::int64_t> PropertyValues::ReadInteger(Address instance, const PropertyInfo &info,
@@ -454,27 +559,41 @@ std::optional<std::string> PropertyValues::ReadName(Address instance, const Prop
 std::optional<std::string> PropertyValues::ReadString(Address instance, const PropertyInfo &info,
                                                       std::int32_t index) const {
     const Address value = ValueAddress(instance, info, index);
-    if (value == kNullAddress || info.kind != PropertyKind::String)
+    if (value == kNullAddress)
         return std::nullopt;
+    return ReadStringAt(value, info.kind);
+}
 
+std::optional<std::string> PropertyValues::ReadStringAt(Address value, PropertyKind kind) const {
+    if (kind != PropertyKind::String && kind != PropertyKind::Utf8String && kind != PropertyKind::AnsiString)
+        return std::nullopt;
     const std::optional<Address> data = reader_->ReadPointer(value);
     const std::optional<std::int32_t> num = reader_->ReadInt32(value + sizeof(Address));
-    if (!data || !num)
+    const std::optional<std::int32_t> max = reader_->ReadInt32(value + sizeof(Address) + sizeof(std::int32_t));
+    if (!data || !num || !max || *num < 0 || *num > *max)
         return std::nullopt;
     if (*data == kNullAddress || *num <= 0)
         return std::string();
 
     // The count includes the terminator the engine always stores.
-    std::string text;
-    text.reserve(static_cast<std::size_t>(*num - 1));
-    for (std::int32_t i = 0; i + 1 < *num; ++i) {
-        const std::optional<std::uint16_t> unit =
-            reader_->ReadAs<std::uint16_t>(*data + static_cast<Address>(i) * 2);
-        if (!unit)
+    const std::size_t count = static_cast<std::size_t>(*num - 1);
+    if (kind == PropertyKind::String) {
+        std::u16string units(count, u'\0');
+        if (count && !reader_->Read(*data, units.data(), count * sizeof(char16_t)))
             return std::nullopt;
-        text.push_back(*unit < 0x80 ? static_cast<char>(*unit) : '?');
+        return Utf16ToUtf8(units);
     }
-    return text;
+    std::string bytes(count, '\0');
+    if (count && !reader_->Read(*data, bytes.data(), count))
+        return std::nullopt;
+    if (kind == PropertyKind::AnsiString) {
+        // ANSICHAR text is Latin-1 to the engine.
+        std::u16string widened(count, u'\0');
+        for (std::size_t i = 0; i < count; ++i)
+            widened[i] = static_cast<char16_t>(static_cast<unsigned char>(bytes[i]));
+        return Utf16ToUtf8(widened);
+    }
+    return bytes;
 }
 
 std::optional<ArrayView> PropertyValues::ReadArray(Address instance, const PropertyInfo &info,

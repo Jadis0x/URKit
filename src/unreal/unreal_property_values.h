@@ -42,6 +42,10 @@ inline constexpr std::uint64_t kCastFlagSoftClassProperty = 0x200000000;
 inline constexpr std::uint64_t kCastFlagMapProperty = 0x400000000000;
 inline constexpr std::uint64_t kCastFlagSetProperty = 0x800000000000;
 inline constexpr std::uint64_t kCastFlagEnumProperty = 0x1000000000000;
+inline constexpr std::uint64_t kCastFlagMulticastInlineDelegateProperty = 0x4000000000000;
+inline constexpr std::uint64_t kCastFlagMulticastSparseDelegateProperty = 0x8000000000000;
+inline constexpr std::uint64_t kCastFlagUtf8StrProperty = 0x1000000000000000;
+inline constexpr std::uint64_t kCastFlagAnsiStrProperty = 0x2000000000000000;
 
 enum class PropertyKind {
     Unknown,
@@ -70,6 +74,12 @@ enum class PropertyKind {
     Set,
     Map,
     Delegate,
+    // In URK_UnrealPropertyKind order: the ABI casts this enum.
+    MulticastDelegate,
+    SparseDelegate,
+    LazyObject,
+    Utf8String,
+    AnsiString,
 };
 
 const char *PropertyKindName(PropertyKind kind);
@@ -83,6 +93,12 @@ PropertyKind ClassifyProperty(std::uint64_t castFlags);
 struct PropertyTailOffsets {
     std::int32_t tail = kOffsetNotFound;
     std::int32_t arrayInner = kOffsetNotFound;
+    // FSetProperty::ElementProp, FMapProperty::KeyProp/ValueProp,
+    // FEnumProperty::Enum. Each measured on live properties of its kind.
+    std::int32_t setElement = kOffsetNotFound;
+    std::int32_t mapKey = kOffsetNotFound;
+    std::int32_t mapValue = kOffsetNotFound;
+    std::int32_t enumPropertyEnum = kOffsetNotFound;
 
     bool Resolved() const { return tail != kOffsetNotFound; }
 
@@ -125,9 +141,15 @@ struct PropertyInfo {
 
     BoolLayout boolLayout{};
 
-    // Object/Class: the UClass. Struct: UScriptStruct. Array: the element
-    // property. Enum: the underlying numeric. Sets and maps are left alone.
+    // Object/Class/Weak/Soft/Lazy: the UClass. Struct: UScriptStruct. Array
+    // and Set: the element property. Map: the key property. Enum: the
+    // underlying numeric property.
     Address inner = kNullAddress;
+    // Map: the value property.
+    Address valueInner = kNullAddress;
+    // The UEnum of an enum or byte, the signature UFunction of a delegate, and
+    // inner for the kinds where that is an object.
+    Address typeObject = kNullAddress;
 
     bool Resolved() const { return field != kNullAddress && offset != kOffsetNotFound; }
 };
@@ -154,6 +176,11 @@ class PropertyValues {
         : reader_(&reader), names_(&names), structs_(structs), fields_(fields), tail_(tail) {}
 
     std::optional<PropertyInfo> Describe(Address field) const;
+    const PropertyTailOffsets &Tail() const { return tail_; }
+
+    // What a value of this property must be aligned to in memory: the kind's
+    // C++ alignment, or a struct's measured MinAlignment.
+    std::int32_t AlignmentOf(const PropertyInfo &info) const;
 
     // Where a member's value sits inside an instance. Static C arrays are
     // addressed by index; anything else only has index zero.
@@ -166,8 +193,11 @@ class PropertyValues {
     Address ReadObject(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
     std::optional<std::string> ReadName(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
 
-    // FString is a TArray of characters; the text is copied out, never touched.
+    // FString is a TArray of characters; the text is copied out as UTF-8,
+    // never touched.
     std::optional<std::string> ReadString(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
+    // The characters of any string kind at a value address, as UTF-8.
+    std::optional<std::string> ReadStringAt(Address value, PropertyKind kind) const;
 
     std::optional<ArrayView> ReadArray(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
 

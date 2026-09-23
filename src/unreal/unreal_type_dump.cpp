@@ -11,10 +11,11 @@ namespace {
 
 constexpr std::int32_t kMaxFields = 4096;
 
-// Names are FNames; a tab or line break would split a record.
+// Names are FNames; a tab or line break would split a record, a bar an
+// element shape.
 std::string Clean(std::string text) {
     for (char &ch : text) {
-        if (ch == '\t' || ch == '\n' || ch == '\r')
+        if (ch == '\t' || ch == '\n' || ch == '\r' || ch == '|')
             ch = ' ';
     }
     return text;
@@ -37,21 +38,46 @@ Named NameAndPackage(const ObjectFinder &finder, Address object) {
     return {Clean(finder.NameOf(object).value_or("")), Clean(finder.NameOf(finder.OuterOf(object)).value_or(""))};
 }
 
-// kind, element size, array dim, flags, then the referenced class or struct.
+// The object a shape is named by: a class, struct, UEnum or delegate signature.
+Named TypeOf(const ObjectFinder &finder, const PropertyInfo &info) {
+    if (info.typeObject == kNullAddress || !IsLiveObject(finder, info.typeObject))
+        return {};
+    return NameAndPackage(finder, info.typeObject);
+}
+
+// kind, element size, array dim, flags, then the object the type is named by.
 // The line is left open for a struct member's layout columns.
 void WriteShapeOpen(std::ostringstream &out, const ObjectFinder &finder, const PropertyInfo &info) {
     out << '\t' << PropertyKindName(info.kind) << '\t' << info.elementSize << '\t' << info.arrayDim << '\t'
         << Hex(info.propertyFlags);
-    const bool typed = info.kind == PropertyKind::Object || info.kind == PropertyKind::Class ||
-                       info.kind == PropertyKind::Struct || info.kind == PropertyKind::WeakObject ||
-                       info.kind == PropertyKind::SoftObject || info.kind == PropertyKind::Interface;
-    const Named inner = typed ? NameAndPackage(finder, info.inner) : Named{};
+    const Named inner = TypeOf(finder, info);
     out << '\t' << inner.name << '\t' << inner.package;
 }
 
-void WriteShape(std::ostringstream &out, const ObjectFinder &finder, const PropertyInfo &info) {
-    WriteShapeOpen(out, finder, info);
+// A container element: "kind|size|type name|type package".
+std::string ElementShape(const ObjectFinder &finder, const PropertyValues &values, Address field) {
+    const std::optional<PropertyInfo> info = values.Describe(field);
+    if (!info)
+        return "unknown|0||";
+    const Named type = TypeOf(finder, *info);
+    return std::string(PropertyKindName(info->kind)) + '|' + std::to_string(info->elementSize) + '|' + type.name +
+           '|' + type.package;
+}
+
+// Closes a shape line: element shapes of an array or set (one) or a map (two).
+void WriteElements(std::ostringstream &out, const ObjectFinder &finder, const PropertyValues &values,
+                   const PropertyInfo &info) {
+    if (info.kind == PropertyKind::Array || info.kind == PropertyKind::Set || info.kind == PropertyKind::Map)
+        out << '\t' << ElementShape(finder, values, info.inner);
+    if (info.kind == PropertyKind::Map)
+        out << '\t' << ElementShape(finder, values, info.valueInner);
     out << '\n';
+}
+
+void WriteShape(std::ostringstream &out, const ObjectFinder &finder, const PropertyValues &values,
+                const PropertyInfo &info) {
+    WriteShapeOpen(out, finder, info);
+    WriteElements(out, finder, values, info);
 }
 
 std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, const PropertyChain &chain,
@@ -68,7 +94,7 @@ std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, 
         if (!info || !name)
             continue;
         out << "P\t" << Clean(*name);
-        WriteShape(out, finder, *info);
+        WriteShape(out, finder, values, *info);
     }
 
     // UFunctions hang off Children as UFields.
@@ -84,7 +110,7 @@ std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, 
         out << "F\t" << Clean(*name) << '\t' << Hex(function->flags) << '\n';
         for (const FunctionParameter &parameter : function->parameters) {
             out << "A\t" << Clean(parameter.name);
-            WriteShape(out, finder, parameter.info);
+            WriteShape(out, finder, values, parameter.info);
         }
     }
     return out.str();
@@ -116,13 +142,25 @@ std::string DumpStruct(const ObjectFinder &finder, const StructOffsets &structs,
         out << "M\t" << Clean(*name);
         WriteShapeOpen(out, finder, *info);
         out << '\t' << info->offset << '\t' << static_cast<int>(info->boolLayout.byteOffset) << '\t'
-            << static_cast<int>(info->boolLayout.byteMask) << '\t' << static_cast<int>(info->boolLayout.fieldMask)
-            << '\n';
+            << static_cast<int>(info->boolLayout.byteMask) << '\t' << static_cast<int>(info->boolLayout.fieldMask);
+        WriteElements(out, finder, values, *info);
     }
     return out.str();
 }
 
-// "C|S<TAB>name<TAB>package..." to the block key "package<TAB>name".
+// An enum's names as the running game defines them; values are informational,
+// generated code resolves names at runtime.
+std::string DumpEnum(const EnumNames &enums, Address enumObject, const Named &self) {
+    std::ostringstream out;
+    out << "E\t" << self.name << '\t' << self.package << '\n';
+    if (const std::optional<std::vector<EnumNames::Entry>> entries = enums.Entries(enumObject)) {
+        for (const EnumNames::Entry &entry : *entries)
+            out << "V\t" << Clean(std::string(EnumNames::ShortName(entry.name))) << '\t' << entry.value << '\n';
+    }
+    return out.str();
+}
+
+// "C|S|E<TAB>name<TAB>package..." to the block key "package<TAB>name".
 std::string KeyOf(const std::string &recordLine) {
     std::istringstream fields(recordLine);
     std::string tag, name, package;
@@ -156,7 +194,7 @@ TypeDumpBlocks ReadExisting(const std::string &path, const TypeDumpImage &image)
 
     std::string key;
     while (std::getline(in, line)) {
-        if (line.rfind("C\t", 0) == 0 || line.rfind("S\t", 0) == 0)
+        if (line.rfind("C\t", 0) == 0 || line.rfind("S\t", 0) == 0 || line.rfind("E\t", 0) == 0)
             key = KeyOf(line);
         if (!key.empty())
             blocks[key] += line + '\n';
@@ -167,7 +205,8 @@ TypeDumpBlocks ReadExisting(const std::string &path, const TypeDumpImage &image)
 } // namespace
 
 TypeDumpBlocks DumpClasses(const ObjectFinder &finder, const StructOffsets &structs, const PropertyChain &chain,
-                           const PropertyValues &values, const FunctionOffsets &functions, const TypeQueries &types) {
+                           const PropertyValues &values, const FunctionOffsets &functions, const TypeQueries &types,
+                           const EnumNames *enums) {
     TypeDumpBlocks blocks;
     if (structs.children == kOffsetNotFound || structs.fieldNext == kOffsetNotFound)
         return blocks;
@@ -179,6 +218,12 @@ TypeDumpBlocks DumpClasses(const ObjectFinder &finder, const StructOffsets &stru
         if (object == kNullAddress)
             continue;
         const bool isClass = ObjectIs(finder, structs, object, kCastFlagClass);
+        if (enums && !isClass && ObjectIs(finder, structs, object, kCastFlagEnum)) {
+            const Named self = NameAndPackage(finder, object);
+            if (!self.name.empty() && !self.package.empty())
+                blocks.emplace(self.package + '\t' + self.name, DumpEnum(*enums, object, self));
+            continue;
+        }
         if (!isClass && !ObjectIs(finder, structs, object, kCastFlagScriptStruct))
             continue;
         const Named self = NameAndPackage(finder, object);

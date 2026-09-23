@@ -73,7 +73,7 @@ void DumpTypes(const char *map) {
     UnrealEngine &engine = UnrealEngine::Instance();
     const ULONGLONG started = GetTickCount64();
     const TypeDumpBlocks blocks = DumpClasses(engine.Finder(), engine.Structs(), engine.Chain(), engine.Values(),
-                                              engine.Functions(), engine.Types());
+                                              engine.Functions(), engine.Types(), UnrealSdk_Enums());
     const std::string path = Platform_ExeDir() + "URKit_unreal_types.txt";
     const int added = WriteTypeDump(path, MainImage(engine.Version()), blocks);
     if (added < 0)

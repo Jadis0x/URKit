@@ -78,6 +78,10 @@ set(URK_UNREAL_SRC
     ${URK_SRC_DIR}/unreal/unreal_game_loop.cpp
     ${URK_SRC_DIR}/unreal/unreal_type_dump.cpp
     ${URK_SRC_DIR}/unreal/unreal_owned_values.cpp
+    ${URK_SRC_DIR}/unreal/unreal_engine_calls.cpp
+    ${URK_SRC_DIR}/unreal/unreal_containers.cpp
+    ${URK_SRC_DIR}/unreal/unreal_enums.cpp
+    ${URK_SRC_DIR}/unreal/unreal_places.cpp
     ${URK_SRC_DIR}/unreal/unreal_module.cpp
     ${URK_SRC_DIR}/unreal/unreal_names.cpp
     ${URK_SRC_DIR}/unreal/unreal_object_array.cpp
@@ -284,6 +288,11 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/unreal/unreal_game_loop.h
     ${URK_SRC_DIR}/unreal/unreal_type_dump.h
     ${URK_SRC_DIR}/unreal/unreal_owned_values.h
+    ${URK_SRC_DIR}/unreal/unreal_engine_calls.h
+    ${URK_SRC_DIR}/unreal/unreal_containers.h
+    ${URK_SRC_DIR}/unreal/unreal_enums.h
+    ${URK_SRC_DIR}/unreal/unreal_places.h
+    ${URK_SRC_DIR}/unreal/unreal_text.h
     ${URK_SRC_DIR}/unreal/unreal_memory.h
     ${URK_SRC_DIR}/unreal/unreal_module.h
     ${URK_SRC_DIR}/unreal/unreal_names.h

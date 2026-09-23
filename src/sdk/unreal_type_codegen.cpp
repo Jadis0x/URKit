@@ -13,9 +13,10 @@
 namespace UnrealTypeCodegen {
 namespace {
 
-// Must match src/unreal/unreal_type_dump.h. Version 1 had no structs.
+// Must match src/unreal/unreal_type_dump.h. Version 1 had no structs, version 2
+// no container element types or enums.
 constexpr const char *kMagic = "URKIT-UNREAL-TYPES";
-constexpr int kVersion = 2;
+constexpr int kVersion = 3;
 
 // Engine flag values (EPropertyFlags, EFunctionFlags).
 constexpr std::uint64_t kConstParm = 0x2;
@@ -32,8 +33,11 @@ struct Shape {
     int size = 0;
     int dim = 1;
     std::uint64_t flags = 0;
+    // The object the type is named by: class, struct, UEnum, delegate signature.
     std::string inner;
     std::string innerPackage;
+    // An array's or set's element, a map's key and value.
+    std::vector<Shape> elements;
 };
 
 // A class property, a function parameter, or a struct field (with layout).
@@ -54,6 +58,9 @@ struct Function {
 
 struct Type {
     bool isStruct = false;
+    bool isEnum = false;
+    // Enum value names; their numbers are looked up in the game at runtime.
+    std::vector<std::string> values;
     std::string name;
     std::string package;
     std::string superName;
@@ -80,7 +87,27 @@ std::vector<std::string> Split(const std::string &line) {
     return fields;
 }
 
-std::optional<Shape> ParseShape(const std::vector<std::string> &fields) {
+// "kind|size|type name|type package".
+std::optional<Shape> ParseElement(const std::string &text) {
+    std::vector<std::string> parts(1);
+    for (const char ch : text) {
+        if (ch == '|')
+            parts.emplace_back();
+        else
+            parts.back() += ch;
+    }
+    if (parts.size() != 4)
+        return std::nullopt;
+    Shape shape;
+    shape.kind = parts[0];
+    shape.size = std::stoi(parts[1]);
+    shape.inner = parts[2];
+    shape.innerPackage = parts[3];
+    return shape;
+}
+
+// elementsAt: where a line's element shapes begin (they close the line).
+std::optional<Shape> ParseShape(const std::vector<std::string> &fields, std::size_t elementsAt) {
     if (fields.size() < 8)
         return std::nullopt;
     try {
@@ -91,6 +118,12 @@ std::optional<Shape> ParseShape(const std::vector<std::string> &fields) {
         shape.flags = std::stoull(fields[5], nullptr, 16);
         shape.inner = fields[6];
         shape.innerPackage = fields[7];
+        for (std::size_t i = elementsAt; i < fields.size(); ++i) {
+            const std::optional<Shape> element = ParseElement(fields[i]);
+            if (!element)
+                return std::nullopt;
+            shape.elements.push_back(*element);
+        }
         return shape;
     } catch (...) {
         return std::nullopt;
@@ -110,7 +143,7 @@ bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error
         *error = path.string() + " is not a URKit Unreal type dump";
         return false;
     }
-    if (magic[1] != "1" && magic[1] != std::to_string(kVersion)) {
+    if (magic[1] != "1" && magic[1] != "2" && magic[1] != std::to_string(kVersion)) {
         *error = path.string() + " has dump format " + magic[1] + "; this urk-sdk reads formats 1-" +
                  std::to_string(kVersion) + ". Use the urk-sdk that matches the loader.";
         return false;
@@ -125,37 +158,43 @@ bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error
         const std::string &tag = fields[0];
         bool ok = true;
         try {
-            if ((tag == "C" && fields.size() >= 5) || (tag == "S" && fields.size() >= 7)) {
+            if ((tag == "C" && fields.size() >= 5) || (tag == "S" && fields.size() >= 7) ||
+                (tag == "E" && fields.size() >= 3)) {
                 Type &entry = (*types)[Key(fields[2], fields[1])];
                 entry = Type{};
                 entry.isStruct = tag == "S";
+                entry.isEnum = tag == "E";
                 entry.name = fields[1];
                 entry.package = fields[2];
-                entry.superName = fields[3];
-                entry.superPackage = fields[4];
+                if (!entry.isEnum) {
+                    entry.superName = fields[3];
+                    entry.superPackage = fields[4];
+                }
                 if (entry.isStruct) {
                     entry.size = std::stoi(fields[5]);
                     entry.alignment = std::stoi(fields[6]);
                 }
                 current = &entry;
                 function = nullptr;
-            } else if (tag == "P" && current && !current->isStruct) {
-                const std::optional<Shape> shape = ParseShape(fields);
+            } else if (tag == "V" && current && current->isEnum && fields.size() >= 2) {
+                current->values.push_back(fields[1]);
+            } else if (tag == "P" && current && !current->isStruct && !current->isEnum) {
+                const std::optional<Shape> shape = ParseShape(fields, 8);
                 ok = shape.has_value();
                 if (ok)
                     current->members.push_back({fields[1], *shape});
             } else if (tag == "M" && current && current->isStruct && fields.size() >= 12) {
-                const std::optional<Shape> shape = ParseShape(fields);
+                const std::optional<Shape> shape = ParseShape(fields, 12);
                 ok = shape.has_value();
                 if (ok)
                     current->members.push_back({fields[1], *shape, std::stoi(fields[8]), std::stoi(fields[9]),
                                                 std::stoi(fields[10]), std::stoi(fields[11])});
-            } else if (tag == "F" && current && !current->isStruct && fields.size() >= 3) {
+            } else if (tag == "F" && current && !current->isStruct && !current->isEnum && fields.size() >= 3) {
                 current->functions.push_back(
                     {fields[1], static_cast<std::uint32_t>(std::stoul(fields[2], nullptr, 16)), {}});
                 function = &current->functions.back();
             } else if (tag == "A" && function) {
-                const std::optional<Shape> shape = ParseShape(fields);
+                const std::optional<Shape> shape = ParseShape(fields, 8);
                 ok = shape.has_value();
                 if (ok)
                     function->parameters.push_back({fields[1], *shape});
@@ -289,7 +328,8 @@ int KindId(const std::string &kind) {
         {"uint16", 7},       {"uint32", 8},       {"uint64", 9},   {"float", 10}, {"double", 11}, {"enum", 12},
         {"name", 13},        {"string", 14},      {"text", 15},    {"object", 16}, {"class", 17},
         {"weak object", 18}, {"soft object", 19}, {"interface", 20}, {"struct", 21}, {"array", 22},
-        {"set", 23},         {"map", 24},         {"delegate", 25}};
+        {"set", 23},         {"map", 24},         {"delegate", 25}, {"multicast delegate", 26},
+        {"sparse delegate", 27}, {"lazy object", 28}, {"utf8 string", 29}, {"ansi string", 30}};
     const auto found = ids.find(kind);
     return found == ids.end() ? 0 : found->second;
 }
@@ -342,9 +382,13 @@ class Generator {
   public:
     explicit Generator(const TypeMap &types) : types_(types) {}
 
-    Header Emit(const Type &entry) { return entry.isStruct ? EmitStruct(entry) : EmitClass(entry); }
+    Header Emit(const Type &entry) {
+        if (entry.isEnum)
+            return EmitEnum(entry);
+        return entry.isStruct ? EmitStruct(entry) : EmitClass(entry);
+    }
 
-    bool Emittable(const Type &entry) { return !entry.isStruct || LayoutOf(entry).usable; }
+    bool Emittable(const Type &entry) { return entry.isEnum || !entry.isStruct || LayoutOf(entry).usable; }
 
   private:
     const Type *Find(const std::string &package, const std::string &name) const {
@@ -355,7 +399,8 @@ class Generator {
     // The generated class an object reference points at, or the untyped wrapper.
     std::string ObjectType(const Shape &shape, std::set<std::string> &forwards) {
         if (shape.kind == "object") {
-            if (const Type *target = Find(shape.innerPackage, shape.inner); target && !target->isStruct) {
+            if (const Type *target = Find(shape.innerPackage, shape.inner);
+                target && !target->isStruct && !target->isEnum) {
                 forwards.insert(target->ident);
                 return kTypes + target->ident;
             }
@@ -378,11 +423,14 @@ class Generator {
     }
 
     // Mirrors the loader: a call leaving one of these in its frame is refused,
-    // because the loader cannot release it. Array elements are its call.
+    // because the loader cannot release a kind it does not know.
     bool Leaks(const Shape &shape, int depth = 0) {
-        static const std::set<std::string> unreleasable = {"text", "set", "map", "soft object", "delegate", "unknown"};
-        if (unreleasable.count(shape.kind) || depth > 16)
+        if (shape.kind == "unknown" || depth > 16)
             return true;
+        for (const Shape &element : shape.elements) {
+            if (Leaks(element, depth + 1))
+                return true;
+        }
         if (shape.kind != "struct")
             return false;
         const Type *target = Find(shape.innerPackage, shape.inner);
@@ -395,6 +443,125 @@ class Generator {
                 return true;
         }
         return false;
+    }
+
+    // The generated enum a shape names, for enums and bytes that carry one.
+    const Type *EnumOf(const Shape &shape, std::set<std::string> &includes) {
+        if (shape.kind != "enum" && shape.kind != "byte")
+            return nullptr;
+        const Type *target = Find(shape.innerPackage, shape.inner);
+        if (!target || !target->isEnum)
+            return nullptr;
+        includes.insert(target->ident);
+        return target;
+    }
+
+    // The C++ value a shape reads and writes as through a place (Traits<T>):
+    // container elements, map keys and values, and function parameters. A
+    // function body instantiates Traits where its header only forward-declares
+    // other classes, so there (untyped) object references are plain Objects.
+    std::optional<std::string> PlaceType(const Shape &shape, std::set<std::string> &includes,
+                                         std::set<std::string> &forwards, int depth = 0, bool untyped = false) {
+        if (depth > 4)
+            return std::nullopt;
+        if (untyped && (shape.kind == "object" || shape.kind == "weak object" || shape.kind == "lazy object"))
+            return std::string(kRuntime) + "Object";
+        if (const Type *type = EnumOf(shape, includes))
+            return kTypes + type->ident;
+        if (shape.kind == "bool")
+            return std::string("bool");
+        if (const std::optional<std::string> value = ValueType(shape))
+            return value;
+        if (shape.kind == "name" || shape.kind == "string" || shape.kind == "text" || shape.kind == "utf8 string" ||
+            shape.kind == "ansi string")
+            return std::string("std::string");
+        if (shape.kind == "object" || shape.kind == "weak object" || shape.kind == "lazy object")
+            return ObjectTypeNamed(shape, forwards);
+        if (shape.kind == "class")
+            return std::string(kRuntime) + "Object";
+        if (shape.kind == "soft object")
+            return std::string(kRuntime) + "SoftPath";
+        if (shape.kind == "delegate")
+            return std::string(kRuntime) + "Binding";
+        if (shape.kind == "struct") {
+            if (const Type *value = StructValue(shape, includes))
+                return kTypes + value->ident;
+            // No mirror to copy it into: reached in place only, as an element.
+            if (depth > 0 && !untyped)
+                return std::string(kRuntime) + "Opaque";
+            return std::nullopt;
+        }
+        if ((shape.kind == "array" || shape.kind == "set") && shape.elements.size() == 1) {
+            if (shape.kind == "set" && !Keyable(shape.elements[0]))
+                return std::nullopt;
+            const std::optional<std::string> element = PlaceType(shape.elements[0], includes, forwards, depth + 1, untyped);
+            return element ? std::optional<std::string>("std::vector<" + *element + ">") : std::nullopt;
+        }
+        if (shape.kind == "multicast delegate")
+            return "std::vector<" + std::string(kRuntime) + "Binding>";
+        if (shape.kind == "map" && shape.elements.size() == 2 && Keyable(shape.elements[0])) {
+            const std::optional<std::string> key = PlaceType(shape.elements[0], includes, forwards, depth + 1, untyped);
+            const std::optional<std::string> value = PlaceType(shape.elements[1], includes, forwards, depth + 1, untyped);
+            if (key && value)
+                return "std::vector<std::pair<" + *key + ", " + *value + ">>";
+        }
+        return std::nullopt;
+    }
+
+    // What the loader can hash and compare as a set element or map key.
+    static bool Keyable(const Shape &shape) {
+        static const std::set<std::string> keys = {"bool",   "byte",   "int8",   "int16",  "int32", "int64",
+                                                   "uint16", "uint32", "uint64", "float",  "double", "enum",
+                                                   "name",   "string", "object", "class",  "struct"};
+        return keys.count(shape.kind) != 0;
+    }
+
+    // An object reference's generated class; weak and lazy references name it too.
+    std::string ObjectTypeNamed(const Shape &shape, std::set<std::string> &forwards) {
+        if (const Type *target = Find(shape.innerPackage, shape.inner); target && !target->isStruct && !target->isEnum) {
+            forwards.insert(target->ident);
+            return kTypes + target->ident;
+        }
+        return std::string(kRuntime) + "Object";
+    }
+
+    // A member reached through a place (a class property, or a struct mirror's
+    // member kept as bytes): its wrapper type, or nothing when it has none.
+    std::optional<std::string> PlaceMemberType(const Shape &shape, std::set<std::string> &includes,
+                                               std::set<std::string> &forwards) {
+        if (const Type *type = EnumOf(shape, includes))
+            return std::string(kRuntime) + "EnumMember<" + kTypes + type->ident + ">";
+        if (shape.kind == "name")
+            return std::string(kRuntime) + "NameValue";
+        if (shape.kind == "string" || shape.kind == "utf8 string" || shape.kind == "ansi string")
+            return std::string(kRuntime) + "StringValue";
+        if (shape.kind == "text")
+            return std::string(kRuntime) + "TextValue";
+        if (shape.kind == "soft object")
+            return std::string(kRuntime) + "SoftMember<" + ObjectTypeNamed(shape, forwards) + ">";
+        if (shape.kind == "weak object" || shape.kind == "lazy object")
+            return std::string(kRuntime) + "WeakMember<" + ObjectTypeNamed(shape, forwards) + ">";
+        if (shape.kind == "delegate")
+            return std::string(kRuntime) + "DelegateMember";
+        if (shape.kind == "multicast delegate")
+            return std::string(kRuntime) + "MulticastMember";
+        if (shape.kind == "array" && shape.elements.size() == 1) {
+            const std::optional<std::string> element = PlaceType(shape.elements[0], includes, forwards, 1);
+            return element ? std::optional<std::string>(std::string(kRuntime) + "ArrayMember<" + *element + ">")
+                           : std::nullopt;
+        }
+        if (shape.kind == "set" && shape.elements.size() == 1 && Keyable(shape.elements[0])) {
+            const std::optional<std::string> element = PlaceType(shape.elements[0], includes, forwards);
+            return element ? std::optional<std::string>(std::string(kRuntime) + "SetMember<" + *element + ">")
+                           : std::nullopt;
+        }
+        if (shape.kind == "map" && shape.elements.size() == 2 && Keyable(shape.elements[0])) {
+            const std::optional<std::string> key = PlaceType(shape.elements[0], includes, forwards);
+            const std::optional<std::string> value = PlaceType(shape.elements[1], includes, forwards, 1);
+            if (key && value && key->find("Opaque") == std::string::npos)
+                return std::string(kRuntime) + "MapMember<" + *key + ", " + *value + ">";
+        }
+        return std::nullopt;
     }
 
     void Flatten(const Type &entry, std::vector<const Member *> &out, int depth) {
@@ -500,15 +667,24 @@ class Generator {
                 typed = false;
             }
             pad(member->offset);
-            const std::string ident = typed ? Unique(Identifier(member->name), taken, entry.ident)
-                                            : "urk_opaque_" + Unique(Identifier(member->name), taken, entry.ident);
+            const std::string name = Unique(Identifier(member->name), taken, entry.ident);
+            const std::string ident = typed ? name : "urk_opaque_" + name;
             const int count = typed ? shape.dim : shape.size * shape.dim;
             members << "    " << type << ' ' << ident;
             if (count != 1 || !typed)
                 members << '[' << count << ']';
             members << ";\n";
-            if (!typed)
+            if (!typed) {
                 layout.opaque.push_back(member->name);
+                // Kept as bytes in the copy, reached in place: a string, an
+                // array, a text... of a struct value where it lives in the game.
+                if (const std::optional<std::string> access =
+                        PlaceMemberType(shape, layout.includes, layout.forwards)) {
+                    accessors << "    static " << *access << ' ' << name << "(const " << kRuntime << "Place &self"
+                              << (shape.dim > 1 ? ", std::int32_t index" : "") << ") { return self.member(\""
+                              << Escape(member->name) << "\"" << (shape.dim > 1 ? ", index" : "") << "); }\n";
+                }
+            }
             layout.offsets.push_back(ident + ") == " + std::to_string(member->offset));
             cursor = member->offset + shape.size * shape.dim;
             layout.align = std::max(layout.align, align);
@@ -580,23 +756,42 @@ class Generator {
         return {entry.ident + ".h", out.str()};
     }
 
+    // Names only: E::Name() is looked up in the running game's enum when used,
+    // so an update that renumbers the enum needs no rebuild.
+    Header EmitEnum(const Type &entry) {
+        std::ostringstream out;
+        out << Preamble(entry, ": value names only, each looked up in the running game.");
+        out << "#include \"../unreal_runtime.h\"\n\nnamespace URK::unreal::types {\n\n"
+            << "struct " << entry.ident << " : " << kRuntime << "Enum<" << entry.ident << "> {\n"
+            << "    using Enum::Enum;\n"
+            << "    static constexpr const char *kName = \"" << Escape(entry.name) << "\";\n"
+            << "    static constexpr const char *kPackage = \"" << Escape(entry.package) << "\";\n";
+        std::set<std::string> taken = {"Enum", "from_value", "enum_object", "name_literal", "UrkEnumTag"};
+        for (const std::string &value : entry.values) {
+            const std::string ident = Unique(Identifier(value), taken, entry.ident);
+            out << "    static " << entry.ident << ' ' << ident << "() { return " << entry.ident << "(\""
+                << Escape(value) << "\"); }\n";
+        }
+        out << "};\n} // namespace URK::unreal::types\n";
+        return {entry.ident + ".h", out.str()};
+    }
+
     struct ClassContext {
         std::set<std::string> forwards;
         std::set<std::string> includes;
     };
 
     std::optional<std::string> PropertyType(const Shape &shape, ClassContext &context) {
+        // Enums (and bytes naming one) are typed by their generated enum first.
+        if (EnumOf(shape, context.includes))
+            return PlaceMemberType(shape, context.includes, context.forwards);
         if (const std::optional<std::string> value = ValueType(shape))
             return std::string(kRuntime) + "Value<" + *value + ">";
-        if (shape.kind == "name")
-            return std::string(kRuntime) + "NameValue";
-        if (shape.kind == "string")
-            return std::string(kRuntime) + "StringValue";
         if (shape.kind == "object" || shape.kind == "class")
             return std::string(kRuntime) + "ObjectMember<" + ObjectType(shape, context.forwards) + ">";
         if (const Type *value = StructValue(shape, context.includes))
             return std::string(kRuntime) + "StructMember<" + kTypes + value->ident + ">";
-        return std::nullopt;
+        return PlaceMemberType(shape, context.includes, context.forwards);
     }
 
     Header EmitClass(const Type &entry) {
@@ -668,12 +863,30 @@ class Generator {
                 return false;
             const std::string ident = Unique(Identifier(parameter.name), parameterNames, owner.ident);
             const std::string name = "\"" + Escape(parameter.name) + "\"";
-            const std::optional<std::string> value = ValueType(shape);
+            const bool enumerated = EnumOf(shape, context.includes) != nullptr;
+            const std::optional<std::string> value = enumerated ? std::nullopt : ValueType(shape);
             const Type *structValue = value ? nullptr : StructValue(shape, context.includes);
+            // Kinds that go through a place: strings, texts, enums, containers,
+            // soft references, delegates.
+            const bool object = shape.kind == "object" || shape.kind == "class";
+            const std::optional<std::string> placed =
+                value || structValue || object ? std::nullopt : PlaceType(shape, context.includes, context.forwards, 0, true);
             if ((shape.flags & kOutParm) && !(shape.flags & kConstParm)) {
                 if (Leaks(shape))
                     return false;
-                if (value) {
+                // An object written back is read through a place as a plain Object.
+                const std::optional<std::string> written =
+                    object ? PlaceType(shape, context.includes, context.forwards, 0, true) : placed;
+                if (written) {
+                    signature.push_back(*written + " *" + ident);
+                    outs.push_back("        if (" + ident + ")\n            if (auto urk_out = urk_frame.get_value<" +
+                                   *written + ">(" + name + "))\n                *" + ident +
+                                   " = std::move(*urk_out);\n");
+                } else if (placed) {
+                    signature.push_back(*placed + " *" + ident);
+                    outs.push_back("        if (" + ident + ")\n            if (auto urk_out = urk_frame.get_value<" +
+                                   *placed + ">(" + name + "))\n                *" + ident + " = std::move(*urk_out);\n");
+                } else if (value) {
                     signature.push_back(*value + " *" + ident);
                     outs.push_back("        if (" + ident + ")\n            if (const auto urk_out = urk_frame.get<" +
                                    *value + ">(" + name + "))\n                *" + ident + " = *urk_out;\n");
@@ -685,6 +898,9 @@ class Generator {
                 } else {
                     return false;
                 }
+            } else if (placed) {
+                signature.push_back("const " + *placed + " &" + ident);
+                sets.push_back("urk_frame.set_value<" + *placed + ">(" + name + ", " + ident + ")");
             } else if (value) {
                 signature.push_back(*value + " " + ident);
                 sets.push_back("urk_frame.set<" + *value + ">(" + name + ", " + ident + ")");
@@ -709,7 +925,18 @@ class Generator {
             if (Leaks(returned->shape))
                 return false;
             const std::string name = "\"" + Escape(returned->name) + "\"";
-            if (const std::optional<std::string> value = ValueType(returned->shape)) {
+            const Shape &shape = returned->shape;
+            const bool object = shape.kind == "object" || shape.kind == "class";
+            const bool enumerated = EnumOf(shape, context.includes) != nullptr;
+            const std::optional<std::string> placed =
+                object || (!enumerated && (ValueType(shape) || StructValue(shape, context.includes)))
+                    ? std::nullopt
+                    : PlaceType(shape, context.includes, context.forwards, 0, true);
+            if (placed) {
+                result = "std::optional<" + *placed + ">";
+                failed = "std::nullopt";
+                succeeded = "urk_frame.get_value<" + *placed + ">(" + name + ")";
+            } else if (const std::optional<std::string> value = ValueType(returned->shape)) {
                 result = "std::optional<" + *value + ">";
                 failed = "std::nullopt";
                 succeeded = "urk_frame.get<" + *value + ">(" + name + ")";

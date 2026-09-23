@@ -233,6 +233,10 @@ void ProcessEventHook::Drain() {
     drained_.store(at, std::memory_order_release);
 }
 
+ProcessEventHook::PassThrough::PassThrough() { ++g_depth; }
+
+ProcessEventHook::PassThrough::~PassThrough() { --g_depth; }
+
 void ProcessEventHook::Dispatch(ProcessEventFn original, void *object, void *function, void *parms) {
     calls_.fetch_add(1, std::memory_order_relaxed);
 

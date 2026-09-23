@@ -3,6 +3,7 @@
 // Reflected classes written out for the SDK generator: names, kinds and
 // signatures only. Offsets never leave the process; mods resolve them live.
 
+#include "unreal_enums.h"
 #include "unreal_functions.h"
 #include "unreal_type_queries.h"
 
@@ -14,7 +15,7 @@
 namespace URK::Unreal {
 
 // Format the generator reads. Bump on any change to the line layout.
-inline constexpr int kTypeDumpVersion = 2;
+inline constexpr int kTypeDumpVersion = 3;
 inline constexpr const char *kTypeDumpMagic = "URKIT-UNREAL-TYPES";
 
 // One block per class, keyed "package<TAB>name", so dumps taken on different
@@ -24,8 +25,10 @@ using TypeDumpBlocks = std::map<std::string, std::string>;
 // Classes carry no offsets. Structs do: a struct is copied by value into a mod,
 // so its layout is compiled in and verified against the live struct at runtime.
 // Must run on the game thread: the GC does not move under it there.
+// Enums are dumped when enums is given: their names as the running game has them.
 TypeDumpBlocks DumpClasses(const ObjectFinder &finder, const StructOffsets &structs, const PropertyChain &chain,
-                           const PropertyValues &values, const FunctionOffsets &functions, const TypeQueries &types);
+                           const PropertyValues &values, const FunctionOffsets &functions, const TypeQueries &types,
+                           const EnumNames *enums = nullptr);
 
 // Identifies the game build; a dump of another build is replaced, not merged.
 struct TypeDumpImage {

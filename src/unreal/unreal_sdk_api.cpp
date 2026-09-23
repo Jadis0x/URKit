@@ -1,5 +1,7 @@
 #include "unreal_sdk_api.h"
+#include "unreal_enums.h"
 #include "unreal_owned_values.h"
+#include "unreal_places.h"
 
 #include <windows.h>
 
@@ -33,15 +35,10 @@ bool Live(const UnrealEngine &engine, Address object) {
     return engine.Available() && IsLiveObject(engine.Finder(), object);
 }
 
-// What an object slot may hold: native code and the GC trust it blindly.
-bool Assignable(const UnrealEngine &engine, const PropertyInfo &info, Address value) {
-    if (value == kNullAddress)
-        return true;
-    if (!Live(engine, value))
-        return false;
-    if (info.kind == PropertyKind::Class)
-        return ObjectIs(engine.Finder(), engine.Structs(), value, kCastFlagClass);
-    return info.kind == PropertyKind::Object && info.inner != kNullAddress && engine.Types().IsA(value, info.inner);
+// What an object member write may hold: the member must be an object or class
+// reference, and the value one of its class.
+bool AssignableMember(const UnrealEngine &engine, const PropertyInfo &info, Address value) {
+    return (info.kind == PropertyKind::Object || info.kind == PropertyKind::Class) && Assignable(engine, info, value);
 }
 
 // Members resolved per class. A class is the same one while it keeps its name
@@ -98,89 +95,32 @@ class MemberCache {
 MemberCache g_members;
 
 // Writes only what the caller's struct has room for: size says which version it
-// was compiled against, and version 1 had no bool layout.
+// was compiled against. Version 1 had no bool layout, version 2 no type object.
 void FillInfo(URK_UnrealPropertyInfo *info, const PropertyInfo &from) {
     constexpr std::uint32_t kVersion1 = offsetof(URK_UnrealPropertyInfo, bool_byte_offset);
+    constexpr std::uint32_t kVersion2 = offsetof(URK_UnrealPropertyInfo, type_object);
     const std::uint32_t room = info->size == 0 ? kVersion1 : info->size;
     info->kind = static_cast<std::int32_t>(from.kind);
     info->element_size = from.elementSize;
     info->array_dim = from.arrayDim;
     info->inner = from.inner;
-    if (room >= sizeof(URK_UnrealPropertyInfo)) {
+    std::uint32_t filled = kVersion1;
+    if (room >= kVersion2) {
         info->bool_byte_offset = from.boolLayout.byteOffset;
         info->bool_byte_mask = from.boolLayout.byteMask;
         info->bool_field_mask = from.boolLayout.fieldMask;
         info->reserved = 0;
+        filled = kVersion2;
     }
-    info->size = room < sizeof(URK_UnrealPropertyInfo) ? kVersion1 : sizeof(URK_UnrealPropertyInfo);
+    if (room >= sizeof(URK_UnrealPropertyInfo)) {
+        info->type_object = from.typeObject;
+        filled = sizeof(URK_UnrealPropertyInfo);
+    }
+    info->size = filled;
 }
 
 bool IsStruct(const UnrealEngine &engine, Address object) {
     return Live(engine, object) && ObjectIs(engine.Finder(), engine.Structs(), object, kCastFlagStruct);
-}
-
-// Plain numbers: every bit pattern is a value the engine can hold.
-bool FreeKind(PropertyKind kind) {
-    switch (kind) {
-    case PropertyKind::Bool:
-    case PropertyKind::Byte:
-    case PropertyKind::Int8:
-    case PropertyKind::Int16:
-    case PropertyKind::Int32:
-    case PropertyKind::Int64:
-    case PropertyKind::UInt16:
-    case PropertyKind::UInt32:
-    case PropertyKind::UInt64:
-    case PropertyKind::Float:
-    case PropertyKind::Double:
-    case PropertyKind::Enum:
-        return true;
-    default:
-        return false;
-    }
-}
-
-constexpr int kMaxStructDepth = 16;
-constexpr int kMaxStructFields = 4096;
-
-// Whether proposed may replace current as a value of structObject: numbers
-// change freely, objects must be live and of their class, and anything owning
-// an allocation or not checkable must stay byte-identical.
-bool StructChangeAllowed(const UnrealEngine &engine, Address structObject, const std::uint8_t *current,
-                         const std::uint8_t *proposed, std::size_t size, int depth = 0) {
-    if (depth > kMaxStructDepth || !IsStruct(engine, structObject))
-        return false;
-    const PropertyChain &chain = engine.Chain();
-    int level = 0;
-    for (Address owner = structObject; owner != kNullAddress && level < kMaxStructDepth;
-         owner = engine.Types().SuperOf(owner), ++level) {
-        Address field = chain.First(owner);
-        for (int step = 0; field != kNullAddress && step < kMaxStructFields; ++step, field = chain.Next(field)) {
-            const std::optional<PropertyInfo> info = engine.Values().Describe(field);
-            if (!info || !info->Resolved() || info->offset < 0 || info->elementSize <= 0 || info->arrayDim < 1)
-                return false;
-            const std::size_t width = static_cast<std::size_t>(info->elementSize);
-            for (std::int32_t i = 0; i < info->arrayDim; ++i) {
-                const std::size_t at = static_cast<std::size_t>(info->offset) + static_cast<std::size_t>(i) * width;
-                if (at + width > size)
-                    return false;
-                if (std::memcmp(current + at, proposed + at, width) == 0 || FreeKind(info->kind))
-                    continue;
-                if (info->kind == PropertyKind::Object || info->kind == PropertyKind::Class) {
-                    Address value = kNullAddress;
-                    if (width != sizeof(value))
-                        return false;
-                    std::memcpy(&value, proposed + at, sizeof(value));
-                    if (!Assignable(engine, *info, value))
-                        return false;
-                } else if (info->kind != PropertyKind::Struct ||
-                           !StructChangeAllowed(engine, info->inner, current + at, proposed + at, width, depth + 1)) {
-                    return false;
-                }
-            }
-        }
-    }
-    return true;
 }
 
 // One member resolved from an instance. Every value entry goes through this,
@@ -404,7 +344,7 @@ int Unreal_WriteBool(URK_UnrealObject object, const char *memberName, std::int32
 int Unreal_WriteObject(URK_UnrealObject object, const char *memberName, std::int32_t index, URK_UnrealObject value) {
     UnrealEngine &engine = UnrealEngine::Instance();
     const std::optional<ResolvedMember> resolved = Resolve(engine, object, memberName);
-    if (!resolved || !Assignable(engine, resolved->info, value))
+    if (!resolved || !AssignableMember(engine, resolved->info, value))
         return 0;
     return engine.Values().WriteObject(engine.Writer(), object, resolved->info, value, index) ? 1 : 0;
 }
@@ -470,15 +410,67 @@ int Unreal_WriteStruct(URK_UnrealObject object, const char *memberName, std::int
     return engine.Writer().Write(at, value, size) ? 1 : 0;
 }
 
+// --- services ---------------------------------------------------------------------
+
+// What makes, changes and frees engine memory, built once the ladder resolved.
+// Changes run on the game thread only; reflection-only reads anywhere.
+struct Services {
+    explicit Services(UnrealEngine &engine)
+        : calls(engine.Finder(), engine.Chain(), engine.Values(), engine.Functions(), engine.Types(), engine.Structs(),
+                engine.ProcessEvent(), engine.Bounds()),
+          owned(engine.Finder(), engine.Chain(), engine.Values(), engine.Types(), calls),
+          enums(engine.Finder(), engine.Structs()), places(engine, owned, enums) {}
+    EngineCalls calls;
+    OwnedValues owned;
+    EnumNames enums;
+    Places places;
+};
+
+void Report(Address subject, const std::string &message);
+
+// Only after UnrealEngine::Available(): it holds the ladder's objects.
+Services &Serve() {
+    static Services services = [] {
+        Containers::SetNote([](const std::string &message) { Report(kNullAddress, message); });
+        return Services(UnrealEngine::Instance());
+    }();
+    return services;
+}
+
+std::atomic<LogSink> g_log{nullptr};
+std::mutex g_reportedMutex;
+std::set<std::pair<Address, std::string>> g_reported;
+
+// Once per subject and message: mods call in loops.
+void Report(Address subject, const std::string &message) {
+    const LogSink log = g_log.load(std::memory_order_acquire);
+    if (!log)
+        return;
+    {
+        std::lock_guard lock(g_reportedMutex);
+        if (!g_reported.emplace(subject, message).second)
+            return;
+    }
+    const std::string name =
+        subject != kNullAddress ? UnrealEngine::Instance().Finder().NameOf(subject).value_or("?") + ": " : "";
+    log(("[Unreal] " + name + message + ".").c_str());
+}
+
+bool OnGameThread() {
+    const std::uint32_t id = ProcessEventHook::Instance().GameThreadId();
+    return id != 0 && id == GetCurrentThreadId();
+}
+
 // --- calling ------------------------------------------------------------------
 
-// A frame as mods hold it: the parameter block, plus what the engine will leave
-// in it that the loader must give back.
+// A frame as mods hold it: the parameter block, plus which parameters hold
+// engine memory the loader must give back.
 struct LoaderFrame {
-    explicit LoaderFrame(FunctionInfo info) : frame(std::move(info)) {}
+    explicit LoaderFrame(FunctionInfo info)
+        : frame(std::move(info)), engineOwned(frame.Function().parameters.size(), 0) {}
     CallFrame frame;
-    // Written parameters owning engine memory, by index.
-    std::vector<std::size_t> owned;
+    // Made through a place, or written by a call.
+    std::vector<char> engineOwned;
     // A written parameter whose memory cannot be released; calls are refused.
     std::string unreleasable;
     bool called = false;
@@ -497,57 +489,26 @@ bool Written(const FunctionParameter &parameter) {
            ((flags & kPropertyFlagOutParm) != 0 && (flags & kPropertyFlagConstParm) == 0);
 }
 
-OwnedValues &Owned() {
-    UnrealEngine &engine = UnrealEngine::Instance();
-    static OwnedValues owned(engine.Finder(), engine.Chain(), engine.Values(), engine.Functions(), engine.Types(),
-                             engine.ProcessEvent());
-    return owned;
-}
-
-std::atomic<LogSink> g_log{nullptr};
-std::mutex g_reportedMutex;
-std::set<std::pair<Address, std::string>> g_reported;
-
-// Once per function and message: mods call in loops.
-void Report(Address function, const std::string &message) {
-    const LogSink log = g_log.load(std::memory_order_acquire);
-    if (!log)
-        return;
-    {
-        std::lock_guard lock(g_reportedMutex);
-        if (!g_reported.emplace(function, message).second)
-            return;
-    }
-    const std::string name = UnrealEngine::Instance().Finder().NameOf(function).value_or("?");
-    log(("[Unreal] " + name + ": " + message + ".").c_str());
-}
-
-bool OnGameThread() {
-    const std::uint32_t id = ProcessEventHook::Instance().GameThreadId();
-    return id != 0 && id == GetCurrentThreadId();
-}
-
 // Game thread. Releasing calls into the engine, which can come back here.
 thread_local bool t_releasing = false;
 std::mutex g_pendingMutex;
 std::vector<std::unique_ptr<LoaderFrame>> g_pending;
 
 void ReleaseFrame(LoaderFrame &loaderFrame) {
-    OwnedValues &owned = Owned();
+    OwnedValues &owned = Serve().owned;
     const FunctionInfo &function = loaderFrame.frame.Function();
     auto *data = static_cast<std::uint8_t *>(loaderFrame.frame.Data());
-    if (!owned.Ready()) {
-        Report(function.function, "a returned value could not be released (" + owned.Failure() + ")");
-        return;
-    }
-    for (const std::size_t index : loaderFrame.owned) {
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        if (!loaderFrame.engineOwned[index])
+            continue;
         const PropertyInfo &info = function.parameters[index].info;
         for (std::int32_t i = 0; i < info.arrayDim; ++i) {
-            if (!owned.Release(info, data + info.offset + static_cast<std::size_t>(i) * info.elementSize)) {
-                Report(function.function, "a returned value could not be released (" + owned.Failure() + ")");
+            if (!owned.Destroy(info, data + info.offset + static_cast<std::size_t>(i) * info.elementSize)) {
+                Report(function.function, "a parameter's value could not be released (" + owned.Failure() + ")");
                 return;
             }
         }
+        loaderFrame.engineOwned[index] = 0;
     }
 }
 
@@ -598,14 +559,9 @@ URK_UnrealCallFrame *Unreal_CallFrameCreate(URK_UnrealObject function) {
         return nullptr;
 
     auto loaderFrame = std::make_unique<LoaderFrame>(*info);
-    for (std::size_t i = 0; i < info->parameters.size(); ++i) {
-        const FunctionParameter &parameter = info->parameters[i];
-        if (!Written(parameter))
-            continue;
-        const Ownership ownership = Owned().Classify(parameter.info);
-        if (ownership == Ownership::Releasable)
-            loaderFrame->owned.push_back(i);
-        else if (ownership == Ownership::Unreleasable && loaderFrame->unreleasable.empty())
+    for (const FunctionParameter &parameter : info->parameters) {
+        if (Written(parameter) && Serve().owned.Classify(parameter.info) == Ownership::Unreleasable &&
+            loaderFrame->unreleasable.empty())
             loaderFrame->unreleasable = parameter.name + " (" + PropertyKindName(parameter.info.kind) + ")";
     }
     return reinterpret_cast<URK_UnrealCallFrame *>(loaderFrame.release());
@@ -613,7 +569,8 @@ URK_UnrealCallFrame *Unreal_CallFrameCreate(URK_UnrealObject function) {
 
 void Unreal_CallFrameDestroy(URK_UnrealCallFrame *frame) {
     std::unique_ptr<LoaderFrame> loaderFrame(FrameOf(frame));
-    if (!loaderFrame || !loaderFrame->called || loaderFrame->owned.empty())
+    if (!loaderFrame ||
+        std::find(loaderFrame->engineOwned.begin(), loaderFrame->engineOwned.end(), 1) == loaderFrame->engineOwned.end())
         return;
     if (OnGameThread() && !t_releasing) {
         t_releasing = true;
@@ -629,14 +586,21 @@ void Unreal_CallFrameDestroy(URK_UnrealCallFrame *frame) {
 int Unreal_CallFrameSet(URK_UnrealCallFrame *frame, const char *parameterName, const void *value, std::size_t size) {
     if (!frame || !parameterName || !value)
         return 0;
-    CallFrame *callFrame = &FrameOf(frame)->frame;
+    LoaderFrame *loaderFrame = FrameOf(frame);
+    CallFrame *callFrame = &loaderFrame->frame;
     const FunctionParameter *parameter = callFrame->Function().Parameter(parameterName);
     if (!parameter)
         return 0;
+    const std::size_t index = static_cast<std::size_t>(parameter - callFrame->Function().parameters.data());
     const PropertyKind kind = parameter->info.kind;
+    const Ownership ownership = Serve().owned.Classify(parameter->info);
+    // Engine memory already in the slot would be lost under the mod's bytes;
+    // place_clear gives it back first.
+    if (ownership != Ownership::None && loaderFrame->engineOwned[index])
+        return 0;
     // The engine assigns over what it writes, freeing the old value: that value
     // must be its own (or empty), never a buffer the mod made.
-    if (Written(*parameter) && kind != PropertyKind::Struct && Owned().Classify(parameter->info) != Ownership::None) {
+    if (Written(*parameter) && kind != PropertyKind::Struct && ownership != Ownership::None) {
         const std::size_t at = static_cast<std::size_t>(parameter->info.offset);
         if (parameter->info.offset < 0 || size != static_cast<std::size_t>(parameter->info.elementSize) ||
             at + size > callFrame->Size() ||
@@ -686,20 +650,309 @@ int Unreal_Call(URK_UnrealObject object, URK_UnrealCallFrame *frame) {
     const FunctionInfo &function = loaderFrame->frame.Function();
     if (!loaderFrame->unreleasable.empty()) {
         Report(function.function, "call refused: it returns or writes " + loaderFrame->unreleasable +
-                                      ", memory the engine allocates and the loader cannot release, so every "
-                                      "call would leak");
+                                      ", memory of a kind the loader cannot release");
         return 0;
     }
-    if (!loaderFrame->owned.empty() && !Owned().Ready()) {
-        Report(function.function, "call refused: it returns strings or arrays and the loader cannot release them (" +
-                                      Owned().Failure() + ")");
-        return 0;
+    OwnedValues &owned = Serve().owned;
+    auto *data = static_cast<std::uint8_t *>(loaderFrame->frame.Data());
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        const FunctionParameter &parameter = function.parameters[index];
+        // Texts the call leaves here are dropped by their own Release later.
+        if (Written(parameter) && owned.HoldsText(parameter.info) && !owned.Engine().TextReleaseAvailable()) {
+            Report(function.function, "call refused: it writes text, and releasing text is unavailable (" +
+                                          owned.Engine().Failure() + ")");
+            return 0;
+        }
     }
     ReleasePending();
-    if (!InvokeProcessEvent(engine.ProcessEvent(), object, function.function, loaderFrame->frame.Data()))
+    // A text parameter must hold a text: the engine dereferences a zeroed one.
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        const PropertyInfo &info = function.parameters[index].info;
+        if (!owned.NeedsInitialize(info))
+            continue;
+        for (std::int32_t i = 0; i < info.arrayDim; ++i) {
+            bool made = false;
+            if (!owned.FillNullTexts(info, data + info.offset + static_cast<std::size_t>(i) * info.elementSize,
+                                     &made)) {
+                Report(function.function, "call refused: a text parameter could not be made (" + owned.Failure() + ")");
+                return 0;
+            }
+            if (made)
+                loaderFrame->engineOwned[index] = 1;
+        }
+    }
+    if (!InvokeProcessEvent(engine.ProcessEvent(), object, function.function, data))
         return 0;
     loaderFrame->called = true;
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        if (Written(function.parameters[index]) && owned.Classify(function.parameters[index].info) == Ownership::Owned)
+            loaderFrame->engineOwned[index] = 1;
+    }
     return 1;
+}
+
+// --- places -----------------------------------------------------------------------
+
+struct PlaceContext {
+    PlaceTarget target;
+    LoaderFrame *frame = nullptr;
+    std::size_t parameter = 0;
+};
+
+std::optional<PlaceContext> ResolvePlace(const URK_UnrealPlace *place, bool describe) {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    if (!place || !place->member || !engine.Available() || place->step_count > URK_UNREAL_PLACE_MAX_STEPS)
+        return std::nullopt;
+    PlaceContext context;
+    std::uint8_t *root = nullptr;
+    PropertyInfo info;
+    if (place->frame) {
+        if (place->object != URK_UNREAL_NULL_OBJECT)
+            return std::nullopt;
+        LoaderFrame *frame = FrameOf(place->frame);
+        const FunctionInfo &function = frame->frame.Function();
+        const FunctionParameter *parameter = function.Parameter(place->member);
+        if (!parameter || parameter->info.offset < 0 || place->member_index < 0 ||
+            place->member_index >= parameter->info.arrayDim ||
+            static_cast<std::size_t>(parameter->info.offset + parameter->info.elementSize * parameter->info.arrayDim) >
+                frame->frame.Size())
+            return std::nullopt;
+        info = parameter->info;
+        root = static_cast<std::uint8_t *>(frame->frame.Data()) + info.offset +
+               static_cast<std::size_t>(place->member_index) * info.elementSize;
+        context.frame = frame;
+        context.parameter = static_cast<std::size_t>(parameter - function.parameters.data());
+    } else {
+        const std::optional<ResolvedMember> resolved = Resolve(engine, place->object, place->member);
+        if (!resolved || place->member_index < 0 || place->member_index >= resolved->info.arrayDim)
+            return std::nullopt;
+        info = resolved->info;
+        root = reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(place->object)) + info.offset +
+               static_cast<std::size_t>(place->member_index) * info.elementSize;
+    }
+    Places &places = Serve().places;
+    std::optional<PlaceTarget> target = places.Walk(root, info, place->steps, place->step_count, describe);
+    if (!target) {
+        Report(kNullAddress, std::string("place ") + place->member + ": " + places.Failure());
+        return std::nullopt;
+    }
+    context.target = *target;
+    return context;
+}
+
+// A change through a place: on success a frame parameter now holds what the
+// loader must give back.
+template <typename Change> int Changed(const URK_UnrealPlace *place, Change change) {
+    std::optional<PlaceContext> context = ResolvePlace(place, false);
+    if (!context)
+        return 0;
+    if (context->target.key) {
+        Report(kNullAddress, std::string("place ") + place->member +
+                                 ": a set element or map key is replaced by removing it and adding the new one");
+        return 0;
+    }
+    Places &places = Serve().places;
+    if (!change(places, context->target)) {
+        Report(kNullAddress, std::string("place ") + place->member + ": " + places.Failure());
+        return 0;
+    }
+    if (context->frame)
+        context->frame->engineOwned[context->parameter] = 1;
+    return 1;
+}
+
+int Unreal_PlaceDescribe(const URK_UnrealPlace *place, URK_UnrealPropertyInfo *info) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, true);
+    if (!context || !info)
+        return 0;
+    FillInfo(info, context->target.info);
+    return 1;
+}
+
+int Unreal_PlaceReadInteger(const URK_UnrealPlace *place, std::int64_t *output) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, false);
+    return context && output && Serve().places.ReadInteger(context->target, output) ? 1 : 0;
+}
+
+int Unreal_PlaceWriteInteger(const URK_UnrealPlace *place, std::int64_t value) {
+    return Changed(place, [&](Places &places, const PlaceTarget &target) { return places.WriteInteger(target, value); });
+}
+
+int Unreal_PlaceReadFloating(const URK_UnrealPlace *place, double *output) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, false);
+    return context && output && Serve().places.ReadFloating(context->target, output) ? 1 : 0;
+}
+
+int Unreal_PlaceWriteFloating(const URK_UnrealPlace *place, double value) {
+    return Changed(place,
+                   [&](Places &places, const PlaceTarget &target) { return places.WriteFloating(target, value); });
+}
+
+int Unreal_PlaceReadBool(const URK_UnrealPlace *place, int *output) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, false);
+    bool value = false;
+    if (!context || !output || !Serve().places.ReadBool(context->target, &value))
+        return 0;
+    *output = value ? 1 : 0;
+    return 1;
+}
+
+int Unreal_PlaceWriteBool(const URK_UnrealPlace *place, int value) {
+    return Changed(place, [&](Places &places, const PlaceTarget &target) { return places.WriteBool(target, value != 0); });
+}
+
+URK_UnrealObject Unreal_PlaceReadObject(const URK_UnrealPlace *place) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, false);
+    return context ? Serve().places.ReadObject(context->target, OnGameThread()) : URK_UNREAL_NULL_OBJECT;
+}
+
+int Unreal_PlaceWriteObject(const URK_UnrealPlace *place, URK_UnrealObject value) {
+    const bool gameThread = OnGameThread();
+    return Changed(place, [&](Places &places, const PlaceTarget &target) {
+        return places.WriteObject(target, value, gameThread);
+    });
+}
+
+int Unreal_PlaceReadText(const URK_UnrealPlace *place, char *output, std::size_t outputSize, std::size_t *length) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, false);
+    if (!context)
+        return 0;
+    const std::optional<std::string> text = Serve().places.ReadText(context->target, OnGameThread());
+    if (!text)
+        return 0;
+    if (length)
+        *length = text->size();
+    if (!output || outputSize <= text->size())
+        return 0;
+    std::memcpy(output, text->data(), text->size());
+    output[text->size()] = '\0';
+    return 1;
+}
+
+int Unreal_PlaceWriteText(const URK_UnrealPlace *place, const char *utf8) {
+    const bool gameThread = OnGameThread();
+    return Changed(place, [&](Places &places, const PlaceTarget &target) {
+        return places.WriteText(target, utf8, gameThread);
+    });
+}
+
+int Unreal_PlaceReadBytes(const URK_UnrealPlace *place, void *output, std::size_t size) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, false);
+    return context && output && Serve().places.ReadBytes(context->target, output, size) ? 1 : 0;
+}
+
+int Unreal_PlaceWriteBytes(const URK_UnrealPlace *place, const void *value, std::size_t size) {
+    if (!value)
+        return 0;
+    const bool gameThread = OnGameThread();
+    return Changed(place, [&](Places &places, const PlaceTarget &target) {
+        return places.WriteBytes(target, value, size, gameThread);
+    });
+}
+
+std::int32_t Unreal_PlaceCount(const URK_UnrealPlace *place) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, false);
+    return context ? Serve().places.Count(context->target) : -1;
+}
+
+std::int32_t Unreal_PlaceSlots(const URK_UnrealPlace *place, std::int32_t *output, std::int32_t capacity) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, false);
+    return context ? Serve().places.Slots(context->target, output, capacity) : -1;
+}
+
+int Unreal_PlaceInsert(const URK_UnrealPlace *place, std::int32_t index, std::int32_t count) {
+    const bool gameThread = OnGameThread();
+    return Changed(place, [&](Places &places, const PlaceTarget &target) {
+        return places.Insert(target, index, count, gameThread);
+    });
+}
+
+int Unreal_PlaceRemove(const URK_UnrealPlace *place, std::int32_t index, std::int32_t count) {
+    const bool gameThread = OnGameThread();
+    return Changed(place, [&](Places &places, const PlaceTarget &target) {
+        return places.Remove(target, index, count, gameThread);
+    });
+}
+
+int Unreal_PlaceClear(const URK_UnrealPlace *place) {
+    const bool gameThread = OnGameThread();
+    return Changed(place, [&](Places &places, const PlaceTarget &target) { return places.Clear(target, gameThread); });
+}
+
+std::int32_t Unreal_PlaceFind(const URK_UnrealPlace *place, const URK_UnrealKey *key) {
+    const std::optional<PlaceContext> context = ResolvePlace(place, false);
+    if (!context || !key)
+        return -1;
+    Places &places = Serve().places;
+    const std::int32_t slot = places.Find(context->target, *key, OnGameThread());
+    if (slot < 0 && !places.Failure().empty())
+        Report(kNullAddress, std::string("place ") + place->member + ": " + places.Failure());
+    return slot;
+}
+
+std::int32_t Unreal_PlaceAdd(const URK_UnrealPlace *place, const URK_UnrealKey *key) {
+    if (!key)
+        return -1;
+    const bool gameThread = OnGameThread();
+    std::int32_t slot = -1;
+    Changed(place, [&](Places &places, const PlaceTarget &target) {
+        slot = places.Add(target, *key, gameThread);
+        return slot >= 0;
+    });
+    return slot;
+}
+
+int Unreal_PlaceBind(const URK_UnrealPlace *place, URK_UnrealObject object, const char *function) {
+    const bool gameThread = OnGameThread();
+    return Changed(place, [&](Places &places, const PlaceTarget &target) {
+        return places.Bind(target, object, function, gameThread);
+    });
+}
+
+// --- enums ---------------------------------------------------------------------------
+
+// Names are measured on the game thread; after that any thread reads them.
+const EnumNames *Enums() {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    if (!engine.Available())
+        return nullptr;
+    Services &services = Serve();
+    if (!services.enums.Measured() && !(OnGameThread() && services.enums.Measure(services.calls)))
+        return nullptr;
+    return &services.enums;
+}
+
+std::int32_t Unreal_EnumCount(URK_UnrealObject enumObject) {
+    const EnumNames *enums = Enums();
+    const auto entries = enums ? enums->Entries(enumObject) : std::nullopt;
+    return entries ? static_cast<std::int32_t>(entries->size()) : 0;
+}
+
+int Unreal_EnumEntry(URK_UnrealObject enumObject, std::int32_t index, char *name, std::size_t nameSize,
+                     std::int64_t *value) {
+    const EnumNames *enums = Enums();
+    const auto entries = enums ? enums->Entries(enumObject) : std::nullopt;
+    if (!entries || index < 0 || static_cast<std::size_t>(index) >= entries->size())
+        return 0;
+    const EnumNames::Entry &entry = (*entries)[static_cast<std::size_t>(index)];
+    if (value)
+        *value = entry.value;
+    return !name || CopyOut(std::string(EnumNames::ShortName(entry.name)), name, nameSize) ? 1 : 0;
+}
+
+int Unreal_EnumValue(URK_UnrealObject enumObject, const char *name, std::int64_t *value) {
+    const EnumNames *enums = Enums();
+    const std::optional<std::int64_t> found = enums && name ? enums->ValueOf(enumObject, name) : std::nullopt;
+    if (!found || !value)
+        return 0;
+    *value = *found;
+    return 1;
+}
+
+int Unreal_EnumName(URK_UnrealObject enumObject, std::int64_t value, char *output, std::size_t outputSize) {
+    const EnumNames *enums = Enums();
+    const std::optional<std::string> name = enums ? enums->NameOf(enumObject, value) : std::nullopt;
+    return name && CopyOut(*name, output, outputSize) ? 1 : 0;
 }
 
 // --- hooking / dispatch ---------------------------------------------------
@@ -820,6 +1073,32 @@ URK_UnrealApi BuildTable() {
     api.describe_struct_member = &Unreal_DescribeStructMember;
     api.read_struct = &Unreal_ReadStruct;
     api.write_struct = &Unreal_WriteStruct;
+
+    api.place_describe = &Unreal_PlaceDescribe;
+    api.place_read_integer = &Unreal_PlaceReadInteger;
+    api.place_write_integer = &Unreal_PlaceWriteInteger;
+    api.place_read_floating = &Unreal_PlaceReadFloating;
+    api.place_write_floating = &Unreal_PlaceWriteFloating;
+    api.place_read_bool = &Unreal_PlaceReadBool;
+    api.place_write_bool = &Unreal_PlaceWriteBool;
+    api.place_read_object = &Unreal_PlaceReadObject;
+    api.place_write_object = &Unreal_PlaceWriteObject;
+    api.place_read_text = &Unreal_PlaceReadText;
+    api.place_write_text = &Unreal_PlaceWriteText;
+    api.place_read_bytes = &Unreal_PlaceReadBytes;
+    api.place_write_bytes = &Unreal_PlaceWriteBytes;
+    api.place_count = &Unreal_PlaceCount;
+    api.place_slots = &Unreal_PlaceSlots;
+    api.place_insert = &Unreal_PlaceInsert;
+    api.place_remove = &Unreal_PlaceRemove;
+    api.place_clear = &Unreal_PlaceClear;
+    api.place_find = &Unreal_PlaceFind;
+    api.place_add = &Unreal_PlaceAdd;
+    api.place_bind = &Unreal_PlaceBind;
+    api.enum_count = &Unreal_EnumCount;
+    api.enum_entry = &Unreal_EnumEntry;
+    api.enum_value = &Unreal_EnumValue;
+    api.enum_name = &Unreal_EnumName;
 
     return api;
 }
@@ -986,9 +1265,28 @@ const URK_UnrealApi *UnrealSdkApi(const HookInstaller &installer) {
 void UnrealSdk_SetLog(LogSink log) { g_log.store(log, std::memory_order_release); }
 
 void UnrealSdk_ReleasePending() {
-    if (UnrealEngine::Instance().Available() && OnGameThread())
-        ReleasePending();
+    if (!UnrealEngine::Instance().Available() || !OnGameThread())
+        return;
+    // Once, on the first frame: every measurement engine memory depends on, so
+    // a build where one fails says so at load rather than at a mod's first use.
+    static bool measured = false;
+    if (!measured) {
+        measured = true;
+        Services &services = Serve();
+        const auto check = [](bool ok, const char *what, const std::string &why) {
+            if (!ok)
+                Report(kNullAddress, std::string(what) + " unavailable: " + why);
+        };
+        const std::optional<EngineCalls::Block> probe = services.calls.Allocate(64, 16);
+        check(probe && services.calls.Free(probe->data), "engine allocation", services.calls.Failure());
+        check(services.calls.TextReleaseAvailable(), "releasing text", services.calls.Failure());
+        check(services.calls.MeasureWeakNow(), "weak references", services.calls.Failure());
+        check(services.enums.Measure(services.calls), "enum names", services.enums.Failure());
+    }
+    ReleasePending();
 }
+
+const EnumNames *UnrealSdk_Enums() { return Enums(); }
 
 bool UnrealSdk_HoldProcessEventHook() {
     std::lock_guard lock(g_hookMutex);

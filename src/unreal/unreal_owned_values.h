@@ -1,62 +1,77 @@
 #pragma once
 
-// Engine memory a reflected call leaves in its parameter block: the FStrings and
-// TArrays it returned or wrote to out parameters. The caller owns them, as a C++
-// caller of ProcessEvent would. They are emptied through the engine's own move
-// assignment (a native function returning an empty FString into the slot), so
-// the engine's allocator frees what it allocated. Kinds that cannot be emptied
-// that way are reported, and calls producing them are refused instead of leaking.
+// What a value owns, and giving it back. Strings, arrays and container storage
+// are FMemory buffers freed through a native call's move assignment; texts drop
+// their reference through the text data's own measured Release; soft references
+// free their path string. Nothing is freed by an address the loader found.
+// Values a reflected call leaves in its frame are the caller's, as for a C++
+// caller of ProcessEvent, and are released here.
 
-#include "unreal_functions.h"
-#include "unreal_process_event.h"
+#include "unreal_containers.h"
+#include "unreal_engine_calls.h"
 
+#include <atomic>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 namespace URK::Unreal {
 
 enum class Ownership {
-    None,         // numbers, names, object references
-    Releasable,   // FString, TArray, structs of those
-    Unreleasable, // FText, TSet, TMap, soft references, delegates, unknown kinds
+    None,         // numbers, names, object/weak references, delegates
+    Owned,        // anything holding engine memory the loader can release
+    Unreleasable, // a kind the loader does not know
 };
 
 class OwnedValues {
   public:
     OwnedValues(const ObjectFinder &finder, const PropertyChain &chain, const PropertyValues &values,
-                const FunctionOffsets &functions, const TypeQueries &types, const ProcessEventLocation &processEvent)
-        : finder_(&finder), chain_(&chain), values_(&values), functions_(&functions), types_(&types),
-          processEvent_(processEvent) {}
+                const TypeQueries &types, EngineCalls &engine)
+        : finder_(&finder), chain_(&chain), values_(&values), types_(&types), engine_(&engine),
+          containers_(finder, values, engine, *this) {}
 
-    // Safe off the game thread: reads reflection only.
+    // Reflection only; safe off the game thread.
     Ownership Classify(const PropertyInfo &info, int depth = 0) const;
+    // Whether zeroed bytes are not yet a valid value (a text must hold the
+    // engine's empty text).
+    bool NeedsInitialize(const PropertyInfo &info, int depth = 0) const;
 
-    // Game thread only. Finds the emptying call once and measures that it
-    // allocates nothing; false for good when it does not.
-    bool Ready();
+    // Game thread. One element (elementSize bytes): releases what it owns and
+    // leaves it zeroed.
+    bool Destroy(const PropertyInfo &info, std::uint8_t *value, int depth = 0);
+    // Game thread. Makes zeroed bytes a valid default value.
+    bool Initialize(const PropertyInfo &info, std::uint8_t *value, int depth = 0);
+    // Game thread. Gives every text slot still zeroed the engine's empty text,
+    // leaving texts already made alone; *made tells whether any was.
+    bool FillNullTexts(const PropertyInfo &info, std::uint8_t *value, bool *made, int depth = 0);
+    // Whether the value, or anything it contains, is an FText.
+    bool HoldsText(const PropertyInfo &info, int depth = 0) const;
+    // Key equality as the engine's DefaultKeyFuncs has it: numbers by value,
+    // names by comparison index and number, strings case-insensitively, objects
+    // by address, structs member by member.
+    bool Equal(const PropertyInfo &info, const std::uint8_t *a, const std::uint8_t *b, int depth = 0) const;
+
     const std::string &Failure() const { return failure_; }
+    EngineCalls &Engine() { return *engine_; }
+    Containers &Stores() { return containers_; }
 
-    // Game thread only, after Ready(). Leaves the value empty (all zero bytes).
-    bool Release(const PropertyInfo &info, std::uint8_t *value, int depth = 0);
+    // FScriptDelegate as a multicast delegate's element: measured from a reflected
+    // single-cast delegate, 0 when none was found.
+    std::int32_t DelegateSize();
+    // The element a multicast delegate's invocation list holds.
+    PropertyInfo DelegateElement();
 
   private:
-    bool Empty(std::uint8_t *array);
-    bool Invoke();
+    template <typename Visit> bool ForEachMember(Address structObject, Visit visit, int depth) const;
+    bool Fail(std::string why);
 
     const ObjectFinder *finder_;
     const PropertyChain *chain_;
     const PropertyValues *values_;
-    const FunctionOffsets *functions_;
     const TypeQueries *types_;
-    ProcessEventLocation processEvent_;
-
-    int state_ = 0; // 0 not measured, 1 ready, 2 unavailable
+    EngineCalls *engine_;
+    Containers containers_;
     std::string failure_;
-    Address library_ = kNullAddress;
-    Address function_ = kNullAddress;
-    std::int32_t returnOffset_ = 0;
-    std::vector<std::uint8_t> parms_;
+    std::atomic<std::int32_t> delegateSize_{-1};
 };
 
 } // namespace URK::Unreal

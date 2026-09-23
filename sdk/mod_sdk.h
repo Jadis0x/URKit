@@ -6,13 +6,13 @@
 extern "C" {
 #endif
 
-#define URK_SDK_VERSION 33
+#define URK_SDK_VERSION 34
 #define URK_MONO_API_VERSION 8
 #define URK_RUNTIME_API_VERSION 10
 #define URK_IL2CPP_API_VERSION 7
 #define URK_NETWORK_API_VERSION 1
 #define URK_HOOK_API_VERSION 1
-#define URK_UNREAL_API_VERSION 2
+#define URK_UNREAL_API_VERSION 3
 
 #define URK_SCENE_NAME_MAX 128
 #define URK_OBJECT_NAME_MAX 128
@@ -774,7 +774,17 @@ typedef enum URK_UnrealPropertyKind {
     URK_UNREAL_PROPERTY_ARRAY = 22,
     URK_UNREAL_PROPERTY_SET = 23,
     URK_UNREAL_PROPERTY_MAP = 24,
-    URK_UNREAL_PROPERTY_DELEGATE = 25
+    /* A single-cast delegate: a weak object and a function name. */
+    URK_UNREAL_PROPERTY_DELEGATE = 25,
+    /* Version 3. An inline multicast delegate: a list of delegate bindings. */
+    URK_UNREAL_PROPERTY_MULTICAST_DELEGATE = 26,
+    /* A sparse multicast delegate: its bindings live in engine-global storage
+     * no reflected path reaches, so only its kind is reported. */
+    URK_UNREAL_PROPERTY_SPARSE_DELEGATE = 27,
+    URK_UNREAL_PROPERTY_LAZY_OBJECT = 28,
+    /* FUtf8String / FAnsiString: read and written as text like FString. */
+    URK_UNREAL_PROPERTY_UTF8_STRING = 29,
+    URK_UNREAL_PROPERTY_ANSI_STRING = 30
 } URK_UnrealPropertyKind;
 
 /*
@@ -798,6 +808,11 @@ typedef struct URK_UnrealPropertyInfo {
     uint8_t bool_byte_mask;
     uint8_t bool_field_mask;
     uint8_t reserved;
+    /* Appended (API version 3), filled only when size covers it. The object
+     * the type is named by: Enum/Byte the UEnum (null for a plain byte),
+     * Struct the UScriptStruct, Object/Class/Weak/Soft/Lazy the UClass, the
+     * delegate kinds their signature UFunction. Null otherwise. */
+    URK_UnrealObject type_object;
 } URK_UnrealPropertyInfo;
 
 /*
@@ -824,6 +839,54 @@ typedef int (*URK_UnrealProcessEventObserverFn)(void *user_data, URK_UnrealObjec
  * from a timer, a network callback, or any other thread it does not control.
  */
 typedef void (*URK_UnrealPostedWorkFn)(void *user_data);
+
+/*
+ * Version 3. Where a value lives: a live object's member, or a call frame's
+ * parameter, then steps into it. A place is resolved again on every use -
+ * containers reallocate, so an address kept from an earlier call would be
+ * stale - and every step is bounds-checked against the live value.
+ */
+#define URK_UNREAL_PLACE_MAX_STEPS 8
+
+typedef enum URK_UnrealStepKind {
+    /* An array index, a set's slot, or a multicast delegate's binding index. */
+    URK_UNREAL_STEP_ELEMENT = 1,
+    /* A struct member by name; index selects into a fixed C array member. */
+    URK_UNREAL_STEP_MEMBER = 2,
+    /* A map slot's key or value. index is the slot, as place_slots lists them. */
+    URK_UNREAL_STEP_KEY = 3,
+    URK_UNREAL_STEP_VALUE = 4
+} URK_UnrealStepKind;
+
+typedef struct URK_UnrealStep {
+    int32_t kind;
+    int32_t index;
+    const char *name;
+} URK_UnrealStep;
+
+typedef struct URK_UnrealPlace {
+    /* The root: a live object's member, or (object null) a frame parameter. */
+    URK_UnrealObject object;
+    URK_UnrealCallFrame *frame;
+    const char *member;
+    /* Selects into a fixed C array member; zero otherwise. */
+    int32_t member_index;
+    uint32_t step_count;
+    URK_UnrealStep steps[URK_UNREAL_PLACE_MAX_STEPS];
+} URK_UnrealPlace;
+
+/* A set element or map key to look up or add. The field matching the key's
+ * kind is read: integer for integers, bools and enums (or text for an enum
+ * by name), floating for float/double, object for objects and classes, text
+ * (UTF-8) for names and strings, bytes/size for a struct's whole value. */
+typedef struct URK_UnrealKey {
+    int64_t integer;
+    double floating;
+    URK_UnrealObject object;
+    const char *text;
+    const void *bytes;
+    size_t size;
+} URK_UnrealKey;
 
 typedef struct URK_UnrealApi {
     uint32_t version;
@@ -899,8 +962,8 @@ typedef struct URK_UnrealApi {
     /*
      * Writes are for values that fit where they already are. FString, TArray,
      * TMap and FText own allocations the engine's allocator made and are not
-     * writable through this entry; describe_property reports their kind so a
-     * caller can tell before trying.
+     * writable through these entries; the place_* entries (version 3) write
+     * them through the engine.
      */
     int (*write_integer)(URK_UnrealObject object, const char *member_name, int32_t index, int64_t value);
     int (*write_floating)(URK_UnrealObject object, const char *member_name, int32_t index, double value);
@@ -1013,6 +1076,80 @@ typedef struct URK_UnrealApi {
                        size_t size);
     int (*write_struct)(URK_UnrealObject object, const char *member_name, int32_t index, const void *value,
                         size_t size);
+
+    /*
+     * Version 3: every kind readable and writable through a place, containers
+     * included. Engine memory is only ever made, changed and freed by the
+     * engine itself: a string or text is assigned through a native call's own
+     * assignment, and container storage comes from and returns to FMemory the
+     * same way. Anything that changes engine memory must run on the game
+     * thread and returns zero anywhere else; plain reads of numbers, names,
+     * strings and container sizes work from any thread.
+     *
+     * Each entry returns zero, changing nothing, when the place does not
+     * resolve, is the wrong kind for the call, or an index is out of range.
+     */
+
+    /* The value's shape. An element/key/value step may name index -1 here:
+     * the element type is described even when the container is empty. */
+    int (*place_describe)(const URK_UnrealPlace *place, URK_UnrealPropertyInfo *info);
+
+    /* Integers, bytes and enums (by number). */
+    int (*place_read_integer)(const URK_UnrealPlace *place, int64_t *output);
+    int (*place_write_integer)(const URK_UnrealPlace *place, int64_t value);
+    int (*place_read_floating)(const URK_UnrealPlace *place, double *output);
+    int (*place_write_floating)(const URK_UnrealPlace *place, double value);
+    int (*place_read_bool)(const URK_UnrealPlace *place, int *output);
+    int (*place_write_bool)(const URK_UnrealPlace *place, int value);
+    /* Object and class references, and the target of weak, lazy and soft
+     * references (a soft one reads null until its asset is loaded) and of a
+     * delegate. A write must be live and of the declared class. */
+    URK_UnrealObject (*place_read_object)(const URK_UnrealPlace *place);
+    int (*place_write_object)(const URK_UnrealPlace *place, URK_UnrealObject value);
+    /*
+     * Text, UTF-8: names, strings, FText (its display string), an enum's
+     * value name, a soft reference's path, a delegate's function name.
+     * *length receives the full length even when output was too small, which
+     * returns zero. A write of an enum takes a value name; of a soft
+     * reference, a path; of a delegate, use place_bind instead.
+     */
+    int (*place_read_text)(const URK_UnrealPlace *place, char *output, size_t output_size, size_t *length);
+    int (*place_write_text)(const URK_UnrealPlace *place, const char *utf8);
+    /* A struct's whole value, under write_struct's rules. */
+    int (*place_read_bytes)(const URK_UnrealPlace *place, void *output, size_t size);
+    int (*place_write_bytes)(const URK_UnrealPlace *place, const void *value, size_t size);
+
+    /* Elements in an array, set, map or multicast delegate; -1 otherwise. */
+    int32_t (*place_count)(const URK_UnrealPlace *place);
+    /* The indices elements can be reached at, in iteration order: 0..n-1 for
+     * an array, the occupied slots of a set or map. Returns how many there
+     * are, which may exceed capacity. */
+    int32_t (*place_slots)(const URK_UnrealPlace *place, int32_t *output, int32_t capacity);
+    /* Array or multicast delegate: count default elements before index
+     * (index == count appends). */
+    int (*place_insert)(const URK_UnrealPlace *place, int32_t index, int32_t count);
+    /* Array: count elements from index. Set or map: the slot at index (count
+     * must be 1). What the elements own is released through the engine. */
+    int (*place_remove)(const URK_UnrealPlace *place, int32_t index, int32_t count);
+    /* Empties a container, string or text and releases what it owned. */
+    int (*place_clear)(const URK_UnrealPlace *place);
+    /* Set or map: the slot holding key, or -1. */
+    int32_t (*place_find)(const URK_UnrealPlace *place, const URK_UnrealKey *key);
+    /* Set or map: the slot holding key, added (a map value default) when
+     * missing. -1 when the key could not be added. */
+    int32_t (*place_add)(const URK_UnrealPlace *place, const URK_UnrealKey *key);
+    /* A delegate (or a multicast binding): object and function together,
+     * refused unless the function exists on object with the delegate's
+     * signature - the engine would otherwise fail when it fires. A null
+     * object clears it. */
+    int (*place_bind)(const URK_UnrealPlace *place, URK_UnrealObject object, const char *function);
+
+    /* An enum's entries as the running game defines them. */
+    int32_t (*enum_count)(URK_UnrealObject enum_object);
+    int (*enum_entry)(URK_UnrealObject enum_object, int32_t index, char *name, size_t name_size, int64_t *value);
+    /* By name, with or without the "Enum::" prefix. */
+    int (*enum_value)(URK_UnrealObject enum_object, const char *name, int64_t *value);
+    int (*enum_name)(URK_UnrealObject enum_object, int64_t value, char *output, size_t output_size);
 } URK_UnrealApi;
 
 #ifdef __cplusplus
@@ -1024,6 +1161,10 @@ static_assert(offsetof(URK_UnrealApi, post_to_game_thread) > offsetof(URK_Unreal
               "URK_UnrealApi new fields must be appended.");
 static_assert(offsetof(URK_UnrealApi, struct_size) > offsetof(URK_UnrealApi, post_to_game_thread),
               "URK_UnrealApi new fields must be appended.");
+static_assert(offsetof(URK_UnrealApi, place_describe) > offsetof(URK_UnrealApi, write_struct),
+              "URK_UnrealApi new fields must be appended.");
+static_assert(offsetof(URK_UnrealPropertyInfo, type_object) > offsetof(URK_UnrealPropertyInfo, reserved),
+              "URK_UnrealPropertyInfo new fields must be appended.");
 #endif
 
 typedef enum URK_HookBackend {
@@ -1180,5 +1321,8 @@ using UnrealPropertyInfo = URK_UnrealPropertyInfo;
 using UnrealCallFrame = URK_UnrealCallFrame;
 using UnrealProcessEventObserverFn = URK_UnrealProcessEventObserverFn;
 using UnrealPostedWorkFn = URK_UnrealPostedWorkFn;
+using UnrealPlace = URK_UnrealPlace;
+using UnrealStep = URK_UnrealStep;
+using UnrealKey = URK_UnrealKey;
 } // namespace URK
 #endif
