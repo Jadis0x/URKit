@@ -2,11 +2,13 @@
 #include "mod_project_generator_common.h"
 #include "mod_project_generator_profiles.h"
 #include "sdk_generator_contract.h"
+#include "unreal_type_codegen.h"
 
 #include <filesystem>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -19,8 +21,20 @@ namespace sdk = SdkGenerator;
 std::string UnrealSdkReadme(const std::string &details) {
     std::ostringstream out;
     out << "# URKit - Unreal SDK\n\n"
-        << "`unreal_runtime.h` wraps `URK_UnrealApi`. Nothing here is generated from the game: objects, members "
-           "and functions are resolved by name at runtime through the engine's own reflection.\n\n"
+        << "`unreal_runtime.h` wraps `URK_UnrealApi`: objects, members and functions are resolved by name at "
+           "runtime through the engine's own reflection.\n\n"
+        << "## Typed headers\n\n"
+        << "Set `DumpTypes=1` under `[Unreal]` in the game's `URKit_config.ini` and play: every map that loads "
+           "adds its classes to `" << UnrealTypeCodegen::kDumpFileName << "` beside the game. Generating or updating "
+           "the project then writes `types/<Name>.h`, one per class and struct.\n\n"
+           "- Classes are handles and hold names and signatures, never offsets: each access resolves on the live "
+           "class, so a game update needs no rebuild. A member the update removed fails at runtime and `get()` "
+           "comes back empty.\n"
+           "- Structs are values copied into the mod, so their header carries a layout. Before any copy it is "
+           "checked against the running game; if an update changed the struct, accesses to it fail and the log "
+           "says to regenerate. Members that own engine memory (names, strings, arrays) are kept as bytes, and "
+           "the loader refuses a write that changes them.\n\n"
+           "`types/` is rewritten from the dump; do not edit it.\n\n"
         << details;
     return out.str();
 }
@@ -43,13 +57,27 @@ bool HasUsableOutput(const std::string &directory) {
     return true;
 }
 
-bool Generate(const std::string &directory, const std::string &reportDetails, std::string *error) {
+std::string TypeDumpPath(const std::string &gameDirectory) {
+    return gameDirectory.empty() ? std::string() : (fs::path(gameDirectory) / UnrealTypeCodegen::kDumpFileName).string();
+}
+
+bool Generate(const std::string &directory, const std::string &reportDetails, const std::string &typeDumpPath,
+              std::string *error) {
     sdk::OutputPlan plan;
     plan.root = fs::path(directory);
     plan.files = {
         {"unreal_runtime.h", {}, UnrealRuntimeModule(), mpg::OutputFilePolicy::GeneratedOverwrite, true, true},
         {"README.md", {}, UnrealSdkReadme(reportDetails), mpg::OutputFilePolicy::GeneratedOverwrite, true, false},
     };
+    std::error_code ec;
+    if (!typeDumpPath.empty() && fs::is_regular_file(typeDumpPath, ec)) {
+        std::vector<UnrealTypeCodegen::Header> headers;
+        if (!UnrealTypeCodegen::Build(typeDumpPath, &headers, error))
+            return false;
+        for (UnrealTypeCodegen::Header &header : headers)
+            plan.files.push_back({fs::path("types") / header.fileName, {}, std::move(header.contents),
+                                  mpg::OutputFilePolicy::GeneratedOverwrite, true, false, false});
+    }
     sdk::OutputResult output;
     return sdk::PublishOutputPlanAtomically(plan, &output, error);
 }
@@ -81,6 +109,19 @@ bool GenerateModProject(const std::string &projectRoot, const std::string &unrea
          true,
          true},
     };
+    // types/ is copied whole when the SDK was staged elsewhere; stale headers go.
+    std::error_code ec;
+    const fs::path projectTypes = root / profile.sdkSubdirectory / "types";
+    if (!fs::equivalent(sdkRoot, root / profile.sdkSubdirectory, ec)) {
+        fs::remove_all(projectTypes, ec);
+        for (fs::directory_iterator it(sdkRoot / "types", ec), end; !ec && it != end; it.increment(ec))
+            backendFiles.files.push_back({profile.sdkSubdirectory / "types" / it->path().filename(),
+                                          it->path(),
+                                          {},
+                                          mpg::OutputFilePolicy::GeneratedOverwrite,
+                                          true,
+                                          false});
+    }
     if (!sdk::WriteOutputPlan(backendFiles, nullptr, error))
         return false;
 

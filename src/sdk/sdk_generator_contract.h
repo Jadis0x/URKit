@@ -15,6 +15,8 @@ struct OutputFile {
     ModProjectGenerator::OutputFilePolicy policy = ModProjectGenerator::OutputFilePolicy::GeneratedOverwrite;
     bool required = true;
     bool moduleFile = false;
+    // One clang-format process per file; thousands of typed headers skip it.
+    bool format = true;
 };
 
 struct OutputPlan {

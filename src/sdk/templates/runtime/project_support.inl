@@ -255,7 +255,9 @@ bool start(const URK_ModContext *ctx);
 void update();
 void on_scene_loaded(const URK_SceneInfo *scene);
 void on_scene_changed(const URK_SceneInfo *previousScene, const URK_SceneInfo *currentScene);
+//@unity{
 void on_object_destroy_requested(const URK_ObjectDestroyRequest *request);
+//@unity}
 void stop();
 } // namespace ModRuntime
 )URK";
@@ -302,12 +304,14 @@ std::string GameRuntimeSource(const ModuleProjectOptions &options) {
         << "  ModLog::info(\"scene changed: %s -> %s\", previousScene->name, "
            "currentScene->name);\n"
         << "}\n\n";
-    out << "void on_object_destroy_requested(const URK_ObjectDestroyRequest* request) {\n"
+    out << "//@unity{\n"
+        << "void on_object_destroy_requested(const URK_ObjectDestroyRequest* request) {\n"
         << "  if (!request || request->size < sizeof(URK_ObjectDestroyRequest)) return;\n"
         << "  ModLog::info(\"object destroy requested: name=%s type=%s instanceId=%d delay=%.3f immediate=%s\",\n"
         << "               request->name, request->typeName, request->instanceId, request->delaySeconds,\n"
         << "               (request->flags & URK_OBJECT_DESTROY_REQUEST_IMMEDIATE) ? \"yes\" : \"no\");\n"
-        << "}\n\n";
+        << "}\n"
+        << "//@unity}\n\n";
     out << "void stop() {\n"
         << "  ModLog::info(\"runtime stopped\");\n"
         << "}\n"

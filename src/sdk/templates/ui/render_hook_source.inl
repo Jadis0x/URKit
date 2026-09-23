@@ -1419,6 +1419,10 @@ inline bool is_toggle_key_down(UINT message, WPARAM wparam, LPARAM lparam) {
         return false;
     if (static_cast<int>(wparam) != ModConfig::menu_toggle_key)
         return false;
+    // Bit 29 is ALT held: Alt+Tab switches windows, it does not toggle the menu.
+    constexpr LPARAM alt_down_mask = 1LL << 29;
+    if (message == WM_SYSKEYDOWN && (lparam & alt_down_mask) != 0)
+        return false;
     constexpr LPARAM was_down_mask = 1LL << 30;
     return (lparam & was_down_mask) == 0;
 }
@@ -2334,6 +2338,14 @@ inline bool install() {
         return false;
     }
 
+//@unreal{
+    // The engine's RHI is not asked; DXGI and OpenGL presentation are probed.
+    const bool probe_native_presentation = true;
+    const bool want_dx11 = true;
+    const bool want_dx12 = true;
+    const bool want_opengl = true;
+//@unreal}
+//@unity{
     const std::int32_t graphics_device = URK::graphics_device_type();
     const bool probe_native_presentation = graphics_device == URK::graphics_device_unknown;
     const bool want_dx11 = probe_native_presentation || graphics_device == URK::graphics_device_direct3d11;
@@ -2355,6 +2367,7 @@ inline bool install() {
     if (probe_native_presentation)
         log("Unity graphics device type is unavailable; probing native DXGI and "
             "OpenGL presentation hooks.");
+//@unity}
 
     if ((want_dx11 || want_dx12) && !g_dxgi_targets_discovered &&
         g_dxgi_discovery_attempts < kMaxDxgiDiscoveryAttempts) {

@@ -123,4 +123,12 @@ const URK_UnrealApi *UnrealSdkApi(const HookInstaller &installer);
 // installer UnrealSdkApi was given; mods' install/remove leave this claim alone.
 bool UnrealSdk_HoldProcessEventHook();
 
+// Where the API reports refused calls; the loader passes its log.
+using LogSink = void (*)(const char *message);
+void UnrealSdk_SetLog(LogSink log);
+
+// Game thread, once per frame: releases engine memory in call frames a mod
+// destroyed on another thread.
+void UnrealSdk_ReleasePending();
+
 } // namespace URK::Unreal

@@ -176,6 +176,120 @@ struct GeneratedProject {
     std::string label;
 };
 
+// A loader type dump with the cases codegen must survive: keyword and reserved
+// member names, a member named like its class, same class name in two packages,
+// kinds without a typed form, and functions it must leave out.
+std::string UnrealTypeDump() {
+    const auto row = [](std::initializer_list<std::string_view> fields) {
+        std::string line;
+        for (const std::string_view field : fields)
+            (line += field) += '\t';
+        line.back() = '\n';
+        return line;
+    };
+    std::string dump = row({"URKIT-UNREAL-TYPES", "2"}) + row({"IMAGE", "1", "2"}) + row({"ENGINE", "5.8.0"});
+    dump += row({"C", "Object", "/Script/CoreUObject", "", ""});
+    dump += row({"C", "Actor", "/Script/Engine", "Object", "/Script/CoreUObject"});
+    dump += row({"P", "Owner", "object", "8", "1", "0", "Actor", "/Script/Engine"});
+    dump += row({"P", "Instigator", "object", "8", "1", "0", "Pawn", "/Script/Engine"});
+    dump += row({"P", "class", "int32", "4", "1", "0", "", ""});
+    dump += row({"P", "Actor", "float", "4", "1", "0", "", ""});
+    dump += row({"P", "name", "bool", "1", "1", "0", "", ""});
+    dump += row({"P", "My Var", "double", "8", "1", "0", "", ""});
+    dump += row({"P", "My_Var", "byte", "1", "1", "0", "", ""});
+    dump += row({"P", "Weights", "float", "4", "3", "0", "", ""});
+    dump += row({"P", "Location", "struct", "24", "1", "0", "Missing", "/Script/CoreUObject"});
+    dump += row({"P", "Spot", "struct", "24", "1", "0", "Vector", "/Script/CoreUObject"});
+    dump += row({"P", "Tag", "name", "8", "1", "0", "", ""});
+    dump += row({"P", "Label", "string", "16", "1", "0", "", ""});
+    dump += row({"C", "Pawn", "/Script/Engine", "Actor", "/Script/Engine"});
+    dump += row({"F", "GetController", "400", ""});
+    dump += row({"A", "ReturnValue", "object", "8", "1", "580", "Actor", "/Script/Engine"});
+    dump += row({"F", "GetBounds", "400"});
+    dump += row({"A", "Radius", "float", "4", "1", "180", "", ""});
+    dump += row({"A", "ReturnValue", "bool", "1", "1", "580", "", ""});
+    dump += row({"F", "MakeOne", "2400"});
+    dump += row({"A", "Mode", "enum", "1", "1", "80", "", ""});
+    dump += row({"A", "Target", "object", "8", "1", "80", "Actor", "/Script/Engine"});
+    dump += row({"A", "ReturnValue", "int32", "4", "1", "580", "", ""});
+    dump += row({"F", "Teleport", "400"});
+    dump += row({"A", "Where", "struct", "24", "1", "80", "Vector", "/Script/CoreUObject"});
+    dump += row({"F", "GetLabel", "400"});
+    dump += row({"A", "ReturnValue", "struct", "24", "1", "580", "Labelled", "/Script/Engine"});
+    dump += row({"F", "Blocked", "400"});
+    dump += row({"A", "Where", "struct", "24", "1", "80", "Missing", "/Script/CoreUObject"});
+    dump += row({"F", "GetSpot", "400"});
+    dump += row({"A", "ReturnValue", "struct", "24", "1", "580", "Vector", "/Script/CoreUObject"});
+    dump += row({"F", "Sweep", "400"});
+    dump += row({"A", "Hit", "struct", "40", "1", "180", "HitLike", "/Script/Engine"});
+    dump += row({"A", "ReturnValue", "bool", "1", "1", "580", "", ""});
+    dump += row({"F", "OnHit__DelegateSignature", "130000"});
+    dump += row({"F", "ExecuteUbergraph_Pawn", "0"});
+    dump += row({"A", "EntryPoint", "int32", "4", "1", "80", "", ""});
+    dump += row({"C", "Settings", "/Script/PluginA", "Object", "/Script/CoreUObject"});
+    dump += row({"C", "Settings", "/Script/PluginB", "Object", "/Script/CoreUObject"});
+    dump += row({"C", "BP Door_C", "/Game/Doors/BP Door", "Actor", "/Script/Engine"});
+    dump += row({"P", "Open", "bool", "1", "1", "0", "", ""});
+    // Structs: layouts with offsets, a bitfield pair, a nested struct, an object,
+    // members kept as bytes, and a struct that only inherits.
+    const auto field = [&](std::string_view name, std::string_view kind, std::string_view size,
+                           std::string_view offset, std::string_view inner = "", std::string_view innerPackage = "",
+                           std::string_view mask = "0", std::string_view fieldMask = "255") {
+        return row({"M", name, kind, size, "1", "0", inner, innerPackage, offset, "0", mask, fieldMask});
+    };
+    dump += row({"S", "Vector", "/Script/CoreUObject", "", "", "24", "8"});
+    dump += field("X", "double", "8", "0") + field("Y", "double", "8", "8") + field("Z", "double", "8", "16");
+    dump += row({"S", "VectorNet", "/Script/Engine", "Vector", "/Script/CoreUObject", "24", "8"});
+    dump += row({"S", "HitLike", "/Script/Engine", "", "", "40", "8"});
+    dump += field("bHit", "bool", "1", "0", "", "", "1", "1") + field("bStart", "bool", "1", "0", "", "", "2", "2");
+    dump += field("Location", "struct", "24", "8", "Vector", "/Script/CoreUObject");
+    dump += field("Actor", "object", "8", "32", "Actor", "/Script/Engine");
+    dump += row({"S", "Tagged", "/Script/Engine", "", "", "32", "8"});
+    dump += field("Tag", "name", "8", "0") + field("Count", "int32", "4", "8") + field("Items", "array", "16", "16");
+    dump += row({"S", "Labelled", "/Script/Engine", "", "", "24", "8"});
+    dump += field("Label", "text", "24", "0");
+    return dump;
+}
+
+std::string ReadText(const fs::path &path);
+
+void CheckUnrealTypes(const GeneratedProject &project) {
+    const fs::path types = project.root / "sdk/unreal/types";
+    for (const char *file : {"Object.h", "Actor.h", "Pawn.h", "Settings.h", "Settings_PluginB.h", "BP_Door_C.h"})
+        Check(fs::is_regular_file(types / file), project.label + ": types/" + file + " is generated");
+    const std::string actor = ReadText(types / "Actor.h");
+    for (const char *expected : {"class_()", "Actor_()", "name_()", "My_Var()", "My_Var_2()",
+                                 "Weights(std::int32_t index)", "No typed form yet: Location (struct).",
+                                 "::URK::unreal::StructMember<::URK::unreal::types::Vector> Spot()",
+                                 "class Pawn;", "\"Actor\", \"/Script/Engine\""})
+        Check(actor.find(expected) != std::string::npos, project.label + ": Actor.h has " + expected);
+    const std::string pawn = ReadText(types / "Pawn.h");
+    for (const char *expected : {"template <typename UrkR = ::URK::unreal::types::Actor> UrkR GetController()",
+                                 "std::optional<bool> GetBounds(float *Radius)",
+                                 "static std::optional<std::int32_t> MakeOne(std::uint8_t Mode",
+                                 "bool Teleport(const ::URK::unreal::types::Vector &Where)",
+                                 "std::optional<::URK::unreal::types::Vector> GetSpot()",
+                                 "std::optional<bool> Sweep(::URK::unreal::types::HitLike *Hit)",
+                                 "No typed form yet: GetLabel(), Blocked()."})
+        Check(pawn.find(expected) != std::string::npos, project.label + ": Pawn.h has " + expected);
+    Check(pawn.find("OnHit") == std::string::npos && pawn.find("ExecuteUbergraph") == std::string::npos,
+          project.label + ": Pawn.h leaves out delegate signatures and the ubergraph");
+    const std::string hit = ReadText(types / "HitLike.h");
+    for (const char *expected : {"struct alignas(8) HitLike", "std::uint8_t urk_bits_0;", "bool bHit() const",
+                                 "void set_bStart(bool value)", "::URK::unreal::types::Vector Location;",
+                                 "::URK::unreal::StructObject<::URK::unreal::types::Actor> Actor;",
+                                 "static_assert(sizeof(HitLike) == HitLike::kSize);",
+                                 "static_assert(offsetof(HitLike, Actor) == 32);", "{\"bStart\", 0, 1, 1, 1, 0, 2, 2}"})
+        Check(hit.find(expected) != std::string::npos, project.label + ": HitLike.h has " + expected);
+    const std::string tagged = ReadText(types / "Tagged.h");
+    Check(tagged.find("std::uint8_t urk_opaque_Tag[8];") != std::string::npos &&
+              tagged.find("std::uint8_t urk_opaque_Items[16];") != std::string::npos &&
+              tagged.find("std::int32_t Count;") != std::string::npos,
+          project.label + ": Tagged.h keeps names and arrays as bytes");
+    Check(ReadText(types / "VectorNet.h").find("double Z;") != std::string::npos,
+          project.label + ": VectorNet.h carries its super's members");
+}
+
 bool GenerateBoth(const fs::path &workspace, std::vector<GeneratedProject> *projects) {
     const fs::path gameDirectory = workspace / "game";
     fs::create_directories(gameDirectory);
@@ -207,8 +321,11 @@ bool GenerateBoth(const fs::path &workspace, std::vector<GeneratedProject> *proj
     }
     projects->push_back({il2cppProject, "il2cpp"});
 
+    const std::string typeDump = UnrealSdkGenerator::TypeDumpPath(gameDirectory.string());
+    fs::create_directories(gameDirectory);
+    Write(typeDump, UnrealTypeDump());
     const fs::path unrealSdk = workspace / "staged" / "unreal";
-    if (!UnrealSdkGenerator::Generate(unrealSdk.string(), "", &error)) {
+    if (!UnrealSdkGenerator::Generate(unrealSdk.string(), "", typeDump, &error)) {
         std::printf("FAILED: Unreal SDK staging: %s\n", error.c_str());
         return false;
     }
@@ -289,8 +406,45 @@ void CheckLayout(const GeneratedProject &project) {
 // includes it in place of the Unity headers.
 constexpr std::string_view kUnrealProbeSource = R"PROBE(
 #include "sdk/unreal/unreal_runtime.h"
+#include "sdk/unreal/types/BP_Door_C.h"
+#include "sdk/unreal/types/Pawn.h"
+#include "sdk/unreal/types/Settings_PluginB.h"
+#include "sdk/unreal/types/VectorNet.h"
 #include "mod/config/mod_config.h"
 #include "mod/lifecycle/mod_runtime.cpp"
+
+void urk_probe_unreal_types() {
+    namespace t = URK::unreal::types;
+    const t::Pawn pawn = t::Pawn::cast(URK::unreal::find("Pawn_0"));
+    const t::Actor owner = pawn.Owner().get();
+    (void)pawn.Owner().set(owner);
+    (void)pawn.Owner().set(pawn);
+    (void)pawn.Owner().set(nullptr);
+    const t::Pawn instigator = pawn.Instigator().get();
+    (void)instigator.class_().set(pawn.class_().get().value_or(0) + 1);
+    (void)pawn.Weights(2).get();
+    (void)pawn.Tag().get();
+    (void)pawn.Label().get();
+    float radius = 0;
+    (void)pawn.GetBounds(&radius);
+    const t::Actor controller = pawn.GetController();
+    (void)t::Pawn::MakeOne(1, controller);
+    for (const t::BP_Door_C &door : t::BP_Door_C::instances())
+        (void)door.Open().set(true);
+    (void)t::Settings_PluginB::class_default().valid();
+    const std::optional<t::Vector> spot = pawn.Spot().get();
+    (void)pawn.Spot().set(t::Vector{1, 2, 3});
+    (void)pawn.Teleport(spot.value_or(t::Vector{}));
+    (void)pawn.GetSpot();
+    t::HitLike hit{};
+    if (pawn.Sweep(&hit).value_or(false) && hit.bHit()) {
+        hit.set_bStart(true);
+        const t::Actor struck = hit.Actor.get();
+        hit.Actor.set(struck);
+        (void)hit.Location.X;
+    }
+    (void)t::VectorNet{}.Z;
+}
 
 namespace {
 struct Vec {
@@ -369,6 +523,34 @@ void CheckUnrealLayout(const GeneratedProject &project) {
           project.label + ": mod_lifecycle.cpp validates the Unreal API table");
 }
 
+// A backend's project must not offer the other backend's helpers; the shared ABI
+// header (sdk/mod_sdk.h) is the only place both appear.
+void CheckBackendSurface(const GeneratedProject &project, bool unreal) {
+    std::vector<std::string_view> forbidden = {"//@unity", "//@unreal"};
+    if (unreal) {
+        forbidden.insert(forbidden.end(), {"input_get_", "graphics_device_type", "cursor_state_set", "has_input",
+                                           "OnObjectDestroyRequested", "on_object_destroy_requested",
+                                           "has_mono_api", "has_il2cpp_api", "runtime_backend_mono"});
+    } else {
+        forbidden.insert(forbidden.end(), {"has_unreal_api", "runtime_cap_unreal_api", "runtime_backend_unreal"});
+    }
+    std::error_code code;
+    for (fs::recursive_directory_iterator it(project.root, code), end; it != end; it.increment(code)) {
+        const fs::path relative = fs::relative(it->path(), project.root, code);
+        const std::string name = relative.generic_string();
+        if (!it->is_regular_file(code) || name == "sdk/mod_sdk.h" || name.starts_with("third_party/") ||
+            name.starts_with("out/"))
+            continue;
+        const std::string extension = it->path().extension().string();
+        if (extension != ".h" && extension != ".cpp")
+            continue;
+        const std::string text = ReadText(it->path());
+        for (const std::string_view token : forbidden)
+            Check(text.find(token) == std::string::npos,
+                  project.label + ": " + name + " does not contain " + std::string(token));
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -392,8 +574,10 @@ int main(int argc, char **argv) {
         return 1;
 
     for (const GeneratedProject &project : projects) {
+        CheckBackendSurface(project, project.label == "unreal");
         if (project.label == "unreal") {
             CheckUnrealLayout(project);
+            CheckUnrealTypes(project);
             const fs::path probe = project.root / "urk_probe_unreal.cpp";
             Write(probe, kUnrealProbeSource);
             Check(SyntaxCheck(project.root, probe, project.root),

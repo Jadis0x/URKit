@@ -93,7 +93,7 @@ bool IsRegularNonEmpty(const fs::path &path) {
 bool MaterializeFile(const OutputFile &file, const fs::path &destination, std::string *error) {
     if (!file.sourcePath.empty())
         return CopyFileToDestination(file.sourcePath, destination, error);
-    return ModProjectGenerator::WriteText(destination, file.contents, error);
+    return ModProjectGenerator::WriteText(destination, file.contents, error, file.format);
 }
 
 bool WriteFileByPolicy(const OutputPlan &plan, const OutputFile &file, std::string *error) {

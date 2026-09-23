@@ -7,7 +7,9 @@ namespace ModLifecycle {
 bool initialize(const URK_ModContext *ctx);
 void on_scene_loaded(const URK_SceneInfo *scene);
 void on_scene_changed(const URK_SceneInfo *previousScene, const URK_SceneInfo *currentScene);
+//@unity{
 void on_object_destroy_requested(const URK_ObjectDestroyRequest *request);
+//@unity}
 void shutdown();
 } // namespace ModLifecycle
 )URK";
@@ -143,9 +145,11 @@ std::string ModLifecycleSource(const ModuleProjectOptions &options) {
         << "                      const URK_SceneInfo* currentScene) {\n"
         << "  ModRuntime::on_scene_changed(previousScene, currentScene);\n"
         << "}\n\n"
+        << "//@unity{\n"
         << "void on_object_destroy_requested(const URK_ObjectDestroyRequest* request) {\n"
         << "  ModRuntime::on_object_destroy_requested(request);\n"
-        << "}\n\n"
+        << "}\n"
+        << "//@unity}\n\n"
         << "void shutdown() {\n"
         << "  if (!g_initialized && !g_runtime_started && !g_network_initialized) return;\n"
         << "  if (g_update_registered && g_ctx && "
@@ -202,9 +206,11 @@ extern "C" URK_EXPORT void OnSceneChanged(const URK_SceneInfo *previousScene, co
     ModLifecycle::on_scene_changed(previousScene, currentScene);
 }
 
+//@unity{
 extern "C" URK_EXPORT void OnObjectDestroyRequested(const URK_ObjectDestroyRequest *request) {
     ModLifecycle::on_object_destroy_requested(request);
 }
+//@unity}
 
 extern "C" URK_EXPORT void ModShutdown() {
     ModLifecycle::shutdown();

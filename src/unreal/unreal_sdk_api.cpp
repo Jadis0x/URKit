@@ -1,9 +1,16 @@
 #include "unreal_sdk_api.h"
+#include "unreal_owned_values.h"
 
 #include <windows.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
+#include <memory>
+#include <set>
+#include <shared_mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace URK::Unreal {
@@ -20,6 +27,162 @@ bool CopyOut(const std::string &text, char *output, std::size_t outputSize) {
     return true;
 }
 
+// A handle is a bare address: only one the object array still holds is touched,
+// so a mod keeping a destroyed object gets failures, not freed memory.
+bool Live(const UnrealEngine &engine, Address object) {
+    return engine.Available() && IsLiveObject(engine.Finder(), object);
+}
+
+// What an object slot may hold: native code and the GC trust it blindly.
+bool Assignable(const UnrealEngine &engine, const PropertyInfo &info, Address value) {
+    if (value == kNullAddress)
+        return true;
+    if (!Live(engine, value))
+        return false;
+    if (info.kind == PropertyKind::Class)
+        return ObjectIs(engine.Finder(), engine.Structs(), value, kCastFlagClass);
+    return info.kind == PropertyKind::Object && info.inner != kNullAddress && engine.Types().IsA(value, info.inner);
+}
+
+// Members resolved per class. A class is the same one while it keeps its name
+// and its package's name: a package name is one asset, so a Blueprint class
+// reloaded at the same address has the same layout.
+class MemberCache {
+  public:
+    std::optional<PropertyInfo> Find(const UnrealEngine &engine, Address classObject, const std::string &member) {
+        const ObjectFinder &finder = engine.Finder();
+        const Address package = finder.OuterOf(classObject);
+        const std::optional<std::string> className = finder.NameOf(classObject);
+        const std::optional<std::string> packageName = finder.NameOf(package);
+        if (!className || !packageName)
+            return std::nullopt;
+        {
+            std::shared_lock lock(mutex_);
+            const auto entry = classes_.find(classObject);
+            if (entry != classes_.end() && entry->second.Same(*className, package, *packageName)) {
+                const auto found = entry->second.members.find(member);
+                if (found != entry->second.members.end())
+                    return found->second;
+            }
+        }
+
+        const Address field = engine.Chain().FindMemberDeep(classObject, member);
+        const std::optional<PropertyInfo> info = field != kNullAddress ? engine.Values().Describe(field) : std::nullopt;
+        if (!info || !info->Resolved())
+            return std::nullopt;
+
+        std::unique_lock lock(mutex_);
+        ClassEntry &entry = classes_[classObject];
+        if (!entry.Same(*className, package, *packageName))
+            entry = ClassEntry{*className, package, *packageName, {}};
+        entry.members[member] = *info;
+        return info;
+    }
+
+  private:
+    struct ClassEntry {
+        std::string name;
+        Address package = kNullAddress;
+        std::string packageName;
+        std::unordered_map<std::string, PropertyInfo> members;
+
+        bool Same(const std::string &otherName, Address otherPackage, const std::string &otherPackageName) const {
+            return package == otherPackage && name == otherName && packageName == otherPackageName;
+        }
+    };
+
+    std::shared_mutex mutex_;
+    std::unordered_map<Address, ClassEntry> classes_;
+};
+
+MemberCache g_members;
+
+// Writes only what the caller's struct has room for: size says which version it
+// was compiled against, and version 1 had no bool layout.
+void FillInfo(URK_UnrealPropertyInfo *info, const PropertyInfo &from) {
+    constexpr std::uint32_t kVersion1 = offsetof(URK_UnrealPropertyInfo, bool_byte_offset);
+    const std::uint32_t room = info->size == 0 ? kVersion1 : info->size;
+    info->kind = static_cast<std::int32_t>(from.kind);
+    info->element_size = from.elementSize;
+    info->array_dim = from.arrayDim;
+    info->inner = from.inner;
+    if (room >= sizeof(URK_UnrealPropertyInfo)) {
+        info->bool_byte_offset = from.boolLayout.byteOffset;
+        info->bool_byte_mask = from.boolLayout.byteMask;
+        info->bool_field_mask = from.boolLayout.fieldMask;
+        info->reserved = 0;
+    }
+    info->size = room < sizeof(URK_UnrealPropertyInfo) ? kVersion1 : sizeof(URK_UnrealPropertyInfo);
+}
+
+bool IsStruct(const UnrealEngine &engine, Address object) {
+    return Live(engine, object) && ObjectIs(engine.Finder(), engine.Structs(), object, kCastFlagStruct);
+}
+
+// Plain numbers: every bit pattern is a value the engine can hold.
+bool FreeKind(PropertyKind kind) {
+    switch (kind) {
+    case PropertyKind::Bool:
+    case PropertyKind::Byte:
+    case PropertyKind::Int8:
+    case PropertyKind::Int16:
+    case PropertyKind::Int32:
+    case PropertyKind::Int64:
+    case PropertyKind::UInt16:
+    case PropertyKind::UInt32:
+    case PropertyKind::UInt64:
+    case PropertyKind::Float:
+    case PropertyKind::Double:
+    case PropertyKind::Enum:
+        return true;
+    default:
+        return false;
+    }
+}
+
+constexpr int kMaxStructDepth = 16;
+constexpr int kMaxStructFields = 4096;
+
+// Whether proposed may replace current as a value of structObject: numbers
+// change freely, objects must be live and of their class, and anything owning
+// an allocation or not checkable must stay byte-identical.
+bool StructChangeAllowed(const UnrealEngine &engine, Address structObject, const std::uint8_t *current,
+                         const std::uint8_t *proposed, std::size_t size, int depth = 0) {
+    if (depth > kMaxStructDepth || !IsStruct(engine, structObject))
+        return false;
+    const PropertyChain &chain = engine.Chain();
+    int level = 0;
+    for (Address owner = structObject; owner != kNullAddress && level < kMaxStructDepth;
+         owner = engine.Types().SuperOf(owner), ++level) {
+        Address field = chain.First(owner);
+        for (int step = 0; field != kNullAddress && step < kMaxStructFields; ++step, field = chain.Next(field)) {
+            const std::optional<PropertyInfo> info = engine.Values().Describe(field);
+            if (!info || !info->Resolved() || info->offset < 0 || info->elementSize <= 0 || info->arrayDim < 1)
+                return false;
+            const std::size_t width = static_cast<std::size_t>(info->elementSize);
+            for (std::int32_t i = 0; i < info->arrayDim; ++i) {
+                const std::size_t at = static_cast<std::size_t>(info->offset) + static_cast<std::size_t>(i) * width;
+                if (at + width > size)
+                    return false;
+                if (std::memcmp(current + at, proposed + at, width) == 0 || FreeKind(info->kind))
+                    continue;
+                if (info->kind == PropertyKind::Object || info->kind == PropertyKind::Class) {
+                    Address value = kNullAddress;
+                    if (width != sizeof(value))
+                        return false;
+                    std::memcpy(&value, proposed + at, sizeof(value));
+                    if (!Assignable(engine, *info, value))
+                        return false;
+                } else if (info->kind != PropertyKind::Struct ||
+                           !StructChangeAllowed(engine, info->inner, current + at, proposed + at, width, depth + 1)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 // One member resolved from an instance. Every value entry goes through this,
 // so a missing member or mismatched kind fails the same way everywhere.
 struct ResolvedMember {
@@ -27,21 +190,16 @@ struct ResolvedMember {
 };
 
 std::optional<ResolvedMember> Resolve(UnrealEngine &engine, Address object, const char *memberName) {
-    if (object == kNullAddress || !memberName || !engine.Available())
+    if (!memberName || !Live(engine, object))
         return std::nullopt;
 
     const Address classObject = engine.Finder().ClassOf(object);
     if (classObject == kNullAddress)
         return std::nullopt;
 
-    const Address field = engine.Chain().FindMemberDeep(classObject, memberName);
-    if (field == kNullAddress)
+    const std::optional<PropertyInfo> info = g_members.Find(engine, classObject, memberName);
+    if (!info)
         return std::nullopt;
-
-    std::optional<PropertyInfo> info = engine.Values().Describe(field);
-    if (!info || !info->Resolved())
-        return std::nullopt;
-
     return ResolvedMember{*info};
 }
 
@@ -79,21 +237,21 @@ URK_UnrealObject Unreal_FindObjectInOuter(const char *name, const char *outerNam
 
 URK_UnrealObject Unreal_ClassOf(URK_UnrealObject object) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!engine.Available())
+    if (!Live(engine, object))
         return URK_UNREAL_NULL_OBJECT;
     return engine.Finder().ClassOf(object);
 }
 
 URK_UnrealObject Unreal_OuterOf(URK_UnrealObject object) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!engine.Available())
+    if (!Live(engine, object))
         return URK_UNREAL_NULL_OBJECT;
     return engine.Finder().OuterOf(object);
 }
 
 int Unreal_NameOf(URK_UnrealObject object, char *output, std::size_t outputSize) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!engine.Available())
+    if (!Live(engine, object))
         return 0;
     const std::optional<std::string> name = engine.Finder().NameOf(object);
     return name ? (CopyOut(*name, output, outputSize) ? 1 : 0) : 0;
@@ -103,21 +261,21 @@ int Unreal_NameOf(URK_UnrealObject object, char *output, std::size_t outputSize)
 
 int Unreal_IsChildOf(URK_UnrealObject structObject, URK_UnrealObject base) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!engine.Available())
+    if (!Live(engine, structObject) || !Live(engine, base))
         return 0;
     return engine.Types().IsChildOf(structObject, base) ? 1 : 0;
 }
 
 int Unreal_IsA(URK_UnrealObject object, URK_UnrealObject classObject) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!engine.Available())
+    if (!Live(engine, object) || !Live(engine, classObject))
         return 0;
     return engine.Types().IsA(object, classObject) ? 1 : 0;
 }
 
 URK_UnrealObject Unreal_DefaultObjectOf(URK_UnrealObject classObject) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!engine.Available())
+    if (!Live(engine, classObject))
         return URK_UNREAL_NULL_OBJECT;
     return engine.Types().DefaultObjectOf(classObject);
 }
@@ -125,7 +283,7 @@ URK_UnrealObject Unreal_DefaultObjectOf(URK_UnrealObject classObject) {
 std::size_t Unreal_InstancesOf(URK_UnrealObject classObject, URK_UnrealObject *output, std::size_t outputCapacity,
                                int exact) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!engine.Available())
+    if (!Live(engine, classObject))
         return 0;
 
     TypeQueries::InstanceQuery query{};
@@ -151,11 +309,7 @@ int Unreal_DescribeProperty(URK_UnrealObject object, const char *memberName, URK
     if (!resolved)
         return 0;
 
-    info->size = sizeof(URK_UnrealPropertyInfo);
-    info->kind = static_cast<std::int32_t>(resolved->info.kind);
-    info->element_size = resolved->info.elementSize;
-    info->array_dim = resolved->info.arrayDim;
-    info->inner = resolved->info.inner;
+    FillInfo(info, resolved->info);
     return 1;
 }
 
@@ -250,18 +404,174 @@ int Unreal_WriteBool(URK_UnrealObject object, const char *memberName, std::int32
 int Unreal_WriteObject(URK_UnrealObject object, const char *memberName, std::int32_t index, URK_UnrealObject value) {
     UnrealEngine &engine = UnrealEngine::Instance();
     const std::optional<ResolvedMember> resolved = Resolve(engine, object, memberName);
-    if (!resolved)
+    if (!resolved || !Assignable(engine, resolved->info, value))
         return 0;
     return engine.Values().WriteObject(engine.Writer(), object, resolved->info, value, index) ? 1 : 0;
 }
 
+// --- structs ------------------------------------------------------------------
+
+std::int32_t Unreal_StructSize(URK_UnrealObject structObject) {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    const StructOffsets &structs = engine.Structs();
+    if (!IsStruct(engine, structObject) || structs.propertiesSize == kOffsetNotFound)
+        return 0;
+    // GetStructureSize(): what a member of this type occupies.
+    const std::int32_t size = engine.Reader().ReadInt32(structObject + structs.propertiesSize).value_or(0);
+    const std::int32_t alignment = structs.minAlignment == kOffsetNotFound
+                                       ? 1
+                                       : engine.Reader().ReadAs<std::int16_t>(structObject + structs.minAlignment)
+                                             .value_or(1);
+    if (size <= 0 || alignment <= 0)
+        return size > 0 ? size : 0;
+    return (size + alignment - 1) / alignment * alignment;
+}
+
+int Unreal_DescribeStructMember(URK_UnrealObject structObject, const char *memberName, URK_UnrealPropertyInfo *info,
+                                std::int32_t *offset) {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    if (!memberName || !info || !offset || !IsStruct(engine, structObject))
+        return 0;
+    const Address field = engine.Chain().FindMemberDeep(structObject, memberName);
+    const std::optional<PropertyInfo> described =
+        field != kNullAddress ? engine.Values().Describe(field) : std::nullopt;
+    if (!described || !described->Resolved())
+        return 0;
+    FillInfo(info, *described);
+    *offset = described->offset;
+    return 1;
+}
+
+int Unreal_ReadStruct(URK_UnrealObject object, const char *memberName, std::int32_t index, void *output,
+                      std::size_t size) {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    const std::optional<ResolvedMember> resolved = Resolve(engine, object, memberName);
+    if (!resolved || !output || resolved->info.kind != PropertyKind::Struct ||
+        size != static_cast<std::size_t>(resolved->info.elementSize))
+        return 0;
+    const Address at = engine.Values().ValueAddress(object, resolved->info, index);
+    return at != kNullAddress && engine.Reader().Read(at, output, size) ? 1 : 0;
+}
+
+int Unreal_WriteStruct(URK_UnrealObject object, const char *memberName, std::int32_t index, const void *value,
+                       std::size_t size) {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    const std::optional<ResolvedMember> resolved = Resolve(engine, object, memberName);
+    if (!resolved || !value || resolved->info.kind != PropertyKind::Struct ||
+        size != static_cast<std::size_t>(resolved->info.elementSize))
+        return 0;
+    const Address at = engine.Values().ValueAddress(object, resolved->info, index);
+    std::vector<std::uint8_t> current(size);
+    if (at == kNullAddress || !engine.Reader().Read(at, current.data(), size))
+        return 0;
+    if (!StructChangeAllowed(engine, resolved->info.inner, current.data(), static_cast<const std::uint8_t *>(value),
+                             size))
+        return 0;
+    return engine.Writer().Write(at, value, size) ? 1 : 0;
+}
+
 // --- calling ------------------------------------------------------------------
+
+// A frame as mods hold it: the parameter block, plus what the engine will leave
+// in it that the loader must give back.
+struct LoaderFrame {
+    explicit LoaderFrame(FunctionInfo info) : frame(std::move(info)) {}
+    CallFrame frame;
+    // Written parameters owning engine memory, by index.
+    std::vector<std::size_t> owned;
+    // A written parameter whose memory cannot be released; calls are refused.
+    std::string unreleasable;
+    bool called = false;
+};
+
+LoaderFrame *FrameOf(URK_UnrealCallFrame *frame) { return reinterpret_cast<LoaderFrame *>(frame); }
+const LoaderFrame *FrameOf(const URK_UnrealCallFrame *frame) { return reinterpret_cast<const LoaderFrame *>(frame); }
+
+// Engine flag value (EPropertyFlags).
+constexpr std::uint64_t kPropertyFlagConstParm = 0x2;
+
+// The return value and non-const out parameters: what the engine assigns into.
+bool Written(const FunctionParameter &parameter) {
+    const std::uint64_t flags = parameter.info.propertyFlags;
+    return parameter.returned || (flags & kPropertyFlagReturnParm) != 0 ||
+           ((flags & kPropertyFlagOutParm) != 0 && (flags & kPropertyFlagConstParm) == 0);
+}
+
+OwnedValues &Owned() {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    static OwnedValues owned(engine.Finder(), engine.Chain(), engine.Values(), engine.Functions(), engine.Types(),
+                             engine.ProcessEvent());
+    return owned;
+}
+
+std::atomic<LogSink> g_log{nullptr};
+std::mutex g_reportedMutex;
+std::set<std::pair<Address, std::string>> g_reported;
+
+// Once per function and message: mods call in loops.
+void Report(Address function, const std::string &message) {
+    const LogSink log = g_log.load(std::memory_order_acquire);
+    if (!log)
+        return;
+    {
+        std::lock_guard lock(g_reportedMutex);
+        if (!g_reported.emplace(function, message).second)
+            return;
+    }
+    const std::string name = UnrealEngine::Instance().Finder().NameOf(function).value_or("?");
+    log(("[Unreal] " + name + ": " + message + ".").c_str());
+}
+
+bool OnGameThread() {
+    const std::uint32_t id = ProcessEventHook::Instance().GameThreadId();
+    return id != 0 && id == GetCurrentThreadId();
+}
+
+// Game thread. Releasing calls into the engine, which can come back here.
+thread_local bool t_releasing = false;
+std::mutex g_pendingMutex;
+std::vector<std::unique_ptr<LoaderFrame>> g_pending;
+
+void ReleaseFrame(LoaderFrame &loaderFrame) {
+    OwnedValues &owned = Owned();
+    const FunctionInfo &function = loaderFrame.frame.Function();
+    auto *data = static_cast<std::uint8_t *>(loaderFrame.frame.Data());
+    if (!owned.Ready()) {
+        Report(function.function, "a returned value could not be released (" + owned.Failure() + ")");
+        return;
+    }
+    for (const std::size_t index : loaderFrame.owned) {
+        const PropertyInfo &info = function.parameters[index].info;
+        for (std::int32_t i = 0; i < info.arrayDim; ++i) {
+            if (!owned.Release(info, data + info.offset + static_cast<std::size_t>(i) * info.elementSize)) {
+                Report(function.function, "a returned value could not be released (" + owned.Failure() + ")");
+                return;
+            }
+        }
+    }
+}
+
+void ReleasePending() {
+    if (t_releasing)
+        return;
+    std::vector<std::unique_ptr<LoaderFrame>> batch;
+    {
+        std::lock_guard lock(g_pendingMutex);
+        batch.swap(g_pending);
+    }
+    if (batch.empty())
+        return;
+    t_releasing = true;
+    for (const std::unique_ptr<LoaderFrame> &loaderFrame : batch)
+        ReleaseFrame(*loaderFrame);
+    t_releasing = false;
+}
 
 // A UFunction's outer is the class that declares it, so inherited functions
 // are found by climbing. An instance stands for its class.
 URK_UnrealObject Unreal_FindFunction(URK_UnrealObject ownerClass, const char *name) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!name || !engine.Available() || ownerClass == kNullAddress)
+    if (!name || !Live(engine, ownerClass))
         return URK_UNREAL_NULL_OBJECT;
 
     Address owner = ownerClass;
@@ -279,7 +589,7 @@ URK_UnrealObject Unreal_FindFunction(URK_UnrealObject ownerClass, const char *na
 
 URK_UnrealCallFrame *Unreal_CallFrameCreate(URK_UnrealObject function) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!engine.Available() || function == kNullAddress)
+    if (!Live(engine, function) || !ObjectIs(engine.Finder(), engine.Structs(), function, kCastFlagFunction))
         return nullptr;
 
     const std::optional<FunctionInfo> info =
@@ -287,27 +597,83 @@ URK_UnrealCallFrame *Unreal_CallFrameCreate(URK_UnrealObject function) {
     if (!info)
         return nullptr;
 
-    return reinterpret_cast<URK_UnrealCallFrame *>(new CallFrame(*info));
+    auto loaderFrame = std::make_unique<LoaderFrame>(*info);
+    for (std::size_t i = 0; i < info->parameters.size(); ++i) {
+        const FunctionParameter &parameter = info->parameters[i];
+        if (!Written(parameter))
+            continue;
+        const Ownership ownership = Owned().Classify(parameter.info);
+        if (ownership == Ownership::Releasable)
+            loaderFrame->owned.push_back(i);
+        else if (ownership == Ownership::Unreleasable && loaderFrame->unreleasable.empty())
+            loaderFrame->unreleasable = parameter.name + " (" + PropertyKindName(parameter.info.kind) + ")";
+    }
+    return reinterpret_cast<URK_UnrealCallFrame *>(loaderFrame.release());
 }
 
-void Unreal_CallFrameDestroy(URK_UnrealCallFrame *frame) { delete reinterpret_cast<CallFrame *>(frame); }
+void Unreal_CallFrameDestroy(URK_UnrealCallFrame *frame) {
+    std::unique_ptr<LoaderFrame> loaderFrame(FrameOf(frame));
+    if (!loaderFrame || !loaderFrame->called || loaderFrame->owned.empty())
+        return;
+    if (OnGameThread() && !t_releasing) {
+        t_releasing = true;
+        ReleaseFrame(*loaderFrame);
+        t_releasing = false;
+        return;
+    }
+    // Released by the game thread's next call or frame.
+    std::lock_guard lock(g_pendingMutex);
+    g_pending.push_back(std::move(loaderFrame));
+}
 
 int Unreal_CallFrameSet(URK_UnrealCallFrame *frame, const char *parameterName, const void *value, std::size_t size) {
-    if (!frame || !parameterName)
+    if (!frame || !parameterName || !value)
         return 0;
-    return reinterpret_cast<CallFrame *>(frame)->Set(parameterName, value, size) ? 1 : 0;
+    CallFrame *callFrame = &FrameOf(frame)->frame;
+    const FunctionParameter *parameter = callFrame->Function().Parameter(parameterName);
+    if (!parameter)
+        return 0;
+    const PropertyKind kind = parameter->info.kind;
+    // The engine assigns over what it writes, freeing the old value: that value
+    // must be its own (or empty), never a buffer the mod made.
+    if (Written(*parameter) && kind != PropertyKind::Struct && Owned().Classify(parameter->info) != Ownership::None) {
+        const std::size_t at = static_cast<std::size_t>(parameter->info.offset);
+        if (parameter->info.offset < 0 || size != static_cast<std::size_t>(parameter->info.elementSize) ||
+            at + size > callFrame->Size() ||
+            std::memcmp(static_cast<const std::uint8_t *>(callFrame->Data()) + at, value, size) != 0)
+            return 0;
+    }
+    if (kind == PropertyKind::Object || kind == PropertyKind::Class) {
+        Address object = kNullAddress;
+        if (size != sizeof(object))
+            return 0;
+        std::memcpy(&object, value, sizeof(object));
+        if (!Assignable(UnrealEngine::Instance(), parameter->info, object))
+            return 0;
+    }
+    if (kind == PropertyKind::Struct) {
+        const std::size_t at = static_cast<std::size_t>(parameter->info.offset);
+        if (parameter->info.offset < 0 || size != static_cast<std::size_t>(parameter->info.elementSize) ||
+            at + size > callFrame->Size())
+            return 0;
+        const auto *current = static_cast<const std::uint8_t *>(callFrame->Data()) + at;
+        if (!StructChangeAllowed(UnrealEngine::Instance(), parameter->info.inner, current,
+                                 static_cast<const std::uint8_t *>(value), size))
+            return 0;
+    }
+    return callFrame->Set(parameterName, value, size) ? 1 : 0;
 }
 
 int Unreal_CallFrameGet(const URK_UnrealCallFrame *frame, const char *parameterName, void *output,
                         std::size_t size) {
     if (!frame || !parameterName)
         return 0;
-    return reinterpret_cast<const CallFrame *>(frame)->Get(parameterName, output, size) ? 1 : 0;
+    return FrameOf(frame)->frame.Get(parameterName, output, size) ? 1 : 0;
 }
 
 int Unreal_Call(URK_UnrealObject object, URK_UnrealCallFrame *frame) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!frame || object == kNullAddress || !engine.ProcessEventResolved())
+    if (!frame || !Live(engine, object) || !engine.ProcessEventResolved())
         return 0;
 
     ProcessEventHook &hook = ProcessEventHook::Instance();
@@ -316,9 +682,24 @@ int Unreal_Call(URK_UnrealObject object, URK_UnrealCallFrame *frame) {
     if (hook.GameThreadId() == 0 || hook.GameThreadId() != GetCurrentThreadId())
         return 0;
 
-    CallFrame *callFrame = reinterpret_cast<CallFrame *>(frame);
-    return InvokeProcessEvent(engine.ProcessEvent(), object, callFrame->Function().function, callFrame->Data()) ? 1
-                                                                                                                : 0;
+    LoaderFrame *loaderFrame = FrameOf(frame);
+    const FunctionInfo &function = loaderFrame->frame.Function();
+    if (!loaderFrame->unreleasable.empty()) {
+        Report(function.function, "call refused: it returns or writes " + loaderFrame->unreleasable +
+                                      ", memory the engine allocates and the loader cannot release, so every "
+                                      "call would leak");
+        return 0;
+    }
+    if (!loaderFrame->owned.empty() && !Owned().Ready()) {
+        Report(function.function, "call refused: it returns strings or arrays and the loader cannot release them (" +
+                                      Owned().Failure() + ")");
+        return 0;
+    }
+    ReleasePending();
+    if (!InvokeProcessEvent(engine.ProcessEvent(), object, function.function, loaderFrame->frame.Data()))
+        return 0;
+    loaderFrame->called = true;
+    return 1;
 }
 
 // --- hooking / dispatch ---------------------------------------------------
@@ -434,6 +815,11 @@ URK_UnrealApi BuildTable() {
     api.process_event_observe = &Unreal_ProcessEventObserve;
     api.game_thread_id = &Unreal_GameThreadId;
     api.post_to_game_thread = &Unreal_PostToGameThread;
+
+    api.struct_size = &Unreal_StructSize;
+    api.describe_struct_member = &Unreal_DescribeStructMember;
+    api.read_struct = &Unreal_ReadStruct;
+    api.write_struct = &Unreal_WriteStruct;
 
     return api;
 }
@@ -595,6 +981,13 @@ const URK_UnrealApi *UnrealSdkApi(const HookInstaller &installer) {
     static const URK_UnrealApi table = BuildTable();
     g_installer = installer;
     return &table;
+}
+
+void UnrealSdk_SetLog(LogSink log) { g_log.store(log, std::memory_order_release); }
+
+void UnrealSdk_ReleasePending() {
+    if (UnrealEngine::Instance().Available() && OnGameThread())
+        ReleasePending();
 }
 
 bool UnrealSdk_HoldProcessEventHook() {

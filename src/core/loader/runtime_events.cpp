@@ -194,6 +194,8 @@ enum class RuntimeEventsBackend {
     None,
     Mono,
     Il2Cpp,
+    // A non-Unity engine that pumps from its own game thread.
+    External,
 };
 
 struct CursorState {
@@ -264,6 +266,8 @@ bool g_inputFailureLogged = false;
 bool g_pumpActiveLogged = false;
 bool g_cursorOverrideActive = false;
 CursorState g_savedCursorState{};
+RuntimeCursorProvider g_cursorProvider{};
+const char *g_externalName = "External";
 std::atomic<int> g_menuCursorDesired{-1};
 CursorLeaseRegistry g_menuCursorLeases;
 std::atomic_bool g_menuMouseCaptureDesired{false};
@@ -387,6 +391,8 @@ const char *BackendText(RuntimeEventsBackend backend) {
             return "Mono";
         case RuntimeEventsBackend::Il2Cpp:
             return "IL2CPP";
+        case RuntimeEventsBackend::External:
+            return g_externalName;
         default:
             return "None";
     }
@@ -1731,6 +1737,14 @@ bool ReadCursorState(CursorState *state) {
             return ReadMonoCursorState(state);
         case RuntimeEventsBackend::Il2Cpp:
             return ReadIl2CppCursorState(state);
+        case RuntimeEventsBackend::External: {
+            URK_CursorState external{sizeof(URK_CursorState), 0, 0};
+            if (!g_cursorProvider.read || !g_cursorProvider.read(&external))
+                return false;
+            state->visible = external.visible != 0;
+            state->lockState = external.lockState;
+            return true;
+        }
         default:
             return false;
     }
@@ -1742,6 +1756,8 @@ bool SetCursorVisible(bool visible) {
             return SetMonoCursorVisible(visible);
         case RuntimeEventsBackend::Il2Cpp:
             return SetIl2CppCursorVisible(visible);
+        case RuntimeEventsBackend::External:
+            return g_cursorProvider.setVisible && g_cursorProvider.setVisible(visible);
         default:
             return false;
     }
@@ -1753,6 +1769,8 @@ bool SetCursorLockState(int32_t lockState) {
             return SetMonoCursorLockState(lockState);
         case RuntimeEventsBackend::Il2Cpp:
             return SetIl2CppCursorLockState(lockState);
+        case RuntimeEventsBackend::External:
+            return g_cursorProvider.setLockState && g_cursorProvider.setLockState(lockState);
         default:
             return false;
     }
@@ -3000,11 +3018,30 @@ void PumpCursorControl() {
     if (desired < 0)
         return;
 
+    if (g_backend == RuntimeEventsBackend::External && g_cursorProvider.setMenuOpen) {
+        const bool open = desired != 0;
+        if (open == g_cursorOverrideActive) {
+            g_menuCursorLastApplyResult.store(1, std::memory_order_release);
+            return;
+        }
+        const bool applied = g_cursorProvider.setMenuOpen(open);
+        g_cursorOverrideActive = open && applied;
+        g_menuCursorLastApplyResult.store(applied ? 1 : 0, std::memory_order_release);
+        if (!applied && !g_cursorFailureLogged) {
+            Log("[runtime][events][%s][WARNING] Menu cursor could not be %s.", BackendText(g_backend),
+                open ? "taken" : "given back");
+            g_cursorFailureLogged = true;
+        } else if (applied) {
+            Log("[runtime][events][%s] menu cursor %s.", BackendText(g_backend), open ? "taken" : "given back");
+        }
+        return;
+    }
+
     if (desired != 0) {
         if (g_cursorOverrideActive) {
             if (!SetCursorLockState(URK_CURSOR_LOCK_NONE) || !SetCursorVisible(true)) {
                 if (!g_cursorFailureLogged) {
-                    Log("[runtime][events][%s][WARNING] Unity cursor menu "
+                    Log("[runtime][events][%s][WARNING] Cursor menu "
                         "override reapply failed.",
                         BackendText(g_backend));
                     g_cursorFailureLogged = true;
@@ -3020,8 +3057,8 @@ void PumpCursorControl() {
         CursorState current{};
         if (!ReadCursorState(&current) || !SetCursorLockState(URK_CURSOR_LOCK_NONE) || !SetCursorVisible(true)) {
             if (!g_cursorFailureLogged) {
-                Log("[runtime][events][%s][WARNING] Unity cursor menu override failed; "
-                    "Cursor.visible/lockState could not be applied.",
+                Log("[runtime][events][%s][WARNING] Cursor menu override failed; "
+                    "visibility/lock could not be applied.",
                     BackendText(g_backend));
                 g_cursorFailureLogged = true;
             }
@@ -3034,9 +3071,9 @@ void PumpCursorControl() {
         g_savedCursorState = current;
         g_cursorOverrideActive = true;
         g_menuCursorLastApplyResult.store(1, std::memory_order_release);
-        Log("[runtime][events] Unity cursor override enabled for native menu "
+        Log("[runtime][events][%s] cursor override enabled for native menu "
             "(saved visible=%s lockState=%d).",
-            BoolText(current.visible), current.lockState);
+            BackendText(g_backend), BoolText(current.visible), current.lockState);
         return;
     }
 
@@ -3047,8 +3084,8 @@ void PumpCursorControl() {
 
     if (!ApplyCursorState(g_savedCursorState)) {
         if (!g_cursorFailureLogged) {
-            Log("[runtime][events][%s][WARNING] Unity cursor restore failed; "
-                "saved Cursor.visible/lockState could not be restored.",
+            Log("[runtime][events][%s][WARNING] Cursor restore failed; "
+                "saved visibility/lock could not be restored.",
                 BackendText(g_backend));
             g_cursorFailureLogged = true;
         }
@@ -3058,9 +3095,9 @@ void PumpCursorControl() {
         return;
     }
 
-    Log("[runtime][events] Unity cursor override disabled; restored visible=%s "
+    Log("[runtime][events][%s] cursor override disabled; restored visible=%s "
         "lockState=%d.",
-        BoolText(g_savedCursorState.visible), g_savedCursorState.lockState);
+        BackendText(g_backend), BoolText(g_savedCursorState.visible), g_savedCursorState.lockState);
     g_cursorOverrideActive = false;
     g_menuCursorLastApplyResult.store(1, std::memory_order_release);
 }
@@ -3450,6 +3487,28 @@ void RuntimeEvents_SetMainThread(DWORD threadId) {
     g_unityMainThreadId.store(threadId, std::memory_order_release);
 }
 
+void RuntimeEvents_ConfigureExternal(const char *name, uint64_t capabilities, const RuntimeCursorProvider &cursor) {
+    std::lock_guard lock(g_eventsMutex);
+    g_backend = RuntimeEventsBackend::External;
+    g_externalName = name ? name : "External";
+    g_capabilities = capabilities;
+    g_cursorProvider = cursor;
+}
+
+void RuntimeEvents_PumpExternal() {
+    if (ModLifecycle_ShutdownStarted())
+        return;
+    uint64_t capabilities = URK_RUNTIME_CAP_NONE;
+    {
+        std::lock_guard lock(g_eventsMutex);
+        if (g_backend != RuntimeEventsBackend::External)
+            return;
+        capabilities = g_capabilities;
+    }
+    if ((capabilities & URK_RUNTIME_CAP_CURSOR_CONTROL) != 0)
+        PumpCursorControl();
+}
+
 int RuntimeEvents_CurrentScene(URK_SceneInfo *scene) {
     if (!scene || scene->size < sizeof(URK_SceneInfo))
         return 0;
@@ -3551,6 +3610,10 @@ int RuntimeEvents_CursorStateGet(URK_CursorState *state) {
                 return 0;
             break;
         }
+        case RuntimeEventsBackend::External:
+            if (RuntimeEvents_IsMainThread() == 0 || !ReadCursorState(&current))
+                return 0;
+            break;
         default:
             return 0;
     }
@@ -3589,6 +3652,8 @@ int RuntimeEvents_CursorStateSet(const URK_CursorState *state) {
             Il2CppRuntimeThreadScope scope(*il2cpp);
             return scope.IsAttached() && ApplyCursorState(desired) ? 1 : 0;
         }
+        case RuntimeEventsBackend::External:
+            return RuntimeEvents_IsMainThread() != 0 && ApplyCursorState(desired) ? 1 : 0;
         default:
             return 0;
     }

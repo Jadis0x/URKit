@@ -436,6 +436,33 @@ struct PlannedWrite {
     bool moduleFile = false;
 };
 
+// Templates mark backend-only lines with //@unity{ ... //@unity} and
+// //@unreal{ ... //@unreal}. A project keeps its own blocks, never sees the other's.
+std::string KeepBackendBlocks(const std::string &text, bool unreal) {
+    const std::string drop = unreal ? "//@unity" : "//@unreal";
+    const std::string keep = unreal ? "//@unreal" : "//@unity";
+    std::string out;
+    out.reserve(text.size());
+    bool dropping = false;
+    for (std::size_t pos = 0; pos < text.size();) {
+        const std::size_t end = text.find('\n', pos);
+        const std::size_t next = end == std::string::npos ? text.size() : end + 1;
+        std::string_view line(text.data() + pos, next - pos);
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+            line.remove_suffix(1);
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+            line.remove_prefix(1);
+        if (line == drop + "{")
+            dropping = true;
+        else if (line == drop + "}")
+            dropping = false;
+        else if (line != keep + "{" && line != keep + "}" && !dropping)
+            out.append(text, pos, next - pos);
+        pos = next;
+    }
+    return out;
+}
+
 OutputFileSpec OutputSpecForWrite(const PlannedWrite &write) {
     return {write.relativePath, write.policy, write.required, write.moduleFile, true};
 }
@@ -667,7 +694,7 @@ std::string Identifier(const std::string &text, const char *fallback) {
     return out;
 }
 
-bool WriteText(const fs::path &path, const std::string &text, std::string *error) {
+bool WriteText(const fs::path &path, const std::string &text, std::string *error, bool format) {
     std::error_code ec;
     if (const auto parent = path.parent_path(); !parent.empty()) {
         fs::create_directories(parent, ec);
@@ -678,7 +705,8 @@ bool WriteText(const fs::path &path, const std::string &text, std::string *error
         }
     }
     std::string formatted = text;
-    TryFormatCxxSource(path, formatted);
+    if (format)
+        TryFormatCxxSource(path, formatted);
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << formatted;
     if (!output) {
@@ -779,6 +807,8 @@ bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error)
         {"CMakePresets.json", OutputFilePolicy::GeneratedOverwrite, CMakePresets(), true, false},
         {".vscode/c_cpp_properties.json", OutputFilePolicy::GeneratedOverwrite, VsCodeCppProperties(), true, false},
     };
+    for (PlannedWrite &write : writes)
+        write.content = KeepBackendBlocks(write.content, IsUnrealProject(project));
     if (IsUnrealProject(project)) {
         std::erase_if(writes, [](const PlannedWrite &write) {
             const std::string path = write.relativePath.generic_string();

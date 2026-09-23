@@ -196,7 +196,8 @@ bool GenerateSelectedProject(const Options &options, std::string &error) {
                                       "No offline metadata or dump-generated modules are emitted.\n";
 
     if (IsUnrealBackend(options)) {
-        if (!UnrealSdkGenerator::Generate(options.sdkOut, reportDetails, &error))
+        if (!UnrealSdkGenerator::Generate(options.sdkOut, reportDetails,
+                                          UnrealSdkGenerator::TypeDumpPath(options.gameDir), &error))
             return false;
         return UnrealSdkGenerator::GenerateModProject(options.projectOut, options.sdkOut, options.includeRoot,
                                                       options.projectName, options.gameDir, options.modsDir,

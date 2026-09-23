@@ -341,7 +341,8 @@ bool GenerateBackend(Backend backend, const fs::path &root, const fs::path &sdkR
                Il2CppSdkGenerator::GenerateModProject(root.string(), sdkRoot.string(), {}, projectName, gameDirectory,
                                                       modsDirectory, enableLocalization, error);
     case Backend::Unreal:
-        return UnrealSdkGenerator::Generate(sdkRoot.string(), reportDetails, error) &&
+        return UnrealSdkGenerator::Generate(sdkRoot.string(), reportDetails,
+                                            UnrealSdkGenerator::TypeDumpPath(gameDirectory), error) &&
                UnrealSdkGenerator::GenerateModProject(root.string(), sdkRoot.string(), {}, projectName, gameDirectory,
                                                       modsDirectory, enableLocalization, error);
     case Backend::Mono:
@@ -437,6 +438,10 @@ bool FileContentsEqual(const fs::path &left, const fs::path &right, bool *equal,
 ChangeKind ClassifyCandidateChange(const Inspection &inspection, const fs::path &relativePath,
                                    const fs::path &existing, std::string *error) {
     if (relativePath == fs::path(kProjectManifestRelativePath))
+        return PathExists(existing) ? ChangeKind::Modified : ChangeKind::Added;
+    // Typed headers and the SDK readme belong to the generator; never edited in place.
+    const std::string generic = relativePath.generic_string();
+    if (generic.starts_with("sdk/unreal/types/") || generic == "sdk/unreal/README.md")
         return PathExists(existing) ? ChangeKind::Modified : ChangeKind::Added;
     if (!inspection.hasGeneratedFileLedger)
         return ChangeKind::Conflict;
@@ -681,8 +686,17 @@ bool PreviewUpdate(const fs::path &projectRoot, UpdatePreview *preview, std::str
 
     UpdatePreview result;
     result.inspection = inspection;
-    if (inspection.updateAvailable && !BuildPreview(inspection, &result.changes, error))
+    // A template fix does not always bump the SDK version; the ledger tells
+    // content apart, so an equal version still gets compared file by file.
+    const bool compareContent = !inspection.updateAvailable && inspection.hasManifest &&
+                                inspection.hasGeneratedFileLedger;
+    if ((inspection.updateAvailable || compareContent) && !BuildPreview(inspection, &result.changes, error))
         return false;
+    if (compareContent && !result.changes.empty()) {
+        result.inspection.updateAvailable = true;
+        std::erase(result.inspection.notices, std::string("Project generated files already match this updater's SDK version."));
+        result.inspection.notices.push_back("Same SDK version, but generated files differ from this updater's templates.");
+    }
     *preview = std::move(result);
     return true;
 }

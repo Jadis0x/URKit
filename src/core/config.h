@@ -8,6 +8,8 @@ struct Config {
     int initDelayMs = 0;
     std::string runtime = "auto";
     std::string modsDir = "Mods";
+    // [Unreal] DumpTypes: write reflected classes for urk-sdk's typed headers.
+    bool unrealDumpTypes = false;
     std::string configPath;
     std::vector<std::string> modPaths;
     std::vector<std::string> warnings;

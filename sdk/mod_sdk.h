@@ -12,7 +12,7 @@ extern "C" {
 #define URK_IL2CPP_API_VERSION 7
 #define URK_NETWORK_API_VERSION 1
 #define URK_HOOK_API_VERSION 1
-#define URK_UNREAL_API_VERSION 1
+#define URK_UNREAL_API_VERSION 2
 
 #define URK_SCENE_NAME_MAX 128
 #define URK_OBJECT_NAME_MAX 128
@@ -791,6 +791,13 @@ typedef struct URK_UnrealPropertyInfo {
     /* Object/Class: the required UClass. Struct: the UScriptStruct. Array:
      * the element property. Enum: the underlying numeric property. */
     URK_UnrealObject inner;
+    /* Appended (API version 2), filled only when size covers them. Bools: the
+     * byte of the value holding the bit and the bit; bool_field_mask 0xFF is a
+     * whole bool, anything else a bitfield. */
+    uint8_t bool_byte_offset;
+    uint8_t bool_byte_mask;
+    uint8_t bool_field_mask;
+    uint8_t reserved;
 } URK_UnrealPropertyInfo;
 
 /*
@@ -980,6 +987,32 @@ typedef struct URK_UnrealApi {
      * queue is full - this is a bounded mailbox, not a general task queue.
      */
     int (*post_to_game_thread)(URK_UnrealPostedWorkFn work, void *user_data);
+
+    /* Version 2: struct values. */
+
+    /* The bytes a value of this struct occupies as a member (its size rounded
+     * up to its alignment), supers included. Zero when struct_object is not a
+     * live UStruct. */
+    int32_t (*struct_size)(URK_UnrealObject struct_object);
+    /*
+     * A member of a struct type rather than of an instance: its shape, and in
+     * *offset where it sits inside the struct's value. Supers are searched.
+     * This is how a mod checks a struct layout it was compiled with.
+     */
+    int (*describe_struct_member)(URK_UnrealObject struct_object, const char *member_name,
+                                  URK_UnrealPropertyInfo *info, int32_t *offset);
+    /*
+     * A struct-valued member copied whole; size must equal its element_size.
+     * A write, and a struct parameter given to call_frame_set, is refused when
+     * it changes any part that owns an engine allocation or cannot be checked
+     * (names, strings, text, arrays, sets, maps, weak/soft/interface
+     * references, delegates), or holds an object that is not live and of the
+     * member's declared class. Numbers and nested structs are free to change.
+     */
+    int (*read_struct)(URK_UnrealObject object, const char *member_name, int32_t index, void *output,
+                       size_t size);
+    int (*write_struct)(URK_UnrealObject object, const char *member_name, int32_t index, const void *value,
+                        size_t size);
 } URK_UnrealApi;
 
 #ifdef __cplusplus
@@ -988,6 +1021,8 @@ static_assert(offsetof(URK_UnrealApi, is_available) > offsetof(URK_UnrealApi, si
 static_assert(offsetof(URK_UnrealApi, hook_install) > offsetof(URK_UnrealApi, call),
               "URK_UnrealApi new fields must be appended.");
 static_assert(offsetof(URK_UnrealApi, post_to_game_thread) > offsetof(URK_UnrealApi, game_thread_id),
+              "URK_UnrealApi new fields must be appended.");
+static_assert(offsetof(URK_UnrealApi, struct_size) > offsetof(URK_UnrealApi, post_to_game_thread),
               "URK_UnrealApi new fields must be appended.");
 #endif
 

@@ -148,6 +148,20 @@ std::vector<LoadedNativeMod> SnapshotLoadedMods() {
     std::lock_guard<std::mutex> lock(g_loadedModsMutex);
     return g_loadedMods;
 }
+} // namespace
+
+bool ModLifecycle_IsModModule(HMODULE module) {
+    if (!module)
+        return false;
+    std::lock_guard<std::mutex> lock(g_loadedModsMutex);
+    for (const LoadedNativeMod &mod : g_loadedMods) {
+        if (mod.module == module)
+            return true;
+    }
+    return false;
+}
+
+namespace {
 
 void ShutdownNativeMods(const std::vector<LoadedNativeMod> &mods) {
     if (mods.empty()) {

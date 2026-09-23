@@ -21,7 +21,8 @@ struct OutputFileSpec {
 };
 
 std::string Identifier(const std::string &text, const char *fallback);
-bool WriteText(const std::filesystem::path &path, const std::string &text, std::string *error);
+// format runs clang-format on C++ sources; bulk generated output skips it.
+bool WriteText(const std::filesystem::path &path, const std::string &text, std::string *error, bool format = true);
 
 struct ModuleProjectOptions {
     std::filesystem::path projectRoot;

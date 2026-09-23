@@ -47,6 +47,7 @@ set(URK_CORE_SRC
     ${URK_SRC_DIR}/core/loader/native_mod_loader.cpp
     ${URK_SRC_DIR}/core/loader/runtime_backend.cpp
     ${URK_SRC_DIR}/core/loader/runtime_discovery.cpp
+    ${URK_SRC_DIR}/core/loader/cursor_guard.cpp
     ${URK_SRC_DIR}/core/loader/runtime_events.cpp
     ${URK_SRC_DIR}/core/loader/steam_identity.cpp
     ${URK_SRC_DIR}/core/loader/unreal_mod_context.cpp
@@ -75,6 +76,8 @@ set(URK_UNREAL_SRC
     ${URK_SRC_DIR}/unreal/unreal_engine_detect.cpp
     ${URK_SRC_DIR}/unreal/unreal_functions.cpp
     ${URK_SRC_DIR}/unreal/unreal_game_loop.cpp
+    ${URK_SRC_DIR}/unreal/unreal_type_dump.cpp
+    ${URK_SRC_DIR}/unreal/unreal_owned_values.cpp
     ${URK_SRC_DIR}/unreal/unreal_module.cpp
     ${URK_SRC_DIR}/unreal/unreal_names.cpp
     ${URK_SRC_DIR}/unreal/unreal_object_array.cpp
@@ -107,6 +110,7 @@ set(URK_SDK_GENERATOR_SRC
     ${URK_SRC_DIR}/sdk/mono_sdk_generator.cpp
     ${URK_SRC_DIR}/sdk/il2cpp_project_generator.cpp
     ${URK_SRC_DIR}/sdk/unreal_sdk_generator.cpp
+    ${URK_SRC_DIR}/sdk/unreal_type_codegen.cpp
     ${URK_SRC_DIR}/sdk/sdk_generator_contract.cpp
     ${URK_SRC_DIR}/sdk/project_manifest.cpp
     ${URK_SRC_DIR}/sdk/project_ledger.cpp
@@ -244,6 +248,7 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/core/loader/native_mod_loader.h
     ${URK_SRC_DIR}/core/loader/runtime_backend.h
     ${URK_SRC_DIR}/core/loader/runtime_discovery.h
+    ${URK_SRC_DIR}/core/loader/cursor_guard.h
     ${URK_SRC_DIR}/core/loader/runtime_events.h
     ${URK_SRC_DIR}/core/loader/steam_identity.h
     ${URK_SRC_DIR}/core/loader/window_message_dispatcher.h
@@ -262,6 +267,7 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/sdk/il2cpp_sdk_generator.h
     ${URK_SRC_DIR}/sdk/mono_sdk_generator.h
     ${URK_SRC_DIR}/sdk/unreal_sdk_generator.h
+    ${URK_SRC_DIR}/sdk/unreal_type_codegen.h
     ${URK_SRC_DIR}/sdk/sdk_generator_contract.h
     ${URK_SRC_DIR}/sdk/project_manifest.h
     ${URK_SRC_DIR}/sdk/project_updater.h
@@ -276,6 +282,8 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/unreal/unreal_engine_detect.h
     ${URK_SRC_DIR}/unreal/unreal_functions.h
     ${URK_SRC_DIR}/unreal/unreal_game_loop.h
+    ${URK_SRC_DIR}/unreal/unreal_type_dump.h
+    ${URK_SRC_DIR}/unreal/unreal_owned_values.h
     ${URK_SRC_DIR}/unreal/unreal_memory.h
     ${URK_SRC_DIR}/unreal/unreal_module.h
     ${URK_SRC_DIR}/unreal/unreal_names.h

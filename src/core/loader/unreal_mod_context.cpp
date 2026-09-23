@@ -4,7 +4,8 @@ URK_ModContext &ModContext_BuildUnreal(const Config &config, const URK_UnrealApi
                                        uintptr_t runtimeModuleBase, bool gameLoop) {
     ModContextBuildOptions options{};
     options.runtimeBackend = URK_RUNTIME_BACKEND_UNREAL;
-    options.backendCapabilities = gameLoop ? URK_RUNTIME_CAP_SCENE_EVENTS : URK_RUNTIME_CAP_NONE;
+    options.backendCapabilities =
+        gameLoop ? URK_RUNTIME_CAP_SCENE_EVENTS | URK_RUNTIME_CAP_CURSOR_CONTROL : URK_RUNTIME_CAP_NONE;
     options.mainThreadDispatcherAvailable = gameLoop;
     options.apis.unreal = unreal;
     options.modules.backendModuleBase = runtimeModuleBase;

@@ -16,10 +16,14 @@ using HookRegisters = ::URK_HookRegisters;
 using MidHookCallbackFn = ::URK_MidHookCallbackFn;
 using MidHookHandle = ::URK_MidHookHandle;
 using MidHookOptions = ::URK_MidHookOptions;
+//@unity{
 using Il2CppApi = ::URK_Il2CppApi;
+//@unity}
 using ModContext = ::URK_ModContext;
 using ModInfo = ::URK_ModInfo;
+//@unity{
 using MonoApi = ::URK_MonoApi;
+//@unity}
 using NetworkApi = ::URK_NetworkApi;
 using NetworkHeader = ::URK_NetworkHeader;
 using NetworkHttpMethod = ::URK_NetworkHttpMethod;
@@ -36,39 +40,55 @@ using CursorLockState = ::URK_CursorLockState;
 using CursorState = ::URK_CursorState;
 using OnSceneLoadedFn = ::URK_OnSceneLoadedFn;
 using OnSceneChangedFn = ::URK_OnSceneChangedFn;
+//@unity{
 using ObjectDestroyRequest = ::URK_ObjectDestroyRequest;
 using ObjectDestroyRequestFlags = ::URK_ObjectDestroyRequestFlags;
 using OnObjectDestroyRequestedFn = ::URK_OnObjectDestroyRequestedFn;
+//@unity}
 
 inline constexpr RuntimeBackend runtime_backend_unknown = URK_RUNTIME_BACKEND_UNKNOWN;
+//@unity{
 inline constexpr RuntimeBackend runtime_backend_mono = URK_RUNTIME_BACKEND_MONO;
 inline constexpr RuntimeBackend runtime_backend_il2cpp = URK_RUNTIME_BACKEND_IL2CPP;
+//@unity}
+//@unreal{
 inline constexpr RuntimeBackend runtime_backend_unreal = URK_RUNTIME_BACKEND_UNREAL;
+//@unreal}
 
 inline constexpr HookBackend hook_backend_auto = URK_HOOK_BACKEND_AUTO;
 inline constexpr HookBackend hook_backend_detours = URK_HOOK_BACKEND_DETOURS;
 inline constexpr HookBackend hook_backend_safetyhook = URK_HOOK_BACKEND_SAFETYHOOK;
 
 inline constexpr std::uint64_t runtime_cap_none = URK_RUNTIME_CAP_NONE;
+//@unity{
 inline constexpr std::uint64_t runtime_cap_mono_api = URK_RUNTIME_CAP_MONO_API;
 inline constexpr std::uint64_t runtime_cap_il2cpp_api = URK_RUNTIME_CAP_IL2CPP_API;
+//@unity}
 inline constexpr std::uint64_t runtime_cap_hooks = URK_RUNTIME_CAP_HOOKS;
 inline constexpr std::uint64_t runtime_cap_main_thread = URK_RUNTIME_CAP_MAIN_THREAD;
 inline constexpr std::uint64_t runtime_cap_scene_events = URK_RUNTIME_CAP_SCENE_EVENTS;
 inline constexpr std::uint64_t runtime_cap_cursor_control = URK_RUNTIME_CAP_CURSOR_CONTROL;
 inline constexpr std::uint64_t runtime_cap_network = URK_RUNTIME_CAP_NETWORK;
+//@unity{
 inline constexpr std::uint64_t runtime_cap_input = URK_RUNTIME_CAP_INPUT;
 inline constexpr std::uint64_t runtime_cap_graphics_device = URK_RUNTIME_CAP_GRAPHICS_DEVICE_TYPE;
+//@unity}
+//@unity{
 inline constexpr std::uint64_t runtime_cap_object_destroy_request_events =
     URK_RUNTIME_CAP_OBJECT_DESTROY_REQUEST_EVENTS;
+//@unity}
 inline constexpr std::uint64_t runtime_cap_steam_identity = URK_RUNTIME_CAP_STEAM_IDENTITY;
 inline constexpr std::uint64_t runtime_cap_mid_hooks = URK_RUNTIME_CAP_MID_HOOKS;
+//@unreal{
 inline constexpr std::uint64_t runtime_cap_unreal_api = URK_RUNTIME_CAP_UNREAL_API;
+//@unreal}
+//@unity{
 inline constexpr std::int32_t graphics_device_unknown = URK_GRAPHICS_DEVICE_UNKNOWN;
 inline constexpr std::int32_t graphics_device_direct3d11 = URK_GRAPHICS_DEVICE_D3D11;
 inline constexpr std::int32_t graphics_device_direct3d12 = URK_GRAPHICS_DEVICE_D3D12;
 inline constexpr std::int32_t graphics_device_opengl2 = URK_GRAPHICS_DEVICE_OPENGL2;
 inline constexpr std::int32_t graphics_device_openglcore = URK_GRAPHICS_DEVICE_OPENGL_CORE;
+//@unity}
 inline constexpr NetworkHttpMethod network_http_get = URK_NETWORK_HTTP_GET;
 inline constexpr NetworkHttpMethod network_http_post = URK_NETWORK_HTTP_POST;
 inline constexpr NetworkHttpMethod network_http_put = URK_NETWORK_HTTP_PUT;
@@ -116,15 +136,19 @@ inline std::uint64_t runtime_capabilities() {
 inline bool has_runtime_capability(std::uint64_t capability) {
     return (runtime_capabilities() & capability) != 0;
 }
+//@unity{
 inline bool has_mono_api() {
     return has_runtime_capability(runtime_cap_mono_api);
 }
 inline bool has_il2cpp_api() {
     return has_runtime_capability(runtime_cap_il2cpp_api);
 }
+//@unity}
+//@unreal{
 inline bool has_unreal_api() {
     return has_runtime_capability(runtime_cap_unreal_api);
 }
+//@unreal}
 inline bool has_hooks() {
     return has_runtime_capability(runtime_cap_hooks);
 }
@@ -134,21 +158,27 @@ inline bool has_main_thread() {
 inline bool has_scene_events() {
     return has_runtime_capability(runtime_cap_scene_events);
 }
+//@unity{
 inline bool has_object_destroy_request_events() {
     return has_runtime_capability(runtime_cap_object_destroy_request_events);
 }
+//@unity}
 inline bool has_cursor_control() {
     return has_runtime_capability(runtime_cap_cursor_control);
 }
 inline bool has_network() {
     return has_runtime_capability(runtime_cap_network);
 }
+//@unity{
 inline bool has_input() {
     return has_runtime_capability(runtime_cap_input);
 }
+//@unity}
+//@unity{
 inline bool has_graphics_device() {
     return has_runtime_capability(runtime_cap_graphics_device);
 }
+//@unity}
 inline bool has_steam_identity() {
     return has_runtime_capability(runtime_cap_steam_identity);
 }
@@ -162,6 +192,7 @@ inline bool is_main_thread() {
     return runtime_api_has_field(offsetof(RuntimeApi, is_main_thread) + sizeof(ctx->runtime->is_main_thread)) &&
            ctx->runtime->is_main_thread && ctx->runtime->is_main_thread() != 0;
 }
+//@unity{
 inline std::int32_t graphics_device_type() {
     const auto *ctx = context();
     return has_graphics_device() &&
@@ -171,6 +202,7 @@ inline std::int32_t graphics_device_type() {
                ? ctx->runtime->graphics_device_type()
                : graphics_device_unknown;
 }
+//@unity}
 inline bool steam_id64(char *output, std::size_t output_size) {
     if (!output || output_size == 0)
         return false;
@@ -239,6 +271,7 @@ inline bool cursor_state_get(CursorState *state) {
     return runtime_api_has_field(offsetof(RuntimeApi, cursor_state_get) + sizeof(ctx->runtime->cursor_state_get)) &&
            ctx->runtime->cursor_state_get && ctx->runtime->cursor_state_get(state) != 0;
 }
+//@unity{
 inline bool cursor_state_set(bool visible, CursorLockState lockState) {
     CursorState state{};
     state.size = sizeof(state);
@@ -248,6 +281,8 @@ inline bool cursor_state_set(bool visible, CursorLockState lockState) {
     return runtime_api_has_field(offsetof(RuntimeApi, cursor_state_set) + sizeof(ctx->runtime->cursor_state_set)) &&
            ctx->runtime->cursor_state_set && ctx->runtime->cursor_state_set(&state) != 0;
 }
+//@unity}
+//@unity{
 inline bool cursor_state_set(const CursorState *state) {
     if (!state || state->size < sizeof(CursorState))
         return false;
@@ -255,39 +290,52 @@ inline bool cursor_state_set(const CursorState *state) {
     return runtime_api_has_field(offsetof(RuntimeApi, cursor_state_set) + sizeof(ctx->runtime->cursor_state_set)) &&
            ctx->runtime->cursor_state_set && ctx->runtime->cursor_state_set(state) != 0;
 }
+//@unity}
+//@unity{
 inline bool input_get_key(std::int32_t keyCode) {
     const auto *ctx = context();
     return runtime_api_has_field(offsetof(RuntimeApi, input_get_key) + sizeof(ctx->runtime->input_get_key)) &&
            ctx->runtime->input_get_key && ctx->runtime->input_get_key(keyCode) != 0;
 }
+//@unity}
+//@unity{
 inline bool input_get_key_down(std::int32_t keyCode) {
     const auto *ctx = context();
     return runtime_api_has_field(offsetof(RuntimeApi, input_get_key_down) + sizeof(ctx->runtime->input_get_key_down)) &&
            ctx->runtime->input_get_key_down && ctx->runtime->input_get_key_down(keyCode) != 0;
 }
+//@unity}
+//@unity{
 inline bool input_get_key_up(std::int32_t keyCode) {
     const auto *ctx = context();
     return runtime_api_has_field(offsetof(RuntimeApi, input_get_key_up) + sizeof(ctx->runtime->input_get_key_up)) &&
            ctx->runtime->input_get_key_up && ctx->runtime->input_get_key_up(keyCode) != 0;
 }
+//@unity}
+//@unity{
 inline bool input_get_mouse_button(std::int32_t button) {
     const auto *ctx = context();
     return runtime_api_has_field(offsetof(RuntimeApi, input_get_mouse_button) +
                                  sizeof(ctx->runtime->input_get_mouse_button)) &&
            ctx->runtime->input_get_mouse_button && ctx->runtime->input_get_mouse_button(button) != 0;
 }
+//@unity}
+//@unity{
 inline bool input_get_mouse_button_down(std::int32_t button) {
     const auto *ctx = context();
     return runtime_api_has_field(offsetof(RuntimeApi, input_get_mouse_button_down) +
                                  sizeof(ctx->runtime->input_get_mouse_button_down)) &&
            ctx->runtime->input_get_mouse_button_down && ctx->runtime->input_get_mouse_button_down(button) != 0;
 }
+//@unity}
+//@unity{
 inline bool input_get_mouse_button_up(std::int32_t button) {
     const auto *ctx = context();
     return runtime_api_has_field(offsetof(RuntimeApi, input_get_mouse_button_up) +
                                  sizeof(ctx->runtime->input_get_mouse_button_up)) &&
            ctx->runtime->input_get_mouse_button_up && ctx->runtime->input_get_mouse_button_up(button) != 0;
 }
+//@unity}
 
 inline void log(const char *text) {
     const auto *ctx = context();

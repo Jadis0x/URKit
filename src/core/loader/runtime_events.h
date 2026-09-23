@@ -20,6 +20,19 @@ int RuntimeEvents_CurrentScene(URK_SceneInfo *scene);
 // for a scene that looks like the current one (the same map loaded again).
 void RuntimeEvents_ObserveScene(const URK_SceneInfo &scene, bool distinct);
 void RuntimeEvents_SetMainThread(unsigned long threadId);
+
+// Cursor access for a non-Unity engine; called only on its game thread.
+struct RuntimeCursorProvider {
+    bool (*read)(URK_CursorState *state) = nullptr;
+    bool (*setVisible)(bool visible) = nullptr;
+    bool (*setLockState)(int32_t lockState) = nullptr;
+    // Set: the menu lease calls this instead of saving and applying state.
+    bool (*setMenuOpen)(bool open) = nullptr;
+};
+
+// Menu cursor leases, save and restore work as under Unity; the engine pumps.
+void RuntimeEvents_ConfigureExternal(const char *name, uint64_t capabilities, const RuntimeCursorProvider &cursor);
+void RuntimeEvents_PumpExternal();
 int RuntimeEvents_MenuCursorSetOpen(void *ownerModule, int open);
 int RuntimeEvents_MenuMouseCaptureSet(void *ownerModule, int capture);
 int RuntimeEvents_UnregisterModule(void *module);
