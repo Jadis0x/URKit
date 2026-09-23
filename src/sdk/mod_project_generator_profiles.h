@@ -30,6 +30,9 @@ inline void ApplyBackendProfile(ModuleProjectOptions &options, const BackendProj
     } else if (profile.namespaceName == "URK::il2cpp") {
         options.requiredBackendConstant = "URK::runtime_backend_il2cpp";
         options.requiredCapabilityConstant = "URK::runtime_cap_il2cpp_api";
+    } else if (profile.namespaceName == "URK::unreal") {
+        options.requiredBackendConstant = "URK::runtime_backend_unreal";
+        options.requiredCapabilityConstant = "URK::runtime_cap_unreal_api";
     }
     options.description = profile.description;
     options.backendModuleFiles = profile.moduleFiles;
@@ -80,6 +83,22 @@ inline BackendProjectProfile Il2CppBackendProfile() {
     profile.readmeExtraLayoutLines = {
         "`sdk/il2cpp/il2cpp_runtime.h`, `sdk/il2cpp/il2cpp_helpers.h`: "
         "generated IL2CPP runtime adapter headers.",
+    };
+    return profile;
+}
+
+inline BackendProjectProfile UnrealBackendProfile() {
+    BackendProjectProfile profile;
+    profile.displayName = "Unreal";
+    profile.moduleName = "urk.unreal.runtime";
+    profile.namespaceName = "URK::unreal";
+    profile.description = "Generated URKit Unreal Engine native mod";
+    profile.sdkSubdirectory = "sdk/unreal";
+    profile.moduleFiles = {
+        "sdk/unreal/unreal_runtime.h",
+    };
+    profile.readmeExtraLayoutLines = {
+        "`sdk/unreal/unreal_runtime.h`: generated Unreal runtime adapter header.",
     };
     return profile;
 }

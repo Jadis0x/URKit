@@ -1,10 +1,7 @@
 #pragma once
 
-// Finding the world and walking to its actors.
-//
-// A game holds several UWorlds at once, so the global is what is looked for -
-// recognised by pointing at an object the array agrees derives from World,
-// not by a signature. Everything past it is ordinary reflection.
+// GWorld and its actors. Found as the global pointing at a live World-derived
+// object, not by signature; the rest is ordinary reflection.
 
 #include "unreal_module.h"
 #include "unreal_property_values.h"

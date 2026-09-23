@@ -7,18 +7,16 @@
 namespace URK::Unreal {
 namespace {
 
-// Protections a read is allowed through. PAGE_GUARD and PAGE_NOACCESS are not
-// among them, and PAGE_GUARD especially must be rejected without touching the
-// page: touching it is what arms the exception the game is waiting on.
+// Readable protections. PAGE_GUARD must be rejected untouched: touching it
+// fires the exception the game relies on.
 constexpr DWORD kReadableProtections = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
                                        PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
 constexpr DWORD kWritableProtections = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE |
                                        PAGE_EXECUTE_WRITECOPY;
 constexpr DWORD kBlockingProtections = PAGE_GUARD | PAGE_NOACCESS;
 
-// A leaf with nothing to unwind: cl.exe rejects __try in a frame holding a
-// non-trivial destructor. Needs -fasync-exceptions under clang, or a fault
-// crashes the game instead of failing the read.
+// No destructors here: cl.exe rejects __try around them. Needs
+// -fasync-exceptions under clang.
 bool CopyGuarded(const void *source, void *out, std::size_t size) {
     __try {
         std::memcpy(out, source, size);
@@ -130,9 +128,7 @@ bool ProcessMemory::Read(Address address, void *out, std::size_t size) const {
     if (CopyGuarded(reinterpret_cast<const void *>(address), out, size))
         return true;
 
-    // The range was freed or reprotected between the question and the copy, so
-    // what is remembered about it is wrong - and so may be its neighbours, if
-    // they were freed in the same call.
+    // Freed or reprotected since the query; its neighbours may be stale too.
     Forget();
     return false;
 }

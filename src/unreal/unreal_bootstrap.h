@@ -1,9 +1,9 @@
 #pragma once
 
-// Finds GUObjectArray and FNamePool by scanning data sections, since a shipped
-// game exports neither. Accepted only as a pair: either can be faked alone, but
-// the array's objects must read back through the pool as known engine names.
+// Finds GUObjectArray and FNamePool from code anchors or by scanning data. Accepted
+// only as a pair: the array's objects must read back through the pool as names.
 
+#include "unreal_code_anchors.h"
 #include "unreal_module.h"
 #include "unreal_names.h"
 #include "unreal_object_array.h"
@@ -33,7 +33,14 @@ std::vector<Address> FindObjectArrayCandidates(const MemoryReader &reader, std::
 std::vector<Address> FindNameTableCandidates(const MemoryReader &reader, std::span<const ScanRegion> regions);
 
 // Pairs the candidates and keeps the pair that reads back the most names.
+std::optional<Runtime> PairCandidates(const MemoryReader &reader, std::span<const Address> arrays,
+                                      std::span<const Address> tables);
+
+// Scans the regions for candidates, then pairs them.
 std::optional<Runtime> BootstrapRuntime(const MemoryReader &reader, std::span<const ScanRegion> regions);
+
+// Pairs candidates found from code; cheap enough to poll until the engine is up.
+std::optional<Runtime> BootstrapAnchored(const MemoryReader &reader, const GlobalCandidates &candidates);
 
 // As above, over the data sections of one loaded module.
 std::optional<Runtime> BootstrapModule(const MemoryReader &reader, Address moduleBase);

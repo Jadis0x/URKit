@@ -1,9 +1,7 @@
 #pragma once
 
-// UObject::ProcessEvent, found by the fields it must read to build a parameter
-// frame (ParmsSize + ReturnValueOffset) rather than by a byte pattern.
-// Calibrated value is the vtable *index*; the address is read per object,
-// because classes override it (AActor does).
+// ProcessEvent's vtable index, found by the fields it reads (ParmsSize +
+// ReturnValueOffset). The address is read per object: classes override it.
 
 #include "unreal_functions.h"
 #include "unreal_module.h"
@@ -39,10 +37,12 @@ struct ProcessEventLocation {
 };
 
 // Nothing when no slot qualifies; an unresolved location with rivals listed
-// when more than one does.
+// when more than one does. Slot bodies end where bounds says; a slot it has no
+// entry for ends at the next known function entry instead.
 std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder, const TypeQueries &types,
                                                      const StructOffsets &structs, const FunctionOffsets &functions,
-                                                     std::span<const ScanRegion> codeRegions);
+                                                     std::span<const ScanRegion> codeRegions,
+                                                     const FunctionTable &bounds = {});
 
 // The implementation this object dispatches to, read from its own vtable.
 Address ProcessEventFor(const MemoryReader &reader, const ProcessEventLocation &location, Address object);

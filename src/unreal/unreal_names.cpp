@@ -3,9 +3,8 @@
 namespace URK::Unreal {
 namespace {
 
-// "None" and "CoreUObj", the two strings guaranteed to be in the first block.
-// The first fixes the entry header size, the second confirms the block really
-// is a name block and not an unrelated allocation.
+// Both are always in the first block: "None" sizes the entry header, "CoreUObj"
+// confirms it is a name block.
 constexpr std::uint32_t kNoneBytes = 0x656E6F4E;
 constexpr std::uint64_t kCoreUObjectBytes = 0x6A624F5565726F43;
 
@@ -23,9 +22,6 @@ constexpr std::int32_t kBlockScanLimit = 0x1000;
 constexpr std::int32_t kMaxBlocks = 0x10000;
 constexpr std::int32_t kMaxNameLength = 0x400;
 constexpr int kMaxNumberedDepth = 4;
-
-// Chunk size of TNameEntryArray, fixed in every version that used it.
-constexpr std::uint32_t kEntryArrayChunkSize = 0x4000;
 
 std::string NarrowWide(const MemoryReader &reader, Address address, std::int32_t length) {
     std::string text;
@@ -169,107 +165,16 @@ std::optional<NamePoolLayout> ResolvePool(const MemoryReader &reader, Address po
     return layout;
 }
 
-// The chunk table runs until a gap; the counts sit directly after it, and the
-// chunk count matching the pointers already seen identifies them.
-std::optional<NameEntryArrayLayout> ResolveEntryArrayHeader(const MemoryReader &reader, Address base) {
-    std::int32_t validPointers = 0;
-    std::int32_t nulls = 0;
-
-    for (std::int32_t offset = 0; offset < 0x800; offset += sizeof(Address)) {
-        const std::optional<Address> slot = reader.ReadPointer(base + offset);
-        if (!slot)
-            return std::nullopt;
-
-        if (*slot == kNullAddress) {
-            ++nulls;
-            continue;
-        }
-        if (nulls == 0) {
-            ++validPointers;
-            continue;
-        }
-
-        const std::optional<std::int32_t> numElements = reader.ReadInt32(base + offset);
-        const std::optional<std::int32_t> numChunks = reader.ReadInt32(base + offset + 4);
-        if (numElements && numChunks && *numChunks == validPointers) {
-            NameEntryArrayLayout layout;
-            layout.numElementsOffset = offset;
-            layout.blockCountOffset = offset + 4;
-            return layout;
-        }
-    }
-    return std::nullopt;
-}
-
-// Entry zero is "None", which fixes the string offset. Entries three and eight
-// store their own index above the wide flag, which fixes the index offset.
-bool ResolveEntryArrayFields(const MemoryReader &reader, Address entryZero, Address entryThree, Address entryEight,
-                             NameEntryArrayLayout &layout) {
-    for (std::int32_t offset = 0; offset < 0x20; ++offset) {
-        const std::optional<std::uint32_t> word = reader.ReadUInt32(entryZero + offset);
-        if (word && *word == kNoneBytes) {
-            layout.entryStringOffset = offset;
-            break;
-        }
-    }
-    if (layout.entryStringOffset == kOffsetNotFound)
-        return false;
-
-    for (std::int32_t offset = 0; offset < 0x20; ++offset) {
-        const std::optional<std::uint32_t> three = reader.ReadUInt32(entryThree + offset);
-        const std::optional<std::uint32_t> eight = reader.ReadUInt32(entryEight + offset);
-        if (three && eight && (*three >> 1) == 0x3 && (*eight >> 1) == 0x8) {
-            layout.entryIndexOffset = offset;
-            return true;
-        }
-    }
-    return false;
-}
-
 } // namespace
 
 std::optional<NameTable> NameTable::Resolve(const MemoryReader &reader, Address address) {
-    if (const std::optional<NamePoolLayout> pool = ResolvePool(reader, address)) {
-        NameLayout layout;
-        layout.storage = NameStorage::Pool;
-        layout.pool = *pool;
-        return NameTable(reader, address, layout);
-    }
-
-    const std::optional<NameEntryArrayLayout> header = ResolveEntryArrayHeader(reader, address);
-    if (!header)
+    const std::optional<NamePoolLayout> pool = ResolvePool(reader, address);
+    if (!pool)
         return std::nullopt;
-
-    NameLayout layout;
-    layout.storage = NameStorage::EntryArray;
-    layout.entries = *header;
-
-    NameTable table(reader, address, layout);
-    const auto entryAddress = [&](std::uint32_t index) -> Address {
-        const std::optional<Address> chunk =
-            reader.ReadPointer(address + static_cast<Address>(index / kEntryArrayChunkSize) * sizeof(Address));
-        if (!chunk || *chunk == kNullAddress)
-            return kNullAddress;
-        const std::optional<Address> entry =
-            reader.ReadPointer(*chunk + static_cast<Address>(index % kEntryArrayChunkSize) * sizeof(Address));
-        return entry ? *entry : kNullAddress;
-    };
-
-    const Address zero = entryAddress(0);
-    const Address three = entryAddress(3);
-    const Address eight = entryAddress(8);
-    if (zero == kNullAddress || three == kNullAddress || eight == kNullAddress)
-        return std::nullopt;
-    if (!ResolveEntryArrayFields(reader, zero, three, eight, table.layout_.entries))
-        return std::nullopt;
-
-    return table;
+    return NameTable(reader, address, NameLayout{*pool});
 }
 
 void NameTable::CalibrateBlockOffsetBits(const ObjectArray &objects, std::int32_t nameOffset) {
-    if (layout_.storage != NameStorage::Pool)
-        return;
-
     const std::optional<std::int32_t> blockCount = reader_->ReadInt32(address_ + layout_.pool.blockCountOffset);
     if (!blockCount)
         return;
@@ -345,52 +250,8 @@ std::optional<std::string> NameTable::ReadFromPool(std::uint32_t comparisonIndex
     return ReadAnsi(*reader_, text, length);
 }
 
-std::optional<std::string> NameTable::ReadFromEntryArray(std::uint32_t comparisonIndex) const {
-    const NameEntryArrayLayout &entries = layout_.entries;
-
-    const std::optional<std::int32_t> numElements = reader_->ReadInt32(address_ + entries.numElementsOffset);
-    if (!numElements || comparisonIndex > static_cast<std::uint32_t>(*numElements))
-        return std::nullopt;
-
-    const std::optional<Address> chunk = reader_->ReadPointer(
-        address_ + static_cast<Address>(comparisonIndex / kEntryArrayChunkSize) * sizeof(Address));
-    if (!chunk || *chunk == kNullAddress)
-        return std::nullopt;
-
-    const std::optional<Address> entry = reader_->ReadPointer(
-        *chunk + static_cast<Address>(comparisonIndex % kEntryArrayChunkSize) * sizeof(Address));
-    if (!entry || *entry == kNullAddress)
-        return std::nullopt;
-
-    const std::optional<std::uint32_t> indexField = reader_->ReadUInt32(*entry + entries.entryIndexOffset);
-    if (!indexField)
-        return std::nullopt;
-
-    // Entry-array names are null terminated rather than length prefixed.
-    const Address text = *entry + entries.entryStringOffset;
-    std::string name;
-    if (*indexField & kWideMask) {
-        for (std::int32_t i = 0; i < kMaxNameLength; ++i) {
-            const std::optional<std::uint16_t> unit = reader_->ReadAs<std::uint16_t>(text + static_cast<Address>(i) * 2);
-            if (!unit || *unit == 0)
-                break;
-            name.push_back(*unit < 0x80 ? static_cast<char>(*unit) : '?');
-        }
-        return name;
-    }
-    for (std::int32_t i = 0; i < kMaxNameLength; ++i) {
-        const std::optional<std::uint8_t> byte = reader_->ReadAs<std::uint8_t>(text + static_cast<Address>(i));
-        if (!byte || *byte == 0)
-            break;
-        name.push_back(static_cast<char>(*byte));
-    }
-    return name;
-}
-
 std::optional<std::string> NameTable::Read(std::uint32_t comparisonIndex) const {
-    if (layout_.storage == NameStorage::Pool)
-        return ReadFromPool(comparisonIndex, 0);
-    return ReadFromEntryArray(comparisonIndex);
+    return ReadFromPool(comparisonIndex, 0);
 }
 
 std::optional<std::string> NameTable::ReadFName(Address fname) const {

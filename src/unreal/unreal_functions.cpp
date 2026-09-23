@@ -66,9 +66,8 @@ std::optional<Expected> ExpectedOf(const PropertyChain &chain, const PropertyVal
     return expected;
 }
 
-// Which functions are sampled matters more than how many: a game's first
-// hundred are delegate signatures with identical shapes, which pin nothing.
-// So duplicate shapes are skipped and ones with a return value preferred.
+// Skip duplicate shapes and prefer a return value: a game's first functions are
+// identical delegate signatures, which pin nothing.
 std::vector<Expected> CollectFunctions(const ObjectFinder &finder, const StructOffsets &structs,
                                        const PropertyChain &chain, const PropertyValues &values) {
     std::vector<Expected> samples;
@@ -127,9 +126,8 @@ bool PointsIntoRegions(Address pointer, std::span<const ScanRegion> regions) {
     return false;
 }
 
-// The one pointer a UFunction keeps into code. Script functions have one too
-// (the interpreter), so flags cannot identify it; everything else past the
-// counts points at the heap.
+// UFunction's one pointer into code. Script functions have one too (the
+// interpreter), so flags cannot identify it.
 std::int32_t FindFuncOffset(const MemoryReader &reader, const std::vector<Expected> &samples,
                             std::span<const ScanRegion> codeRegions, std::int32_t start) {
     if (codeRegions.empty() || samples.empty())

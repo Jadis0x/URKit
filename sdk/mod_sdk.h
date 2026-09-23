@@ -902,7 +902,8 @@ typedef struct URK_UnrealApi {
 
     /*
      * A function by name on owner_class or a base of it - what UFunction the
-     * name refers to, not yet anything that can be called.
+     * name refers to, not yet anything that can be called. An instance stands
+     * for its class.
      */
     URK_UnrealObject (*find_function)(URK_UnrealObject owner_class, const char *name);
 

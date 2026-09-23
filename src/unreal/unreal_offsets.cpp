@@ -30,9 +30,7 @@ constexpr std::uint64_t kMinAverageComparisonIndex = 0x280;
 constexpr std::uint32_t kLowComparisonIndexCap = 0x10;
 constexpr std::int32_t kMaxNamesWithLowComparisonIndex = 0x40;
 
-// Objects sit in page-aligned blocks, so one near a page end may have fewer
-// than kMaxHeaderOffset readable bytes. The header size is unknown until
-// calibration finishes, so those objects are skipped.
+// Objects near a page end may have fewer readable header bytes; skip them.
 constexpr Address kPageSize = 0x1000;
 
 bool HasRoomForHeader(Address object) { return (object & (kPageSize - 1)) <= (kPageSize - kMaxHeaderOffset); }
@@ -151,9 +149,8 @@ std::int32_t FindOuterOffset(const ObjectArray &objects, const ObjectOffsets &kn
     if (total < 2)
         return kOffsetNotFound;
 
-    // Packages root the outer chain and have no Outer, so several pairs are
-    // sampled and the lowest offset holding for any is taken. Fixed strides
-    // keep this deterministic.
+    // Packages have no Outer, so several pairs are sampled and the lowest
+    // offset that holds for any wins.
     constexpr std::int32_t kPairCount = 0x10;
     const std::int32_t span = total < 0x400 ? total : 0x400;
 

@@ -1,13 +1,13 @@
 #pragma once
 
-// Module section enumeration, read through the same MemoryReader as the rest of
-// the calibration. The bootstrap needs to know where a module keeps its globals
-// before it can look for any; the mapped PE headers already say, so nothing here
-// is asked of the loader and the enumeration can be run against a test image.
+// PE section enumeration through the MemoryReader, so the bootstrap knows where
+// globals live and tests can use a synthetic image.
 
 #include "unreal_memory.h"
 
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -44,5 +44,56 @@ std::vector<ScanRegion> ModuleDataRegions(const MemoryReader &reader, Address mo
 // The sections that can be executed, which is what tells a pointer to a native
 // function from any other pointer.
 std::vector<ScanRegion> ModuleCodeRegions(const MemoryReader &reader, Address moduleBase);
+
+// Read-only data: where string literals live.
+std::vector<ScanRegion> ModuleConstantRegions(const MemoryReader &reader, Address moduleBase);
+
+// Writable data: where engine globals live.
+std::vector<ScanRegion> ModuleWritableRegions(const MemoryReader &reader, Address moduleBase);
+
+struct FunctionRange {
+    Address begin = kNullAddress;
+    Address end = kNullAddress;
+};
+
+// Exact function bounds from the x64 exception directory (.pdata), which every
+// non-leaf function has an entry in. Reads through the reader on demand.
+class FunctionTable {
+  public:
+    static FunctionTable Read(const MemoryReader &reader, std::span<const Address> modules);
+
+    bool Empty() const { return modules_.empty(); }
+
+    // The entry holding address; a function split by the compiler has several.
+    std::optional<FunctionRange> Containing(Address address) const;
+
+    // Start of the function address belongs to, following chained entries.
+    Address PrimaryBegin(Address address) const;
+
+    // First entry starting after address. A leaf function has no entry of its
+    // own, so this is where it ends at the latest.
+    Address NextBegin(Address address) const;
+
+  private:
+    struct Module {
+        Address base = kNullAddress;
+        Address imageEnd = kNullAddress;
+        Address table = kNullAddress;
+        std::uint32_t count = 0;
+    };
+
+    struct Entry {
+        std::uint32_t begin;
+        std::uint32_t end;
+        std::uint32_t unwind;
+    };
+
+    const Module *ModuleOf(Address address) const;
+    std::optional<Entry> EntryAt(const Module &module, std::uint32_t index) const;
+    std::optional<Entry> Lookup(const Module &module, Address address) const;
+
+    const MemoryReader *reader_ = nullptr;
+    std::vector<Module> modules_;
+};
 
 } // namespace URK::Unreal

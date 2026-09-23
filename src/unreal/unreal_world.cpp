@@ -9,9 +9,8 @@ namespace {
 // Globals are pointer aligned, as they were for the bootstrap scan.
 constexpr Address kScanStep = sizeof(Address);
 
-// The class every world derives from, and the members the walk needs. Renaming
-// any of them is a deliberate engine change, and the walk says so rather than
-// falling back to an offset.
+// Renaming any of these is a deliberate engine change; the walk reports it
+// instead of guessing an offset.
 constexpr const char *kWorldClassName = "World";
 constexpr const char *kPersistentLevelName = "PersistentLevel";
 constexpr const char *kActorsName = "Actors";

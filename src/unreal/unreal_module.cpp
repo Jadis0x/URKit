@@ -54,6 +54,52 @@ std::string ReadSectionName(const MemoryReader &reader, Address header) {
     return std::string(raw.data(), std::strlen(raw.data()));
 }
 
+// The NT headers of a plausible 64-bit image.
+std::optional<Address> NtHeaders(const MemoryReader &reader, Address moduleBase) {
+    if (moduleBase == kNullAddress)
+        return std::nullopt;
+
+    const std::optional<std::uint16_t> dosSignature = reader.ReadAs<std::uint16_t>(moduleBase);
+    if (!dosSignature || *dosSignature != kDosSignature)
+        return std::nullopt;
+
+    const std::optional<std::uint32_t> lfanew = reader.ReadUInt32(moduleBase + kLfanewOffset);
+    if (!lfanew || *lfanew < kLfanewOffset || *lfanew > kMaxLfanew)
+        return std::nullopt;
+
+    const Address ntHeaders = moduleBase + *lfanew;
+    const std::optional<std::uint32_t> ntSignature = reader.ReadUInt32(ntHeaders);
+    if (!ntSignature || *ntSignature != kNtSignature)
+        return std::nullopt;
+
+    const std::optional<std::uint16_t> magic = reader.ReadAs<std::uint16_t>(ntHeaders + kOptionalHeaderOffset);
+    if (!magic || *magic != kPe32PlusMagic)
+        return std::nullopt;
+    return ntHeaders;
+}
+
+std::vector<ScanRegion> SectionsWhere(const MemoryReader &reader, Address moduleBase,
+                                      bool (*wanted)(const ModuleSection &)) {
+    std::vector<ScanRegion> regions;
+    for (const ModuleSection &section : ReadModuleSections(reader, moduleBase)) {
+        if (!wanted(section) || IsSkipped(section.name))
+            continue;
+        // A header can claim more than the loader committed.
+        if (!reader.Readable(section.start, sizeof(Address)))
+            continue;
+        regions.push_back(ScanRegion{.start = section.start, .size = section.size, .writable = section.Writable()});
+    }
+    return regions;
+}
+
+// PE32+ optional header: SizeOfImage, and the exception entry of the data directory.
+constexpr Address kSizeOfImageOffset = 0x38;
+constexpr Address kExceptionDirectoryOffset = 0x70 + 3 * 8;
+constexpr std::uint32_t kRuntimeFunctionSize = 12;
+// UNWIND_INFO: flags in the top five bits of byte 0, code count in byte 2.
+constexpr std::uint8_t kUnwindChainInfo = 0x4;
+constexpr int kMaxChainDepth = 32;
+
 } // namespace
 
 bool ModuleSection::Readable() const { return (characteristics & kSectionRead) != 0; }
@@ -68,25 +114,10 @@ bool ModuleSection::HoldsData() const {
 
 std::vector<ModuleSection> ReadModuleSections(const MemoryReader &reader, Address moduleBase) {
     std::vector<ModuleSection> sections;
-    if (moduleBase == kNullAddress)
+    const std::optional<Address> nt = NtHeaders(reader, moduleBase);
+    if (!nt)
         return sections;
-
-    const std::optional<std::uint16_t> dosSignature = reader.ReadAs<std::uint16_t>(moduleBase);
-    if (!dosSignature || *dosSignature != kDosSignature)
-        return sections;
-
-    const std::optional<std::uint32_t> lfanew = reader.ReadUInt32(moduleBase + kLfanewOffset);
-    if (!lfanew || *lfanew < kLfanewOffset || *lfanew > kMaxLfanew)
-        return sections;
-
-    const Address ntHeaders = moduleBase + *lfanew;
-    const std::optional<std::uint32_t> ntSignature = reader.ReadUInt32(ntHeaders);
-    if (!ntSignature || *ntSignature != kNtSignature)
-        return sections;
-
-    const std::optional<std::uint16_t> magic = reader.ReadAs<std::uint16_t>(ntHeaders + kOptionalHeaderOffset);
-    if (!magic || *magic != kPe32PlusMagic)
-        return sections;
+    const Address ntHeaders = *nt;
 
     const std::optional<std::uint16_t> count = reader.ReadAs<std::uint16_t>(ntHeaders + kSectionCountOffset);
     const std::optional<std::uint16_t> optionalSize =
@@ -131,19 +162,133 @@ std::vector<ScanRegion> ModuleCodeRegions(const MemoryReader &reader, Address mo
 }
 
 std::vector<ScanRegion> ModuleDataRegions(const MemoryReader &reader, Address moduleBase) {
-    std::vector<ScanRegion> regions;
-    for (const ModuleSection &section : ReadModuleSections(reader, moduleBase)) {
-        if (!section.Readable() || section.Executable() || !section.HoldsData())
+    return SectionsWhere(reader, moduleBase, [](const ModuleSection &section) {
+        return section.Readable() && section.HoldsData() && !section.Executable();
+    });
+}
+
+std::vector<ScanRegion> ModuleConstantRegions(const MemoryReader &reader, Address moduleBase) {
+    return SectionsWhere(reader, moduleBase, [](const ModuleSection &section) {
+        return section.Readable() && section.HoldsData() && !section.Executable() && !section.Writable();
+    });
+}
+
+std::vector<ScanRegion> ModuleWritableRegions(const MemoryReader &reader, Address moduleBase) {
+    return SectionsWhere(reader, moduleBase, [](const ModuleSection &section) {
+        return section.Readable() && section.HoldsData() && !section.Executable() && section.Writable();
+    });
+}
+
+FunctionTable FunctionTable::Read(const MemoryReader &reader, std::span<const Address> modules) {
+    FunctionTable table;
+    table.reader_ = &reader;
+    for (const Address base : modules) {
+        const std::optional<Address> nt = NtHeaders(reader, base);
+        if (!nt)
             continue;
-        if (IsSkipped(section.name))
+        const Address optional = *nt + kOptionalHeaderOffset;
+        const std::optional<std::uint32_t> imageSize = reader.ReadUInt32(optional + kSizeOfImageOffset);
+        const std::optional<std::uint32_t> rva = reader.ReadUInt32(optional + kExceptionDirectoryOffset);
+        const std::optional<std::uint32_t> size = reader.ReadUInt32(optional + kExceptionDirectoryOffset + 4);
+        if (!imageSize || !rva || !size || *rva == 0 || *size < kRuntimeFunctionSize)
             continue;
-        // A section header can claim more than the loader committed, and the
-        // first bytes are what every probe starts from.
-        if (!reader.Readable(section.start, sizeof(Address)))
+        if (static_cast<std::uint64_t>(*rva) + *size > *imageSize)
             continue;
-        regions.push_back(ScanRegion{.start = section.start, .size = section.size});
+        table.modules_.push_back(Module{.base = base,
+                                        .imageEnd = base + *imageSize,
+                                        .table = base + *rva,
+                                        .count = *size / kRuntimeFunctionSize});
     }
-    return regions;
+    return table;
+}
+
+const FunctionTable::Module *FunctionTable::ModuleOf(Address address) const {
+    for (const Module &module : modules_) {
+        if (address >= module.base && address < module.imageEnd)
+            return &module;
+    }
+    return nullptr;
+}
+
+std::optional<FunctionTable::Entry> FunctionTable::EntryAt(const Module &module, std::uint32_t index) const {
+    return reader_->ReadAs<Entry>(module.table + static_cast<Address>(index) * kRuntimeFunctionSize);
+}
+
+// The table is sorted by begin address, as the unwinder requires.
+std::optional<FunctionTable::Entry> FunctionTable::Lookup(const Module &module, Address address) const {
+    const std::uint64_t rva = address - module.base;
+    std::uint32_t low = 0;
+    std::uint32_t high = module.count;
+    while (low < high) {
+        const std::uint32_t middle = low + (high - low) / 2;
+        const std::optional<Entry> entry = EntryAt(module, middle);
+        if (!entry)
+            return std::nullopt;
+        if (rva < entry->begin)
+            high = middle;
+        else if (rva >= entry->end)
+            low = middle + 1;
+        else
+            return entry;
+    }
+    return std::nullopt;
+}
+
+std::optional<FunctionRange> FunctionTable::Containing(Address address) const {
+    const Module *module = ModuleOf(address);
+    if (!module)
+        return std::nullopt;
+    const std::optional<Entry> entry = Lookup(*module, address);
+    if (!entry)
+        return std::nullopt;
+    return FunctionRange{.begin = module->base + entry->begin, .end = module->base + entry->end};
+}
+
+Address FunctionTable::NextBegin(Address address) const {
+    const Module *module = ModuleOf(address);
+    if (!module)
+        return kNullAddress;
+    const std::uint64_t rva = address - module->base;
+    std::uint32_t low = 0;
+    std::uint32_t high = module->count;
+    while (low < high) {
+        const std::uint32_t middle = low + (high - low) / 2;
+        const std::optional<Entry> entry = EntryAt(*module, middle);
+        if (!entry)
+            return kNullAddress;
+        if (entry->begin <= rva)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    if (low == module->count)
+        return kNullAddress;
+    const std::optional<Entry> next = EntryAt(*module, low);
+    return next ? module->base + next->begin : kNullAddress;
+}
+
+Address FunctionTable::PrimaryBegin(Address address) const {
+    const Module *module = ModuleOf(address);
+    if (!module)
+        return kNullAddress;
+    std::optional<Entry> entry = Lookup(*module, address);
+    for (int depth = 0; entry && depth < kMaxChainDepth; ++depth) {
+        // An odd unwind address points straight at the parent entry.
+        if (entry->unwind & 1) {
+            entry = reader_->ReadAs<Entry>(module->base + (entry->unwind & ~1u));
+            continue;
+        }
+        const Address info = module->base + entry->unwind;
+        const std::optional<std::uint8_t> flags = reader_->ReadAs<std::uint8_t>(info);
+        const std::optional<std::uint8_t> codes = reader_->ReadAs<std::uint8_t>(info + 2);
+        if (!flags || !codes)
+            return kNullAddress;
+        if (((*flags >> 3) & kUnwindChainInfo) == 0)
+            return module->base + entry->begin;
+        const Address parent = info + 4 + static_cast<Address>((*codes + 1) & ~1) * 2;
+        entry = reader_->ReadAs<Entry>(parent);
+    }
+    return kNullAddress;
 }
 
 } // namespace URK::Unreal

@@ -43,6 +43,7 @@ using OnObjectDestroyRequestedFn = ::URK_OnObjectDestroyRequestedFn;
 inline constexpr RuntimeBackend runtime_backend_unknown = URK_RUNTIME_BACKEND_UNKNOWN;
 inline constexpr RuntimeBackend runtime_backend_mono = URK_RUNTIME_BACKEND_MONO;
 inline constexpr RuntimeBackend runtime_backend_il2cpp = URK_RUNTIME_BACKEND_IL2CPP;
+inline constexpr RuntimeBackend runtime_backend_unreal = URK_RUNTIME_BACKEND_UNREAL;
 
 inline constexpr HookBackend hook_backend_auto = URK_HOOK_BACKEND_AUTO;
 inline constexpr HookBackend hook_backend_detours = URK_HOOK_BACKEND_DETOURS;
@@ -62,6 +63,7 @@ inline constexpr std::uint64_t runtime_cap_object_destroy_request_events =
     URK_RUNTIME_CAP_OBJECT_DESTROY_REQUEST_EVENTS;
 inline constexpr std::uint64_t runtime_cap_steam_identity = URK_RUNTIME_CAP_STEAM_IDENTITY;
 inline constexpr std::uint64_t runtime_cap_mid_hooks = URK_RUNTIME_CAP_MID_HOOKS;
+inline constexpr std::uint64_t runtime_cap_unreal_api = URK_RUNTIME_CAP_UNREAL_API;
 inline constexpr std::int32_t graphics_device_unknown = URK_GRAPHICS_DEVICE_UNKNOWN;
 inline constexpr std::int32_t graphics_device_direct3d11 = URK_GRAPHICS_DEVICE_D3D11;
 inline constexpr std::int32_t graphics_device_direct3d12 = URK_GRAPHICS_DEVICE_D3D12;
@@ -119,6 +121,9 @@ inline bool has_mono_api() {
 }
 inline bool has_il2cpp_api() {
     return has_runtime_capability(runtime_cap_il2cpp_api);
+}
+inline bool has_unreal_api() {
+    return has_runtime_capability(runtime_cap_unreal_api);
 }
 inline bool has_hooks() {
     return has_runtime_capability(runtime_cap_hooks);

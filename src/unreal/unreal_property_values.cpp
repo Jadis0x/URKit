@@ -35,9 +35,8 @@ bool PlausibleBoolTail(const MemoryReader &reader, Address field, std::int32_t o
     return singleBit || *byteMask == 0xFF;
 }
 
-// The pointer at the tail leads to an object of this kind. Being an object at
-// all is most of the test: FProperty ends with links to other properties, and
-// an FField is not in the object array however much it looks like a pointer.
+// The tail pointer must reach an object of this kind; an FField is never in the
+// object array.
 bool PointsToObjectWithFlags(const ObjectFinder &finder, const StructOffsets &structs, Address field,
                              std::int32_t offset, std::uint64_t required) {
     const std::optional<Address> target = finder.Reader().ReadPointer(field + offset);
@@ -59,9 +58,8 @@ bool PointsToProperty(const MemoryReader &reader, const FieldOffsets &fields, Ad
     return castFlags && (*castFlags & kCastFlagProperty) != 0;
 }
 
-// An array keeps its element property past the tail rather than at it, so
-// where is measured instead of assumed. The first offset every array agrees on
-// is the one, and the tail itself is tried first.
+// An array's element property sits past the tail; take the first offset every
+// array agrees on, starting at the tail.
 std::int32_t FindArrayInnerOffset(const MemoryReader &reader, const FieldOffsets &fields,
                                   const std::vector<Address> &arrays, std::int32_t tail) {
     if (arrays.empty())

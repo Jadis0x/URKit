@@ -1,9 +1,7 @@
 #pragma once
 
-// MemoryReader over this process's own address space. Committed ranges are
-// cached between probes, since the scan asks about far more addresses than it
-// accepts - but a cached yes is never a promise: the game frees memory while
-// it is being walked, so the copy itself must survive a stale answer.
+// MemoryReader over this process. Committed ranges are cached, but the game
+// frees memory mid-walk, so the copy itself must survive a stale answer.
 
 #include "unreal_memory.h"
 
@@ -58,9 +56,7 @@ class ProcessMemory : public MemoryReader, public MemoryWriter {
     // Probes walk forward, so a handful of recent ranges covers most of them.
     static constexpr std::size_t kRememberedRanges = 8;
 
-    // Per thread, not shared: the ABI is multi-threaded, and a shared cache
-    // was both a data race and a source of mutual eviction. A lock is out of
-    // the question on a path that runs tens of millions of times.
+    // Per thread: a shared cache raced and thrashed, and a lock is too slow here.
     struct Cache {
         std::array<Range, kRememberedRanges> ranges{};
         std::size_t next = 0;

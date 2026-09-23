@@ -1,4 +1,5 @@
 #include "logger.h"
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -6,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <share.h>
 #include <windows.h>
 
 static FILE *g_file = nullptr;
@@ -17,6 +19,18 @@ static std::mutex g_logMutex;
 static std::wstring g_logPath;
 static ULONGLONG g_lastFileFlushTick = 0;
 static constexpr ULONGLONG kInfoFlushIntervalMs = 250;
+// Info lines are batched; this flushes the tail when no later line arrives to do it.
+static HANDLE g_flushTimer = nullptr;
+static bool g_fileDirty = false;
+
+static VOID CALLBACK FlushPendingLog(PVOID, BOOLEAN) {
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    if (g_file && g_fileDirty) {
+        fflush(g_file);
+        g_fileDirty = false;
+        g_lastFileFlushTick = GetTickCount64();
+    }
+}
 
 static std::wstring ExecutableDirectory() {
     std::vector<wchar_t> path(512);
@@ -139,8 +153,14 @@ void Log_Init(bool showConsole, const std::string &logDirectory) {
         } else {
             g_logPath = (std::filesystem::path(logDirectory) / L"URKit_logs.log").wstring();
         }
-        fileError = _wfopen_s(&g_file, g_logPath.c_str(), L"w");
+        // _wfopen_s locks the file; readers must be able to follow a running game.
+        g_file = _wfsopen(g_logPath.c_str(), L"w", _SH_DENYWR);
+        fileError = g_file ? 0 : errno;
         g_lastFileFlushTick = GetTickCount64();
+        if (g_file && !g_flushTimer)
+            CreateTimerQueueTimer(&g_flushTimer, nullptr, &FlushPendingLog, nullptr,
+                                  static_cast<DWORD>(kInfoFlushIntervalMs), static_cast<DWORD>(kInfoFlushIntervalMs),
+                                  WT_EXECUTEDEFAULT);
     }
 
     if (g_file) {
@@ -166,6 +186,11 @@ void Log_Init(bool showConsole, const std::string &logDirectory) {
 }
 
 void Log_Shutdown() {
+    // Not waited for: the callback rechecks g_file under the same mutex.
+    if (g_flushTimer) {
+        DeleteTimerQueueTimer(nullptr, g_flushTimer, nullptr);
+        g_flushTimer = nullptr;
+    }
     std::lock_guard<std::mutex> lock(g_logMutex);
     if (g_file) {
         fclose(g_file);
@@ -213,8 +238,10 @@ void Log(const char *fmt, ...) {
     if (g_file) {
         fputs(line, g_file);
         const ULONGLONG now = GetTickCount64();
+        g_fileDirty = true;
         if (severity != LogSeverity::Info || now - g_lastFileFlushTick >= kInfoFlushIntervalMs) {
             fflush(g_file);
+            g_fileDirty = false;
             g_lastFileFlushTick = now;
         }
     }

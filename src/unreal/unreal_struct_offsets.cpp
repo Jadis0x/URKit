@@ -18,8 +18,7 @@ std::int32_t AlignUp(std::int32_t value, std::int32_t alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
-// Properties that exist as objects only before UE4.25, paired with the struct
-// that owns them.
+// Members that exist as objects only before UE4.25, with their owner struct.
 constexpr struct {
     const char *member;
     const char *owner;
@@ -84,22 +83,13 @@ std::int32_t FindSuperStructOffset(const ObjectFinder &finder) {
     return FindAnchoredOffset(finder.Reader(), anchors, FirstOffsetPastHeader(finder.Offsets()), kMaxStructOffset);
 }
 
-std::int32_t FindChildrenOffset(const ObjectFinder &finder, bool usesFProperty) {
-    // Children points at the first child only, so the anchor member has to be
-    // one the engine declares first. Functions serve that role once properties
-    // have moved out of the chain.
-    std::vector<Anchor<Address>> anchors;
-    if (usesFProperty) {
-        anchors = {
-            {finder.Find("PlayerController"), finder.FindInOuter("WasInputKeyJustReleased", "PlayerController")},
-            {finder.Find("Controller"), finder.FindInOuter("UnPossess", "Controller")},
-        };
-    } else {
-        anchors = {
-            {finder.Find("Vector"), finder.FindInOuter("X", "Vector")},
-            {finder.Find("Guid"), finder.FindInOuter("A", "Guid")},
-        };
-    }
+std::int32_t FindChildrenOffset(const ObjectFinder &finder) {
+    // Children points at the first child only, which is a function once
+    // properties live in the FField chain.
+    const std::vector<Anchor<Address>> anchors{
+        {finder.Find("PlayerController"), finder.FindInOuter("WasInputKeyJustReleased", "PlayerController")},
+        {finder.Find("Controller"), finder.FindInOuter("UnPossess", "Controller")},
+    };
     return FindAnchoredOffset(finder.Reader(), anchors, FirstOffsetPastHeader(finder.Offsets()), kMaxStructOffset);
 }
 
@@ -150,10 +140,9 @@ std::int32_t FindFieldNextOffset(const ObjectFinder &finder, std::int32_t childr
 
 StructOffsets FindStructOffsets(const ObjectFinder &finder) {
     StructOffsets offsets;
-    offsets.usesFProperty = UsesFPropertySystem(finder);
     offsets.castFlags = FindCastFlagsOffset(finder);
     offsets.superStruct = FindSuperStructOffset(finder);
-    offsets.children = FindChildrenOffset(finder, offsets.usesFProperty);
+    offsets.children = FindChildrenOffset(finder);
     offsets.propertiesSize = FindPropertiesSizeOffset(finder);
     offsets.minAlignment = FindMinAlignmentOffset(finder);
     offsets.fieldNext = FindFieldNextOffset(finder, offsets.children);

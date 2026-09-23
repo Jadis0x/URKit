@@ -1,15 +1,7 @@
 #pragma once
 
-// Recognising an Unreal process cheaply, before the bootstrap scan.
-//
-// A shipped title loads no telltale DLL, but UBT stamps the engine branch into
-// its version resource ("++UE5+Release-5.8-CL-56702186"). That is a claim, not
-// proof, and packers strip it - so the answer is a confidence, with the UBT
-// directory layout as the fallback. Proof stays the GUObjectArray/FNamePool
-// scan; this only decides whether to pay for it.
-//
-// Also picks which modules to scan: one image for a game, Core + CoreUObject
-// for a modular or editor build.
+// Cheap Unreal check before the bootstrap scan: UBT's version resource, else its
+// directory layout. A claim, not proof; also picks which modules to scan.
 
 #include "unreal_memory.h"
 
@@ -30,7 +22,7 @@ struct EngineVersion {
 
     bool Known() const { return major > 0; }
 
-    // 4.25 moved properties to FField. A warning, never a source of offsets.
+    // 4.25 moved properties to FField; it is also URKit's floor.
     bool UsesFieldProperties() const { return major > 4 || (major == 4 && minor >= 25); }
 };
 

@@ -2,6 +2,7 @@
 #include "mod_sdk.h"
 #include "mod_project_generator_common.h"
 #include "mono_sdk_generator.h"
+#include "unreal_sdk_generator.h"
 
 #include <algorithm>
 #include <cctype>
@@ -71,17 +72,22 @@ bool IsIl2CppBackend(const Options &options) {
     return Lower(options.backend) == "il2cpp";
 }
 
+bool IsUnrealBackend(const Options &options) {
+    return Lower(options.backend) == "unreal";
+}
+
 bool IsValidBackend(const std::string &backend) {
     const std::string value = Lower(backend);
-    return value == "mono" || value == "il2cpp";
+    return value == "mono" || value == "il2cpp" || value == "unreal";
 }
 
 bool IsValidBackendSelection(const std::string &backend) {
-    const std::string value = Lower(backend);
-    return value == "auto" || value == "mono" || value == "il2cpp";
+    return Lower(backend) == "auto" || IsValidBackend(backend);
 }
 
 const char *BackendDisplayName(const Options &options) {
+    if (IsUnrealBackend(options))
+        return "Unreal";
     return IsIl2CppBackend(options) ? "IL2CPP" : "Mono";
 }
 
@@ -97,9 +103,18 @@ bool PathExists(const fs::path &path) {
     return fs::exists(path, ec) && !ec;
 }
 
+// A packaged Unreal game runs from <Root>/<Project>/Binaries/Win64.
+bool IsUnrealBinariesDir(const fs::path &gameDir) {
+    const fs::path binaries = gameDir.parent_path();
+    return Lower(gameDir.filename().string()) == "win64" && Lower(binaries.filename().string()) == "binaries" &&
+           (PathExists(binaries.parent_path() / "Content") || PathExists(binaries.parent_path().parent_path() / "Engine"));
+}
+
 std::optional<std::string> DetectBackendFromGameDir(const fs::path &gameDir) {
     if (PathExists(gameDir / "GameAssembly.dll"))
         return "il2cpp";
+    if (IsUnrealBinariesDir(gameDir))
+        return "unreal";
 
     for (const fs::path &candidate : {gameDir / "MonoBleedingEdge" / "EmbedRuntime" / "mono-2.0-bdwgc.dll",
                                       gameDir / "Mono" / "EmbedRuntime" / "mono.dll", gameDir / "mono-2.0-bdwgc.dll",
@@ -114,7 +129,7 @@ std::optional<std::string> DetectBackendFromGameDir(const fs::path &gameDir) {
 bool FillDerivedProjectPaths(Options &options, std::string &error) {
     options.backendSelection = Lower(options.backendSelection);
     if (!IsValidBackendSelection(options.backendSelection)) {
-        error = "Backend selection must be 'auto', 'mono', or 'il2cpp'.";
+        error = "Backend selection must be 'auto', 'mono', 'il2cpp', or 'unreal'.";
         return false;
     }
 
@@ -144,7 +159,7 @@ bool FillDerivedProjectPaths(Options &options, std::string &error) {
         const std::optional<std::string> detectedBackend = DetectBackendFromGameDir(fs::path(options.gameDir));
         if (!detectedBackend) {
             error = "Could not detect the runtime backend from the target game directory. Expected GameAssembly.dll "
-                    "for IL2CPP or Mono runtime files for Mono.";
+                    "for IL2CPP, Mono runtime files for Mono, or an Unreal <Project>/Binaries/Win64 folder.";
             return false;
         }
         options.backend = *detectedBackend;
@@ -152,17 +167,25 @@ bool FillDerivedProjectPaths(Options &options, std::string &error) {
         options.backend = options.backendSelection;
     }
     if (!IsValidBackend(options.backend)) {
-        error = "Resolved backend must be 'mono' or 'il2cpp'.";
+        error = "Resolved backend must be 'mono', 'il2cpp', or 'unreal'.";
+        return false;
+    }
+    // The root .exe of an Unreal game is a launcher stub; the loader has to sit beside the real one.
+    if (IsUnrealBackend(options) && !IsUnrealBinariesDir(fs::path(options.gameDir))) {
+        error = "For Unreal games select the executable under <Project>/Binaries/Win64, not the launcher in the "
+                "game's root folder.";
         return false;
     }
 
     options.projectName = ModProjectGenerator::Identifier(
-        options.projectName, IsIl2CppBackend(options) ? "GeneratedIl2CppMod" : "GeneratedMod");
+        options.projectName, IsIl2CppBackend(options)   ? "GeneratedIl2CppMod"
+                             : IsUnrealBackend(options) ? "GeneratedUnrealMod"
+                                                        : "GeneratedMod");
     options.exportRoot = (fs::path(options.gameDir) / "urk-sdk-output").lexically_normal().string();
     const fs::path exportRoot = fs::path(options.exportRoot);
 
     options.projectOut = (exportRoot / options.projectName / "project").lexically_normal().string();
-    options.sdkOut = (fs::path(options.projectOut) / "sdk" / (IsIl2CppBackend(options) ? "il2cpp" : "mono")).string();
+    options.sdkOut = (fs::path(options.projectOut) / "sdk" / Lower(options.backend)).string();
     options.includeRoot.clear();
     options.modsDir = "Mods";
     return true;
@@ -171,6 +194,14 @@ bool FillDerivedProjectPaths(Options &options, std::string &error) {
 bool GenerateSelectedProject(const Options &options, std::string &error) {
     const std::string reportDetails = "Mono and IL2CPP generated projects use runtime API helpers. "
                                       "No offline metadata or dump-generated modules are emitted.\n";
+
+    if (IsUnrealBackend(options)) {
+        if (!UnrealSdkGenerator::Generate(options.sdkOut, reportDetails, &error))
+            return false;
+        return UnrealSdkGenerator::GenerateModProject(options.projectOut, options.sdkOut, options.includeRoot,
+                                                      options.projectName, options.gameDir, options.modsDir,
+                                                      options.enableLocalization, &error);
+    }
 
     if (IsIl2CppBackend(options)) {
         if (!Il2CppSdkGenerator::Generate(options.sdkOut, reportDetails, &error))
@@ -204,6 +235,7 @@ constexpr int kIdTabSupport = 1013;
 constexpr int kIdProjectRepo = 1010;
 constexpr int kIdBackendAuto = 1011;
 constexpr int kIdLocalization = 1012;
+constexpr int kIdBackendUnreal = 1014;
 
 constexpr const wchar_t *kProjectRepoUrl = L"https://github.com/Jadis0x/URKit";
 constexpr const wchar_t *kGitHubProfileUrl = L"https://github.com/Jadis0x";
@@ -259,7 +291,7 @@ std::optional<Options> ParseCommandLineOptions(std::string &error) {
             options.enableLocalization = true;
         } else if (key == "--help" || key == "-h" || key == "/?") {
             error =
-                "Usage: urk-sdk.exe --game-exe C:\\path\\to\\Game.exe --backend auto|mono|il2cpp --name "
+                "Usage: urk-sdk.exe --game-exe C:\\path\\to\\Game.exe --backend auto|mono|il2cpp|unreal --name "
                 "ProjectName [--localization]";
             return std::nullopt;
         } else {
@@ -446,6 +478,8 @@ class SdkGeneratorWindow {
             return kIdBackendIl2Cpp;
         if (options_.backendSelection == "mono")
             return kIdBackendMono;
+        if (options_.backendSelection == "unreal")
+            return kIdBackendUnreal;
         return kIdBackendAuto;
     }
 
@@ -453,6 +487,7 @@ class SdkGeneratorWindow {
         InvalidateRect(autoRadio_, nullptr, TRUE);
         InvalidateRect(monoRadio_, nullptr, TRUE);
         InvalidateRect(il2cppRadio_, nullptr, TRUE);
+        InvalidateRect(unrealRadio_, nullptr, TRUE);
     }
 
     LRESULT DrawControl(const DRAWITEMSTRUCT &item) {
@@ -462,7 +497,8 @@ class SdkGeneratorWindow {
             return TRUE;
         }
         if (item.CtlType == ODT_BUTTON) {
-            if (item.CtlID == kIdBackendAuto || item.CtlID == kIdBackendMono || item.CtlID == kIdBackendIl2Cpp) {
+            if (item.CtlID == kIdBackendAuto || item.CtlID == kIdBackendMono || item.CtlID == kIdBackendIl2Cpp ||
+                item.CtlID == kIdBackendUnreal) {
                 URK::ToolUi::DrawRadioButton(item, font_, SelectedBackendId() == static_cast<int>(item.CtlID));
                 return TRUE;
             }
@@ -517,6 +553,13 @@ class SdkGeneratorWindow {
                 if (notification == BN_CLICKED) {
                     options_.backendSelection = "il2cpp";
                     SetRadioSelection(kIdBackendIl2Cpp);
+                    RefreshDerivedPaths(false);
+                }
+                return 0;
+            case kIdBackendUnreal:
+                if (notification == BN_CLICKED) {
+                    options_.backendSelection = "unreal";
+                    SetRadioSelection(kIdBackendUnreal);
                     RefreshDerivedPaths(false);
                 }
                 return 0;
@@ -659,6 +702,8 @@ class SdkGeneratorWindow {
                                  kIdBackendMono, Panel::Generate);
         il2cppRadio_ = MakeControl(L"BUTTON", L"IL2CPP", BS_OWNERDRAW | WS_TABSTOP, 0, editX + 170, y, 88, 20,
                                    kIdBackendIl2Cpp, Panel::Generate);
+        unrealRadio_ = MakeControl(L"BUTTON", L"Unreal", BS_OWNERDRAW | WS_TABSTOP, 0, editX + 266, y, 88, 20,
+                                   kIdBackendUnreal, Panel::Generate);
         SetRadioSelection(kIdBackendAuto);
         y += 32;
 
@@ -667,7 +712,7 @@ class SdkGeneratorWindow {
                                    kIdProjectName, Panel::Generate);
         y += 32;
 
-        MakeControl(L"STATIC", L"Language support", 0, 0, panelX, y + 3, labelWidth, 18, 0, Panel::Generate);
+        MakeControl(L"STATIC", L"Project options", 0, 0, panelX, y + 3, labelWidth, 18, 0, Panel::Generate);
         localizationCheck_ = MakeControl(L"BUTTON", L"Generate selectable JSON locales", BS_OWNERDRAW | WS_TABSTOP,
                                          0, editX, y, 280, 20, kIdLocalization, Panel::Generate);
         y += 32;
@@ -829,6 +874,7 @@ class SdkGeneratorWindow {
             AddLog("URKit ABI: sdk=" + std::to_string(URK_SDK_VERSION) + " runtime=" +
                    std::to_string(URK_RUNTIME_API_VERSION) + " mono=" + std::to_string(URK_MONO_API_VERSION) +
                    " il2cpp=" + std::to_string(URK_IL2CPP_API_VERSION) +
+                   " unreal=" + std::to_string(URK_UNREAL_API_VERSION) +
                    " network=" + std::to_string(URK_NETWORK_API_VERSION));
             AddLog("Generation mode: runtime API helpers only; no dump-generated "
                    "wrappers.");
@@ -911,6 +957,7 @@ class SdkGeneratorWindow {
     HWND autoRadio_ = nullptr;
     HWND monoRadio_ = nullptr;
     HWND il2cppRadio_ = nullptr;
+    HWND unrealRadio_ = nullptr;
     HWND projectEdit_ = nullptr;
     HWND localizationCheck_ = nullptr;
     HWND gameExeEdit_ = nullptr;

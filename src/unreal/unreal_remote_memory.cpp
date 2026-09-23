@@ -112,9 +112,7 @@ std::optional<RemoteProcess> RemoteProcess::OpenByName(const std::wstring &execu
 const std::uint8_t *RemoteMemory::Page(Address page) const {
     const auto found = pages_.find(page);
     if (found != pages_.end()) {
-        // An empty entry is a page that could not be read; remembering that is
-        // what keeps a scan from asking the kernel again for every dead
-        // pointer it follows.
+        // Remember unreadable pages too, or every dead pointer costs a syscall.
         return found->second.empty() ? nullptr : found->second.data();
     }
 

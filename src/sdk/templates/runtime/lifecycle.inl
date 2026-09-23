@@ -15,7 +15,10 @@ void shutdown();
 
 std::string ModLifecycleSource(const ModuleProjectOptions &options) {
     const std::string apiField = BackendApiField(options);
-    const std::string apiName = options.backendNamespace == "URK::mono" ? "Mono" : "IL2CPP";
+    const std::string apiName = options.backendDisplayName;
+    std::string apiMacro = apiField;
+    for (char &ch : apiMacro)
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
     std::ostringstream out;
     out << "#include \"mod_lifecycle.h\"\n\n"
         << "#include \"lifecycle/mod_runtime.h\"\n"
@@ -87,9 +90,7 @@ std::string ModLifecycleSource(const ModuleProjectOptions &options) {
         << "    ModLog::error(\"required " << apiName << " API table is missing; refusing to initialize\");\n"
         << "    return false;\n"
         << "  }\n"
-        << "  if (ctx->" << apiField << "->version < URK_"
-        << (options.backendNamespace == "URK::mono" ? "MONO" : "IL2CPP")
-        << "_API_VERSION || ctx->" << apiField << "->size < sizeof(*ctx->" << apiField << ")) {\n"
+        << "  if (ctx->" << apiField << "->version < URK_" << apiMacro << "_API_VERSION || ctx->" << apiField << "->size < sizeof(*ctx->" << apiField << ")) {\n"
         << "    ModLog::error(\"required " << apiName
         << " API table is incompatible: version=%d size=%u\", ctx->" << apiField << "->version, ctx->"
         << apiField << "->size);\n"
@@ -482,4 +483,3 @@ inline void uninstall() {
     out << "} // namespace ModUnityLogHook\n";
     return out.str();
 }
-

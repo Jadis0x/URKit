@@ -131,6 +131,7 @@ std::string ResolveModId(const ModuleProjectOptions &options) {
 #include "templates/mod_project_generator_unity.inl"
 #include "templates/mod_project_generator_runtime.inl"
 #include "templates/mod_project_generator_ui.inl"
+#include "templates/unreal/highlight.inl"
 
 std::string CMakeLists(const ModuleProjectOptions &options, const std::vector<fs::path> &sourceFiles,
                        const std::vector<fs::path> &moduleFiles) {
@@ -151,7 +152,7 @@ std::string CMakeLists(const ModuleProjectOptions &options, const std::vector<fs
         << "    set(CMAKE_MSVC_RUNTIME_LIBRARY \"MultiThreaded$<$<CONFIG:Debug>:Debug>\" CACHE STRING \"Use the static Microsoft C/C++ runtime\" FORCE)\n"
         << "endif()\n\n"
         << "if(NOT WIN32)\n"
-        << "    message(FATAL_ERROR \"Generated URKit starter mods target Windows native Unity processes.\")\n"
+        << "    message(FATAL_ERROR \"Generated URKit starter mods target Windows native game processes.\")\n"
         << "endif()\n"
         << "if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)\n"
         << "    message(FATAL_ERROR \"Generated URKit starter mods support x64 targets only.\")\n"
@@ -360,23 +361,36 @@ std::string Readme(const ModuleProjectOptions &options) {
         << "cmake --build --preset msvc-debug --parallel\n"
         << "```\n\n"
         << "Use `clang-release` or `msvc-release` for release builds. Builds deploy to the selected game's "
-           "`Mods` directory.\n\n"
-        << "## Documentation\n\n"
-        << "See the [URKit SDK Handbook]"
-           "(https://github.com/Jadis0x/URKit/blob/main/docs/SDK_HANDBOOK.md) for the complete "
-           "GameObject/component API, Unity access, threading, lifecycle, hooks, UI, highlight rendering, "
-           "and unload rules. The highlight chapter explains exactly how generated overlays are "
-           "submitted through DX11, DX12, or OpenGL.\n\n"
-        << "Include `sdk/unity/unity.h` for Unity work. Resolve the target object and component, then access the "
-           "required member. Keep Unity calls on the main thread and check `Unity::last_error()` after an "
-           "unexpected empty result.\n\n"
-        << "## Project files\n\n"
+           "`Mods` directory.\n\n";
+    const bool unreal = IsUnrealProject(options);
+    if (unreal) {
+        out << "## Unreal access\n\n"
+            << "Include `sdk/unreal/unreal_runtime.h`. Find objects by name with `URK::unreal::find`, read and "
+               "write reflected members through `URK::unreal::Object`, and call UFunctions with "
+               "`URK::unreal::CallFrame` after `URK::unreal::install_process_event_hook()`. Check "
+               "`URK::unreal::available()` first.\n\n"
+            << "Mods start about a second into the game, before the first map. `ModRuntime::on_scene_loaded()` "
+               "runs once a map has begun play, so its controller and pawn exist by then; the scene name is the "
+               "map's. `ModRuntime::update()` runs on the game thread once per engine frame. Other threads can "
+               "queue game-thread work with `URK::unreal::post_to_game_thread`.\n\n";
+    } else {
+        out << "## Documentation\n\n"
+            << "See the [URKit SDK Handbook]"
+               "(https://github.com/Jadis0x/URKit/blob/main/docs/SDK_HANDBOOK.md) for the complete "
+               "GameObject/component API, Unity access, threading, lifecycle, hooks, UI, highlight rendering, "
+               "and unload rules. The highlight chapter explains exactly how generated overlays are "
+               "submitted through DX11, DX12, or OpenGL.\n\n"
+            << "Include `sdk/unity/unity.h` for Unity work. Resolve the target object and component, then access "
+               "the required member. Keep Unity calls on the main thread and check `Unity::last_error()` after an "
+               "unexpected empty result.\n\n";
+    }
+    out << "## Project files\n\n"
         << "- `mod/lifecycle/mod_runtime.cpp`: game/runtime and main-thread work.\n"
         << "- `mod/hooks/mod_hooks.cpp`: exact, validated hook installation.\n"
         << "- `mod/lifecycle/mod_network.cpp`: HTTPS setup and policy.\n"
         << "- `mod/support/mod_log.cpp`: shared logging.\n"
-        << "- `mod/config/mod_config.h` and `mod/ui/theme.h`: metadata and styling.\n\n"
-        << "Files under `sdk/`, `mod/generated/`, native hook support, and the build profiles are refreshed by "
+        << "- `mod/config/mod_config.h` and `mod/ui/theme.h`: metadata and styling.\n\n";
+    out << "Files under `sdk/`, `mod/generated/`, native hook support, and the build profiles are refreshed by "
            "the generator. Files under `mod/ui/`, other user-owned files, and new sources under `mod/` are "
            "preserved.\n\n"
         << "## MCP runtime tests\n\n"
@@ -385,17 +399,22 @@ std::string Readme(const ModuleProjectOptions &options) {
            "`URKitDevBridge.dll`. The development MCP guide is available in the URKit release documentation.\n\n"
         << "## Runtime constraints\n\n"
         << "- `sdk/mod_sdk.h` is the ABI source of truth. Check version, size, backend, capability, and function "
-           "pointers before use.\n"
-        << "- Include `sdk/unity/unity.h` for normal Unity work. Use exact overload helpers when required and keep "
-           "Unity calls on the main thread.\n"
-        << "- Resolve stable metadata once instead of repeating lookups in update/render callbacks.\n"
+           "pointers before use.\n";
+    if (unreal)
+        out << "- Object handles are only valid while the engine keeps the object alive; find them again after a "
+               "level change.\n";
+    else
+        out << "- Include `sdk/unity/unity.h` for normal Unity work. Use exact overload helpers when required and "
+               "keep Unity calls on the main thread.\n";
+    out << "- Resolve stable metadata once instead of repeating lookups in update/render callbacks.\n"
         << "- Detach hooks, callbacks, coroutines, workers, and UI before unload.\n"
         << "- DX11, DX12, and OpenGL overlays are supported; Vulkan is not.\n";
     for (const std::string &line : options.readmeExtraLayoutLines)
         out << "- " << line << "\n";
     if (options.enableLocalization)
         out << "- Locale JSON files under `locales/` are preserved and deployed beside the DLL.\n";
-    out << "\n## Stripped members\n\n"
+    if (!unreal)
+        out << "\n## Stripped members\n\n"
         << "IL2CPP and Mono builds drop UnityEngine members the game never calls. A stripped member returns "
            "the default value, which reads the same as a legitimate empty result.\n\n"
         << "- Probe first: `Unity::has_method(Unity::GameObjectType, \"get_scene\", 0)`, "
@@ -760,6 +779,15 @@ bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error)
         {"CMakePresets.json", OutputFilePolicy::GeneratedOverwrite, CMakePresets(), true, false},
         {".vscode/c_cpp_properties.json", OutputFilePolicy::GeneratedOverwrite, VsCodeCppProperties(), true, false},
     };
+    if (IsUnrealProject(project)) {
+        std::erase_if(writes, [](const PlannedWrite &write) {
+            const std::string path = write.relativePath.generic_string();
+            return path.starts_with("sdk/unity/") || path == "mod/hooks/unity_log_hook.h";
+        });
+        for (PlannedWrite &write : writes)
+            if (write.relativePath == "mod/ui/highlight.h")
+                write.content = UnrealHighlightModule();
+    }
     if (project.enableLocalization) {
         writes.push_back({"locales/" + project.modId + "/en.json", OutputFilePolicy::EditablePreserve,
                           EnglishLocaleModule(), true, false});
@@ -809,7 +837,9 @@ bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error)
 
     UrkProject::Manifest manifest;
     manifest.sdkVersion = URK_SDK_VERSION;
-    manifest.backend = project.backendNamespace == "URK::il2cpp" ? UrkProject::Backend::Il2Cpp : UrkProject::Backend::Mono;
+    manifest.backend = IsUnrealProject(project)                    ? UrkProject::Backend::Unreal
+                       : project.backendNamespace == "URK::il2cpp" ? UrkProject::Backend::Il2Cpp
+                                                                   : UrkProject::Backend::Mono;
     manifest.projectName = project.projectName;
     manifest.gameDirectory = std::filesystem::path(project.deployDirectory).parent_path();
     manifest.modsDirectory = std::filesystem::path(project.deployDirectory).filename().string();

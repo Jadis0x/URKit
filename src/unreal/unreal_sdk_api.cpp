@@ -257,11 +257,24 @@ int Unreal_WriteObject(URK_UnrealObject object, const char *memberName, std::int
 
 // --- calling ------------------------------------------------------------------
 
+// A UFunction's outer is the class that declares it, so inherited functions
+// are found by climbing. An instance stands for its class.
 URK_UnrealObject Unreal_FindFunction(URK_UnrealObject ownerClass, const char *name) {
     UnrealEngine &engine = UnrealEngine::Instance();
-    if (!name || !engine.Available())
+    if (!name || !engine.Available() || ownerClass == kNullAddress)
         return URK_UNREAL_NULL_OBJECT;
-    return engine.Finder().FindInOuter(name, ownerClass);
+
+    Address owner = ownerClass;
+    if (!ObjectIs(engine.Finder(), engine.Structs(), owner, kCastFlagClass))
+        owner = engine.Finder().ClassOf(owner);
+    constexpr int kMaxDepth = 64;
+    for (int depth = 0; owner != kNullAddress && depth < kMaxDepth; ++depth) {
+        const Address function = engine.Finder().FindInOuter(name, owner);
+        if (function != kNullAddress)
+            return function;
+        owner = engine.Types().SuperOf(owner);
+    }
+    return URK_UNREAL_NULL_OBJECT;
 }
 
 URK_UnrealCallFrame *Unreal_CallFrameCreate(URK_UnrealObject function) {
@@ -310,23 +323,46 @@ int Unreal_Call(URK_UnrealObject object, URK_UnrealCallFrame *frame) {
 
 // --- hooking / dispatch ---------------------------------------------------
 
-int Unreal_HookInstall() {
+// The loader's game loop and mods share one hook. It comes off only when
+// neither holds it, so a mod's remove cannot stop the game loop.
+std::mutex g_hookMutex;
+bool g_loaderHold = false;
+bool g_modHold = false;
+
+bool EnsureHookInstalled() {
     UnrealEngine &engine = UnrealEngine::Instance();
     if (!engine.EnsureBootstrapped() || !engine.ProcessEventResolved() || !g_installer.Valid())
-        return 0;
+        return false;
 
     ProcessEventHook &hook = ProcessEventHook::Instance();
     if (hook.Installed())
-        return 1;
+        return true;
 
     const std::vector<Address> implementations =
         ProcessEventImplementations(engine.Finder(), engine.Types(), engine.Structs(), engine.ProcessEvent());
-    return hook.Install(g_installer, implementations, engine.ProcessEvent()) ? 1 : 0;
+    return hook.Install(g_installer, implementations, engine.ProcessEvent());
+}
+
+int Unreal_HookInstall() {
+    std::lock_guard lock(g_hookMutex);
+    if (!EnsureHookInstalled())
+        return 0;
+    g_modHold = true;
+    return 1;
 }
 
 int Unreal_HookInstalled() { return ProcessEventHook::Instance().Installed() ? 1 : 0; }
 
-int Unreal_HookRemove() { return ProcessEventHook::Instance().Remove() ? 1 : 0; }
+int Unreal_HookRemove() {
+    std::lock_guard lock(g_hookMutex);
+    g_modHold = false;
+    ProcessEventHook &hook = ProcessEventHook::Instance();
+    if (!g_loaderHold)
+        return hook.Remove() ? 1 : 0;
+    // What remove means to a mod: its observer stops seeing calls.
+    hook.Observe(nullptr, nullptr);
+    return 1;
+}
 
 // bool and int differ as return types, so the ABI observer needs a trampoline.
 std::atomic<URK_UnrealProcessEventObserverFn> g_observerFn{nullptr};
@@ -429,18 +465,29 @@ bool UnrealEngine::EnsureBootstrapped() {
     const std::uint64_t lastUnderLock = lastAttemptMs_.load(std::memory_order_relaxed);
     if (lastUnderLock != 0 && GetTickCount64() - lastUnderLock < kRetryCooldownMs)
         return false;
-    lastAttemptMs_.store(GetTickCount64(), std::memory_order_release);
+    const std::uint64_t attemptStart = GetTickCount64();
+    lastAttemptMs_.store(attemptStart, std::memory_order_release);
+    ++profile_.attempts;
+    std::uint64_t mark = attemptStart;
+    const auto lap = [&mark] {
+        const std::uint64_t now = GetTickCount64();
+        const std::uint64_t elapsed = now - mark;
+        mark = now;
+        return elapsed;
+    };
 
-    // Partial state is left behind but never read while available_ is false.
-    // The cooldown is restamped on every failure path so a polling caller
-    // cannot re-scan back to back.
-    const auto failed = [this] {
-        lastAttemptMs_.store(GetTickCount64(), std::memory_order_release);
+    // Partial state is never read while available_ is false; every failure
+    // restamps the cooldown.
+    const auto failed = [this, attemptStart](const char *why) {
+        failure_.store(why, std::memory_order_release);
+        const std::uint64_t now = GetTickCount64();
+        profile_.failedMs += now - attemptStart;
+        lastAttemptMs_.store(now, std::memory_order_release);
         return false;
     };
 
     const UnrealPresence &presence = Presence();
-    if (!presence.WorthScanning() || presence.runtimeModules.empty())
+    if (ruledOut_.load(std::memory_order_acquire))
         return false;
     version_ = presence.version;
 
@@ -453,27 +500,62 @@ bool UnrealEngine::EnsureBootstrapped() {
         codeRegions.insert(codeRegions.end(), moduleCode.begin(), moduleCode.end());
     }
     if (dataRegions.empty())
-        return failed();
+        return failed("the engine image has no data sections");
+
+    if (!anchors_) {
+        anchors_.emplace();
+        for (const Address module : presence.runtimeModules) {
+            GlobalCandidates found = FindGlobalCandidates(memory_, module);
+            anchors_->objectArrays.insert(anchors_->objectArrays.end(), found.objectArrays.begin(),
+                                          found.objectArrays.end());
+            anchors_->namePools.insert(anchors_->namePools.end(), found.namePools.begin(), found.namePools.end());
+        }
+        functionTable_ = FunctionTable::Read(memory_, presence.runtimeModules);
+        profile_.anchoredArrays = anchors_->objectArrays.size();
+        profile_.anchoredPools = anchors_->namePools.size();
+        profile_.anchorMs = lap();
+        const bool anchored = !anchors_->objectArrays.empty() && !anchors_->namePools.empty();
+        scanAllowedAtMs_ = anchored ? GetTickCount64() + kScanFallbackMs : 0;
+    }
 
     // Ordinary early on: the object array is built long after the loader lands.
-    runtime_ = BootstrapRuntime(memory_, dataRegions);
+    runtime_ = BootstrapAnchored(memory_, *anchors_);
+    profile_.locatedBy = "code anchors";
+    if (!runtime_ && GetTickCount64() >= scanAllowedAtMs_) {
+        ++profile_.scans;
+        runtime_ = BootstrapRuntime(memory_, dataRegions);
+        profile_.locatedBy = "data scan";
+        const bool anchored = !anchors_->objectArrays.empty() && !anchors_->namePools.empty();
+        scanAllowedAtMs_ = GetTickCount64() + (anchored ? kScanFallbackMs : kScanRetryMs);
+    }
+    profile_.locateMs = lap();
     if (!runtime_)
-        return failed();
+        return failed("GUObjectArray and FNamePool not found yet");
 
     finder_ = std::make_unique<ObjectFinder>(ObjectFinder::Build(runtime_->objects, runtime_->names, runtime_->header));
+    profile_.indexMs = lap();
+    // Holds even when the version resource was stripped.
+    if (!UsesFPropertySystem(*finder_)) {
+        failure_.store("properties are UObjects, so the engine predates UE4.25", std::memory_order_release);
+        ruledOut_.store(true, std::memory_order_release);
+        return false;
+    }
     structs_ = FindStructOffsets(*finder_);
     fields_ = FindFieldOffsets(*finder_, runtime_->names, structs_);
     if (!fields_.Resolved())
-        return failed();
+        return failed("the FField layout did not resolve");
 
     tail_ = FindPropertyTailOffsets(*finder_, structs_, fields_);
     classes_ = FindClassOffsets(*finder_, structs_);
     chain_ = std::make_unique<PropertyChain>(memory_, runtime_->names, structs_, fields_);
     values_ = std::make_unique<PropertyValues>(memory_, runtime_->names, structs_, fields_, tail_);
     types_ = std::make_unique<TypeQueries>(*finder_, structs_, classes_);
+    profile_.offsetsMs = lap();
     functions_ = FindFunctionOffsets(*finder_, structs_, fields_, tail_, codeRegions);
-    processEvent_ = FindProcessEvent(*finder_, *types_, structs_, functions_, codeRegions)
+    profile_.functionsMs = lap();
+    processEvent_ = FindProcessEvent(*finder_, *types_, structs_, functions_, codeRegions, functionTable_)
                        .value_or(ProcessEventLocation{});
+    profile_.processEventMs = lap();
 
     available_.store(true, std::memory_order_release);
     return true;
@@ -494,9 +576,14 @@ const UnrealPresence &UnrealEngine::Presence() {
 
     const ModuleCandidate self{name, path, MainModuleBase()};
     presence_ = DetectUnreal(memory_, std::span<const ModuleCandidate>(&self, 1));
-    // Not a UBT process; waiting will not change that.
-    if (!presence_->WorthScanning() || presence_->runtimeModules.empty())
+    // Neither answer changes while the process lives.
+    if (!presence_->WorthScanning() || presence_->runtimeModules.empty()) {
+        failure_.store("not a UBT-built process", std::memory_order_release);
         ruledOut_.store(true, std::memory_order_release);
+    } else if (presence_->version.Known() && !presence_->version.UsesFieldProperties()) {
+        failure_.store("the version resource names an engine before UE4.25", std::memory_order_release);
+        ruledOut_.store(true, std::memory_order_release);
+    }
     return *presence_;
 }
 
@@ -508,6 +595,14 @@ const URK_UnrealApi *UnrealSdkApi(const HookInstaller &installer) {
     static const URK_UnrealApi table = BuildTable();
     g_installer = installer;
     return &table;
+}
+
+bool UnrealSdk_HoldProcessEventHook() {
+    std::lock_guard lock(g_hookMutex);
+    if (!EnsureHookInstalled())
+        return false;
+    g_loaderHold = true;
+    return true;
 }
 
 } // namespace URK::Unreal

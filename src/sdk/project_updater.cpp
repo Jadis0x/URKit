@@ -3,6 +3,7 @@
 #include "il2cpp_sdk_generator.h"
 #include "mod_sdk.h"
 #include "mono_sdk_generator.h"
+#include "unreal_sdk_generator.h"
 
 #include <algorithm>
 #include <charconv>
@@ -318,24 +319,45 @@ bool RestoreBackup(const fs::path &root, const fs::path &backup, const std::vect
     return true;
 }
 
-bool Regenerate(const fs::path &root, const Manifest &manifest, std::string *error) {
-    const std::string reportDetails = "Mono and IL2CPP generated projects use runtime API helpers. "
-                                      "No offline metadata or dump-generated modules are emitted.\n";
-    const fs::path sdkRoot = root / "sdk" / BackendName(manifest.backend);
-    const std::string gameDirectory = manifest.gameDirectory.string();
-
-    if (manifest.backend == Backend::Il2Cpp) {
-        if (!Il2CppSdkGenerator::Generate(sdkRoot.string(), reportDetails, error))
-            return false;
-        return Il2CppSdkGenerator::GenerateModProject(root.string(), sdkRoot.string(), {}, manifest.projectName,
-                                                      gameDirectory, manifest.modsDirectory, manifest.enableLocalization,
-                                                      error);
+const char *BackendDisplayName(Backend backend) {
+    switch (backend) {
+    case Backend::Il2Cpp:
+        return "IL2CPP";
+    case Backend::Unreal:
+        return "Unreal";
+    case Backend::Mono:
+        break;
     }
+    return "Mono";
+}
 
-    if (!MonoSdkGenerator::Generate(sdkRoot.string(), reportDetails, error))
-        return false;
-    return MonoSdkGenerator::GenerateModProject(root.string(), sdkRoot.string(), {}, manifest.projectName, gameDirectory,
-                                                manifest.modsDirectory, manifest.enableLocalization, error);
+// One SDK folder plus the project around it, for whichever backend.
+bool GenerateBackend(Backend backend, const fs::path &root, const fs::path &sdkRoot, const std::string &projectName,
+                     const std::string &gameDirectory, const std::string &modsDirectory, bool enableLocalization,
+                     const std::string &reportDetails, std::string *error) {
+    switch (backend) {
+    case Backend::Il2Cpp:
+        return Il2CppSdkGenerator::Generate(sdkRoot.string(), reportDetails, error) &&
+               Il2CppSdkGenerator::GenerateModProject(root.string(), sdkRoot.string(), {}, projectName, gameDirectory,
+                                                      modsDirectory, enableLocalization, error);
+    case Backend::Unreal:
+        return UnrealSdkGenerator::Generate(sdkRoot.string(), reportDetails, error) &&
+               UnrealSdkGenerator::GenerateModProject(root.string(), sdkRoot.string(), {}, projectName, gameDirectory,
+                                                      modsDirectory, enableLocalization, error);
+    case Backend::Mono:
+        break;
+    }
+    return MonoSdkGenerator::Generate(sdkRoot.string(), reportDetails, error) &&
+           MonoSdkGenerator::GenerateModProject(root.string(), sdkRoot.string(), {}, projectName, gameDirectory,
+                                                modsDirectory, enableLocalization, error);
+}
+
+bool Regenerate(const fs::path &root, const Manifest &manifest, std::string *error) {
+    const std::string reportDetails = "Generated projects use runtime API helpers. "
+                                      "No offline metadata or dump-generated modules are emitted.\n";
+    return GenerateBackend(manifest.backend, root, root / "sdk" / BackendName(manifest.backend), manifest.projectName,
+                           manifest.gameDirectory.string(), manifest.modsDirectory, manifest.enableLocalization,
+                           reportDetails, error);
 }
 
 class ScopedPreviewDirectory {
@@ -486,16 +508,8 @@ bool StageBackendSdkCandidate(const fs::path &projectRoot, const fs::path &stage
     const fs::path candidateRoot = stage / backendName / "candidate";
     const fs::path candidateSdk = candidateRoot / "sdk" / backendName;
     const std::string reportDetails = "Staged SDK migration candidate.\n";
-    const bool generated = backend == Backend::Il2Cpp
-                               ? Il2CppSdkGenerator::Generate(candidateSdk.string(), reportDetails, error) &&
-                                     Il2CppSdkGenerator::GenerateModProject(
-                                         candidateRoot.string(), candidateSdk.string(), {}, projectName,
-                                         projectRoot.string(), "Mods", false, error)
-                               : MonoSdkGenerator::Generate(candidateSdk.string(), reportDetails, error) &&
-                                     MonoSdkGenerator::GenerateModProject(candidateRoot.string(), candidateSdk.string(),
-                                                                           {}, projectName, projectRoot.string(), "Mods",
-                                                                           false, error);
-    if (!generated)
+    if (!GenerateBackend(backend, candidateRoot, candidateSdk, projectName, projectRoot.string(), "Mods", false,
+                         reportDetails, error))
         return false;
 
     std::error_code ec;
@@ -750,9 +764,10 @@ bool StageSdkMigration(const fs::path &projectRoot, fs::path *stagedUpdateDirect
 
     const bool hasMono = IsRegularFile(root / "sdk/mono/mono_runtime.h");
     const bool hasIl2Cpp = IsRegularFile(root / "sdk/il2cpp/il2cpp_runtime.h");
-    if (!hasMono && !hasIl2Cpp) {
+    const bool hasUnreal = IsRegularFile(root / "sdk/unreal/unreal_runtime.h");
+    if (!hasMono && !hasIl2Cpp && !hasUnreal) {
         if (error)
-            *error = "project does not contain a Mono or IL2CPP SDK folder to stage";
+            *error = "project does not contain a Mono, IL2CPP or Unreal SDK folder to stage";
         return false;
     }
 
@@ -791,6 +806,8 @@ bool StageSdkMigration(const fs::path &projectRoot, fs::path *stagedUpdateDirect
         return false;
     if (hasIl2Cpp && !StageBackendSdkCandidate(root, stage, Backend::Il2Cpp, projectName, report, error))
         return false;
+    if (hasUnreal && !StageBackendSdkCandidate(root, stage, Backend::Unreal, projectName, report, error))
+        return false;
     report.close();
     if (!report) {
         if (error)
@@ -805,7 +822,7 @@ std::string Describe(const Inspection &inspection) {
     std::ostringstream out;
     out << "Project: " << inspection.manifest.projectName << '\n'
         << "Path: " << inspection.projectRoot.string() << '\n'
-        << "Backend: " << (inspection.manifest.backend == Backend::Il2Cpp ? "IL2CPP" : "Mono") << '\n'
+        << "Backend: " << BackendDisplayName(inspection.manifest.backend) << '\n'
         << "Project SDK: " << inspection.detectedSdkVersion << '\n'
         << "Updater SDK: " << URK_SDK_VERSION << '\n'
         << "Generated-file ledger: " << (inspection.hasGeneratedFileLedger ? "present" : "missing") << '\n'

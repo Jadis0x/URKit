@@ -49,6 +49,10 @@ struct ModuleProjectOptions {
     bool preserveEditableSources = true;
 };
 
+inline bool IsUnrealProject(const ModuleProjectOptions &options) {
+    return options.backendNamespace == "URK::unreal";
+}
+
 bool WriteModuleProject(const ModuleProjectOptions &options, std::string *error);
 
 } // namespace ModProjectGenerator

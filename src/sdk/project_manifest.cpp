@@ -96,7 +96,15 @@ bool Require(const std::unordered_map<std::string, std::string> &fields, const c
 } // namespace
 
 const char *BackendName(Backend backend) {
-    return backend == Backend::Il2Cpp ? "il2cpp" : "mono";
+    switch (backend) {
+    case Backend::Il2Cpp:
+        return "il2cpp";
+    case Backend::Unreal:
+        return "unreal";
+    case Backend::Mono:
+        break;
+    }
+    return "mono";
 }
 
 bool ParseBackend(const std::string &value, Backend *backend) {
@@ -108,6 +116,10 @@ bool ParseBackend(const std::string &value, Backend *backend) {
     }
     if (value == "il2cpp") {
         *backend = Backend::Il2Cpp;
+        return true;
+    }
+    if (value == "unreal") {
+        *backend = Backend::Unreal;
         return true;
     }
     return false;

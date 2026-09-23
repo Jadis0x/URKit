@@ -32,5 +32,6 @@ URK_ModContext &ModContext_Build(const Config &config, const ModContextBuildOpti
 URK_ModContext &ModContext_BuildMono(const Config &config, MonoApi &mono, uintptr_t runtimeModuleBase,
                                      uint64_t backendCapabilities);
 URK_ModContext &ModContext_BuildIl2Cpp(const Config &config, Il2CppApi &il2cpp, uint64_t backendCapabilities);
+// gameLoop: the engine's frame drives MainThreadRegister callbacks and scene events.
 URK_ModContext &ModContext_BuildUnreal(const Config &config, const URK_UnrealApi *unreal,
-                                       uintptr_t runtimeModuleBase);
+                                       uintptr_t runtimeModuleBase, bool gameLoop);

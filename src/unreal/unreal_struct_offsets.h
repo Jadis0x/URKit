@@ -1,8 +1,7 @@
 #pragma once
 
-// UField/UStruct layout, anchored on values the engine fixes: FColor is four
-// bytes, FGuid sixteen, AActor's class carries the Actor cast flag. The offset
-// that satisfies every anchor is the field.
+// UField/UStruct layout: the offset that satisfies every fixed anchor (FColor,
+// FGuid, AActor's cast flag) is the field.
 
 #include "unreal_object_finder.h"
 
@@ -27,10 +26,6 @@ struct StructOffsets {
     std::int32_t propertiesSize = kOffsetNotFound;
     std::int32_t minAlignment = kOffsetNotFound;
     std::int32_t fieldNext = kOffsetNotFound;
-
-    // From UE4.25 properties stopped being UObjects and moved to a separate
-    // FField chain, which changes what Children holds.
-    bool usesFProperty = false;
 };
 
 // A known object paired with the value the field must hold for it.
@@ -75,13 +70,13 @@ std::uint64_t CastFlagsOf(const ObjectFinder &finder, const StructOffsets &struc
 
 bool ObjectIs(const ObjectFinder &finder, const StructOffsets &structs, Address object, std::uint64_t flag);
 
-// Properties are UObjects before UE4.25 and FFields after, so looking for a
-// known property in the object array tells the two systems apart.
+// Before UE4.25 properties were UObjects, so finding one in the object array
+// proves an unsupported engine even when the version resource is stripped.
 bool UsesFPropertySystem(const ObjectFinder &finder);
 
 std::int32_t FindCastFlagsOffset(const ObjectFinder &finder);
 std::int32_t FindSuperStructOffset(const ObjectFinder &finder);
-std::int32_t FindChildrenOffset(const ObjectFinder &finder, bool usesFProperty);
+std::int32_t FindChildrenOffset(const ObjectFinder &finder);
 std::int32_t FindPropertiesSizeOffset(const ObjectFinder &finder);
 std::int32_t FindMinAlignmentOffset(const ObjectFinder &finder);
 std::int32_t FindFieldNextOffset(const ObjectFinder &finder, std::int32_t childrenOffset);

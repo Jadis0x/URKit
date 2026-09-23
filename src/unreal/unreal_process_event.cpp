@@ -72,9 +72,8 @@ std::vector<Address> ReadVtable(const MemoryReader &reader, std::span<const Scan
     return slots;
 }
 
-// Every address the code treats as a function entry: call rel32 targets plus
-// UFunction::Func values. Used to bound a slot's body - without it a window
-// runs into the next function and miscounts its references.
+// Every known function entry (call targets + UFunction::Func), so a slot's body
+// ends where the next function starts.
 std::set<Address> KnownFunctionEntries(const ObjectFinder &finder, const StructOffsets &structs,
                                        const FunctionOffsets &functions, std::span<const ScanRegion> code) {
     constexpr std::size_t kChunk = 0x10000;
@@ -124,7 +123,8 @@ std::set<Address> KnownFunctionEntries(const ObjectFinder &finder, const StructO
 
 std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder, const TypeQueries &types,
                                                      const StructOffsets &structs, const FunctionOffsets &functions,
-                                                     std::span<const ScanRegion> codeRegions) {
+                                                     std::span<const ScanRegion> codeRegions,
+                                                     const FunctionTable &bounds) {
     if (functions.parmsSize == kOffsetNotFound || codeRegions.empty())
         return std::nullopt;
 
@@ -140,9 +140,18 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
     if (slots.empty())
         return std::nullopt;
 
-    std::set<Address> entries = KnownFunctionEntries(finder, structs, functions, codeRegions);
-    entries.insert(slots.begin(), slots.end());
-    const std::vector<Address> sorted(entries.begin(), entries.end());
+    // Built only if some slot has no exception-table entry to bound it.
+    std::vector<Address> sorted;
+    const auto guessedSpan = [&](Address target) {
+        if (sorted.empty()) {
+            std::set<Address> entries = KnownFunctionEntries(finder, structs, functions, codeRegions);
+            entries.insert(slots.begin(), slots.end());
+            sorted.assign(entries.begin(), entries.end());
+        }
+        const auto next = std::upper_bound(sorted.begin(), sorted.end(), target);
+        const std::size_t span = next == sorted.end() ? kMaxBodyBytes : static_cast<std::size_t>(*next - target);
+        return std::max(span, kMinBodyBytes);
+    };
 
     // ParmsSize alone is not rare enough; only a frame builder needs it
     // together with ReturnValueOffset.
@@ -151,11 +160,15 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
     for (std::size_t slot = 0; slot < slots.size(); ++slot) {
         const Address target = slots[slot];
 
-        // Stop at the next function entry so the count belongs to this slot.
-        const auto next = std::upper_bound(sorted.begin(), sorted.end(), target);
-        const std::size_t span =
-            next == sorted.end() ? kMaxBodyBytes : static_cast<std::size_t>(*next - target);
-        const std::size_t size = std::min(std::max(span, kMinBodyBytes), kMaxBodyBytes);
+        // Stop where the function ends so the count belongs to this slot.
+        std::size_t span = 0;
+        if (const std::optional<FunctionRange> range = bounds.Containing(target); range && range->begin == target)
+            span = static_cast<std::size_t>(range->end - target);
+        else if (const Address next = bounds.NextBegin(target); next != kNullAddress && !range)
+            span = static_cast<std::size_t>(next - target);
+        else
+            span = guessedSpan(target);
+        const std::size_t size = std::min(span, kMaxBodyBytes);
 
         body.assign(size, 0);
         if (!reader.Read(target, body.data(), size))

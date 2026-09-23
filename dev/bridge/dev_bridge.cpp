@@ -146,6 +146,7 @@ BridgeResponse Dispatch(const BridgeRequest &request) {
                     {"sdk_version", context->version},
                     {"runtime_backend", context->runtimeBackend == URK_RUNTIME_BACKEND_MONO     ? "mono"
                                         : context->runtimeBackend == URK_RUNTIME_BACKEND_IL2CPP ? "il2cpp"
+                                        : context->runtimeBackend == URK_RUNTIME_BACKEND_UNREAL ? "unreal"
                                                                                                 : "unknown"},
                     {"runtime_capabilities", context->runtimeCapabilities},
                     {"main_thread", true}};

@@ -1296,6 +1296,20 @@ SceneTransition UpdateObservedScene(const URK_SceneInfo &current, bool markDupli
     return transition;
 }
 
+void DispatchTransition(const URK_SceneInfo &current, const SceneTransition &transition) {
+    if (transition.firstScene) {
+        Log("[runtime][events] scene loaded: name='%s' buildIndex=%d handle=%d.", current.name, current.buildIndex,
+            current.handle);
+        ModLifecycle_DispatchSceneLoaded(current);
+    } else if (transition.changed) {
+        Log("[runtime][events] scene changed: '%s'(%d/%d) -> '%s'(%d/%d).", transition.previous.name,
+            transition.previous.buildIndex, transition.previous.handle, current.name, current.buildIndex,
+            current.handle);
+        ModLifecycle_DispatchSceneChanged(transition.previous, current);
+        ModLifecycle_DispatchSceneLoaded(current);
+    }
+}
+
 void PumpSceneEvents() {
     URK_SceneInfo current{};
     std::string reason;
@@ -1309,19 +1323,7 @@ void PumpSceneEvents() {
         return;
     }
 
-    const SceneTransition transition = UpdateObservedScene(current);
-
-    if (transition.firstScene) {
-        Log("[runtime][events] scene loaded: name='%s' buildIndex=%d handle=%d.", current.name, current.buildIndex,
-            current.handle);
-        ModLifecycle_DispatchSceneLoaded(current);
-    } else if (transition.changed) {
-        Log("[runtime][events] scene changed: '%s'(%d/%d) -> '%s'(%d/%d).", transition.previous.name,
-            transition.previous.buildIndex, transition.previous.handle, current.name, current.buildIndex,
-            current.handle);
-        ModLifecycle_DispatchSceneChanged(transition.previous, current);
-        ModLifecycle_DispatchSceneLoaded(current);
-    }
+    DispatchTransition(current, UpdateObservedScene(current));
 }
 
 void DispatchSceneLoadedFromHandle(int32_t handle, const char *source) {
@@ -3423,6 +3425,29 @@ void RuntimeEvents_Pump() {
         pump();
         return;
     }
+}
+
+void RuntimeEvents_ObserveScene(const URK_SceneInfo &scene, bool distinct) {
+    if (ModLifecycle_ShutdownStarted())
+        return;
+    SceneTransition transition{};
+    {
+        std::lock_guard lock(g_eventsMutex);
+        if (!g_haveScene) {
+            g_currentScene = scene;
+            g_haveScene = true;
+            transition.firstScene = true;
+        } else if (distinct || !SameScene(g_currentScene, scene)) {
+            transition.previous = g_currentScene;
+            g_currentScene = scene;
+            transition.changed = true;
+        }
+    }
+    DispatchTransition(scene, transition);
+}
+
+void RuntimeEvents_SetMainThread(DWORD threadId) {
+    g_unityMainThreadId.store(threadId, std::memory_order_release);
 }
 
 int RuntimeEvents_CurrentScene(URK_SceneInfo *scene) {

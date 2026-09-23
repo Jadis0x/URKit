@@ -1,14 +1,16 @@
 #pragma once
 
-// Object lookup by name. The remaining calibration steps are anchored on
-// well-known engine objects - "Actor", "Class", "Guid" - so they need a way to
-// turn a name into an address before any struct offset is known.
+// Name-to-address lookup; later rungs anchor on well-known engine objects.
 
 #include "unreal_names.h"
 #include "unreal_offsets.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -21,42 +23,59 @@ class ObjectFinder {
     // Walks every object once and indexes it by name.
     static ObjectFinder Build(const ObjectArray &objects, const NameTable &names, const ObjectOffsets &offsets);
 
+    // The index is a snapshot of a live array: every hit is checked against the
+    // array, and a miss rebuilds the index at most this often.
+    static constexpr std::uint64_t kRefreshIntervalMs = 250;
+
     Address ClassOf(Address object) const;
     Address OuterOf(Address object) const;
     std::optional<std::string> NameOf(Address object) const;
 
-    // First object carrying this name, or kNullAddress.
+    // First live object carrying this name, or kNullAddress.
     Address Find(std::string_view name) const;
 
     // First object with this name whose outer carries outerName. Outers are not
     // unique by name, so this is how a member is addressed.
     Address FindInOuter(std::string_view name, std::string_view outerName) const;
 
-    // The same, when the outer is already an address rather than a name - a
-    // caller holding a class object asking for one of its members, which is
-    // the shape the SDK's find_function takes.
+    // As above, with the outer given as an address (the SDK's find_function).
     Address FindInOuter(std::string_view name, Address outer) const;
 
     const MemoryReader &Reader() const { return objects_->Reader(); }
     const ObjectArray &Objects() const { return *objects_; }
     const NameTable &Names() const { return *names_; }
     const ObjectOffsets &Offsets() const { return offsets_; }
-    std::size_t IndexedCount() const { return count_; }
+    std::size_t IndexedCount() const;
 
   private:
     ObjectFinder(const ObjectArray &objects, const NameTable &names, const ObjectOffsets &offsets)
         : objects_(&objects), names_(&names), offsets_(offsets) {}
 
+    struct Index {
+        std::mutex mutex;
+        std::unordered_map<std::string, std::vector<Address>> byName;
+        std::size_t count = 0;
+        std::uint64_t builtAtMs = 0;
+    };
+
+    // FName entries never change, so a decoded name is good for the process.
+    struct NameCache {
+        std::shared_mutex mutex;
+        std::unordered_map<std::uint32_t, std::string> names;
+    };
+
+    void Rebuild(Index &index) const;
+    std::optional<std::string> BaseName(std::uint32_t comparisonIndex) const;
+    template <typename Accept> Address Lookup(std::string_view name, Accept accept) const;
+
     const ObjectArray *objects_;
     const NameTable *names_;
     ObjectOffsets offsets_;
-    std::unordered_map<std::string, std::vector<Address>> byName_;
-    std::size_t count_ = 0;
+    std::unique_ptr<Index> index_ = std::make_unique<Index>();
+    std::unique_ptr<NameCache> nameCache_ = std::make_unique<NameCache>();
 };
 
-// Whether the address holds an object the array agrees is there. An object
-// knows which slot holds it and the array has to agree, which a pointer into
-// the middle of an object, or at an FField, or at a destroyed object, does not.
+// Whether the array agrees an object lives here: its slot must point back at it.
 bool IsLiveObject(const ObjectFinder &finder, Address candidate);
 
 } // namespace URK::Unreal

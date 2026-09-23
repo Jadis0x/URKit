@@ -71,8 +71,10 @@ set(URK_UNITY_SRC
 # belongs to the probe tooling, not to a loader that runs inside the game.
 set(URK_UNREAL_SRC
     ${URK_SRC_DIR}/unreal/unreal_bootstrap.cpp
+    ${URK_SRC_DIR}/unreal/unreal_code_anchors.cpp
     ${URK_SRC_DIR}/unreal/unreal_engine_detect.cpp
     ${URK_SRC_DIR}/unreal/unreal_functions.cpp
+    ${URK_SRC_DIR}/unreal/unreal_game_loop.cpp
     ${URK_SRC_DIR}/unreal/unreal_module.cpp
     ${URK_SRC_DIR}/unreal/unreal_names.cpp
     ${URK_SRC_DIR}/unreal/unreal_object_array.cpp
@@ -104,6 +106,7 @@ set(URK_SDK_GENERATOR_SRC
     ${URK_SRC_DIR}/sdk/mod_project_generator_common.cpp
     ${URK_SRC_DIR}/sdk/mono_sdk_generator.cpp
     ${URK_SRC_DIR}/sdk/il2cpp_project_generator.cpp
+    ${URK_SRC_DIR}/sdk/unreal_sdk_generator.cpp
     ${URK_SRC_DIR}/sdk/sdk_generator_contract.cpp
     ${URK_SRC_DIR}/sdk/project_manifest.cpp
     ${URK_SRC_DIR}/sdk/project_ledger.cpp
@@ -200,6 +203,8 @@ set(URK_SDK_TEMPLATE_FILES
     ${URK_SRC_DIR}/sdk/templates/unity/inspect_codegen.inl
     ${URK_SRC_DIR}/sdk/templates/unity/backend_codegen.inl
     ${URK_SRC_DIR}/sdk/templates/unity/module_split.inl
+    ${URK_SRC_DIR}/sdk/templates/unreal/runtime.inl
+    ${URK_SRC_DIR}/sdk/templates/unreal/highlight.inl
 )
 set_source_files_properties(${URK_SDK_TEMPLATE_FILES} PROPERTIES HEADER_FILE_ONLY TRUE)
 list(APPEND URK_SDK_TOOL_SRC ${URK_SDK_TEMPLATE_FILES})
@@ -256,6 +261,7 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/sdk/mod_project_generator_profiles.h
     ${URK_SRC_DIR}/sdk/il2cpp_sdk_generator.h
     ${URK_SRC_DIR}/sdk/mono_sdk_generator.h
+    ${URK_SRC_DIR}/sdk/unreal_sdk_generator.h
     ${URK_SRC_DIR}/sdk/sdk_generator_contract.h
     ${URK_SRC_DIR}/sdk/project_manifest.h
     ${URK_SRC_DIR}/sdk/project_updater.h
@@ -266,8 +272,10 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/unity/il2cpp_export_policy.h
 
     ${URK_SRC_DIR}/unreal/unreal_bootstrap.h
+    ${URK_SRC_DIR}/unreal/unreal_code_anchors.h
     ${URK_SRC_DIR}/unreal/unreal_engine_detect.h
     ${URK_SRC_DIR}/unreal/unreal_functions.h
+    ${URK_SRC_DIR}/unreal/unreal_game_loop.h
     ${URK_SRC_DIR}/unreal/unreal_memory.h
     ${URK_SRC_DIR}/unreal/unreal_module.h
     ${URK_SRC_DIR}/unreal/unreal_names.h

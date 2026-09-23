@@ -1,9 +1,7 @@
 #pragma once
 
-// Reader interface for Unreal offset calibration. The calibration probes
-// structures whose layout it does not know yet, so most reads are expected to
-// fail and must not fault. The indirection also lets the ladder run against a
-// synthetic image under test.
+// Reader interface for calibration: most probes fail and must not fault, and
+// tests run the ladder against a synthetic image.
 
 #include <cstddef>
 #include <cstdint>
@@ -38,10 +36,8 @@ class MemoryReader {
     std::optional<std::int32_t> ReadInt32(Address address) const { return ReadAs<std::int32_t>(address); }
     std::optional<std::uint32_t> ReadUInt32(Address address) const { return ReadAs<std::uint32_t>(address); }
 
-    // Free prefilter before the kernel call in Readable(). Windows x64 keeps
-    // user-mode addresses below 2^47, so nothing real is rejected, while
-    // random data survives only ~1 time in 2^17. Without it the scan spends
-    // millions of VirtualQuery calls on ints and padding.
+    // Free check before Readable()'s kernel call: user-mode pointers sit below
+    // 2^47, random data rarely does.
     static bool PlausiblePointer(Address value) {
         constexpr Address kUserSpaceCeiling = Address{1} << 47;
         constexpr Address kFirstAllocatableAddress = 0x10000;

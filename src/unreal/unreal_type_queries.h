@@ -1,8 +1,7 @@
 #pragma once
 
-// Type tests walk the calibrated Super chain. ClassDefaultObject is measured
-// by the relation that holds in every build: it points at an object whose own
-// class is that class, named after it.
+// Type tests over the Super chain. The CDO is the object whose class is this
+// class and whose name follows it.
 
 #include "unreal_object_finder.h"
 #include "unreal_struct_offsets.h"

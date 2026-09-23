@@ -1,10 +1,7 @@
 #pragma once
 
-// What a call needs: the parameters, the block size, the return offset.
-//
-// The property chain already knows what those must be, so the offsets are
-// found by looking for where the engine stores numbers that agree with it.
-// Two functions with different numbers pin them.
+// UFunction parameter block. Offsets are where the engine stores numbers that
+// agree with what the property chain already implies.
 
 #include "unreal_module.h"
 #include "unreal_property_values.h"

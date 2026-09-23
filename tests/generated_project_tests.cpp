@@ -1,4 +1,4 @@
-// Generates a Mono and an IL2CPP mod project straight from the generator
+// Generates a Mono, an IL2CPP and an Unreal mod project straight from the generator
 // library, then compiles a probe translation unit against the result.
 //
 // The SDK templates are raw string literals, so nothing in the URKit build
@@ -7,11 +7,12 @@
 // callers actually reach, because a header-only parse would not look inside an
 // uninstantiated template.
 //
-// No Unity game is required: the generator only records the game directory in
-// the manifest.
+// No game is required: the generator only records the game directory in the
+// manifest.
 
 #include "src/sdk/il2cpp_sdk_generator.h"
 #include "src/sdk/mono_sdk_generator.h"
+#include "src/sdk/unreal_sdk_generator.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -205,6 +206,19 @@ bool GenerateBoth(const fs::path &workspace, std::vector<GeneratedProject> *proj
         return false;
     }
     projects->push_back({il2cppProject, "il2cpp"});
+
+    const fs::path unrealSdk = workspace / "staged" / "unreal";
+    if (!UnrealSdkGenerator::Generate(unrealSdk.string(), "", &error)) {
+        std::printf("FAILED: Unreal SDK staging: %s\n", error.c_str());
+        return false;
+    }
+    const fs::path unrealProject = workspace / "unreal" / "project";
+    if (!UnrealSdkGenerator::GenerateModProject(unrealProject.string(), unrealSdk.string(), URK_TEST_SDK_DIR,
+                                                "SmokeUnreal", gameDirectory.string(), "Mods", true, &error)) {
+        std::printf("FAILED: Unreal project generation: %s\n", error.c_str());
+        return false;
+    }
+    projects->push_back({unrealProject, "unreal"});
     return true;
 }
 
@@ -271,6 +285,90 @@ void CheckLayout(const GeneratedProject &project) {
     }
 }
 
+// Every entry of the Unreal adapter, plus the generated runtime source that
+// includes it in place of the Unity headers.
+constexpr std::string_view kUnrealProbeSource = R"PROBE(
+#include "sdk/unreal/unreal_runtime.h"
+#include "mod/config/mod_config.h"
+#include "mod/lifecycle/mod_runtime.cpp"
+
+namespace {
+struct Vec {
+    double x, y, z;
+};
+int Observer(void *, URK_UnrealObject, URK_UnrealObject, void *) { return 1; }
+void Work(void *) {}
+} // namespace
+
+void urk_probe_unreal() {
+    using namespace URK::unreal;
+    if (!available())
+        return;
+    const EngineVersion version = engine_version();
+    (void)version.major;
+    const Object klass = find("PlayerController", "/Script/Engine");
+    const Object player = find("PlayerController_0");
+    for (const Object &actor : instances_of(klass, true))
+        (void)actor.name();
+    (void)player.is_a(klass);
+    (void)player.klass().is_child_of(klass);
+    (void)player.outer().default_object();
+    if (const auto info = player.describe("bShowMouseCursor"))
+        (void)info->kind;
+    (void)player.get_int("Count").value_or(0);
+    (void)player.get_float("InputYawScale").value_or(0.0);
+    (void)player.get_bool("bShowMouseCursor").value_or(false);
+    (void)player.get_object("Pawn");
+    (void)player.get_name("StateName");
+    (void)player.get_string("PlayerName");
+    (void)player.set_int("Count", 1);
+    (void)player.set_float("InputYawScale", 2.5);
+    (void)player.set_bool("bShowMouseCursor", true);
+    (void)player.set_object("Pawn", Object());
+    CallFrame frame(klass.function("ClientMessage"));
+    (void)frame.set("Location", Vec{1, 2, 3});
+    (void)frame.get<Vec>("ReturnValue");
+    (void)call(player, frame);
+    (void)install_process_event_hook();
+    (void)process_event_hook_installed();
+    (void)remove_process_event_hook();
+    observe_process_event(&Observer);
+    (void)game_thread_id();
+    (void)post_to_game_thread(&Work);
+}
+)PROBE";
+
+void CheckUnrealLayout(const GeneratedProject &project) {
+    const char *const required[] = {
+        "CMakeLists.txt",
+        "sdk/mod_sdk.h",
+        "sdk/runtime_api.h",
+        "sdk/unreal/unreal_runtime.h",
+        "mod/config/mod_config.h",
+        "mod/ui/highlight.h",
+        "mod/hooks/render_imgui_hook.cpp",
+    };
+    for (const char *relative : required) {
+        std::error_code code;
+        const fs::path path = project.root / relative;
+        const bool present = fs::is_regular_file(path, code) && fs::file_size(path, code) > 0 && !code;
+        Check(present, project.label + ": " + relative + " is generated and non-empty");
+    }
+    std::error_code code;
+    Check(!fs::exists(project.root / "sdk/unity", code), project.label + ": no Unity SDK folder");
+    Check(!fs::exists(project.root / "mod/hooks/unity_log_hook.h", code), project.label + ": no Unity log hook");
+    Check(ReadText(project.root / "mod/hooks/mod_hooks.cpp").find("Unity") == std::string::npos,
+          project.label + ": mod_hooks.cpp does not reference Unity");
+    Check(ReadText(project.root / ".urk/project.ini").find("unreal") != std::string::npos,
+          project.label + ": manifest records the Unreal backend");
+    // A syntax check cannot see this: the wrong version macro compiles and then
+    // rejects the mod at load time.
+    const std::string lifecycle = ReadText(project.root / "mod/generated/mod_lifecycle.cpp");
+    Check(lifecycle.find("URK_UNREAL_API_VERSION") != std::string::npos &&
+              lifecycle.find("IL2CPP") == std::string::npos && lifecycle.find("MONO") == std::string::npos,
+          project.label + ": mod_lifecycle.cpp validates the Unreal API table");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -294,6 +392,16 @@ int main(int argc, char **argv) {
         return 1;
 
     for (const GeneratedProject &project : projects) {
+        if (project.label == "unreal") {
+            CheckUnrealLayout(project);
+            const fs::path probe = project.root / "urk_probe_unreal.cpp";
+            Write(probe, kUnrealProbeSource);
+            Check(SyntaxCheck(project.root, probe, project.root),
+                  project.label + ": generated Unreal SDK and mod runtime compile");
+            fs::remove(probe, cleanup);
+            continue;
+        }
+
         CheckLayout(project);
         CheckObjectSettersAreExact(project);
 

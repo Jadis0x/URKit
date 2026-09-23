@@ -1,10 +1,7 @@
 #pragma once
 
-// GUObjectArray discovery, the first rung of offset calibration: every later
-// step needs real UObjects to measure against. The array's field order is not
-// stable - UE5.8 reordered it and shipped titles shuffle it further - so
-// candidates are validated against the array's own invariants rather than
-// pinned per engine version.
+// GUObjectArray discovery. Field order is not stable across versions, so
+// candidates are validated by the array's own invariants.
 
 #include "unreal_memory.h"
 
@@ -16,15 +13,8 @@ namespace URK::Unreal {
 
 inline constexpr std::int32_t kOffsetNotFound = -1;
 
-// UE4.11 - UE4.20: one flat allocation of FUObjectItem.
-struct FixedObjectArrayLayout {
-    std::int32_t objectsOffset = 0;
-    std::int32_t maxObjectsOffset = 0;
-    std::int32_t numObjectsOffset = 0;
-};
-
-// UE4.21+: a table of chunk pointers. The per-chunk count is not stored and is
-// derived as maxElements / maxChunks.
+// A table of chunk pointers, the only form since UE4.21. The per-chunk count is
+// not stored and is derived as maxElements / maxChunks.
 struct ChunkedObjectArrayLayout {
     std::int32_t objectsOffset = 0;
     std::int32_t maxElementsOffset = 0;
@@ -34,16 +24,13 @@ struct ChunkedObjectArrayLayout {
 };
 
 // Layouts seen across engine versions and shipped titles, tried in order.
-std::span<const FixedObjectArrayLayout> KnownFixedLayouts();
 std::span<const ChunkedObjectArrayLayout> KnownChunkedLayouts();
 
 // Bytes of a candidate that the header-only prefilter looks at.
 inline constexpr std::size_t kObjectArrayHeaderBytes = 0x24;
 
-// The part of validation that reads only the candidate's own header - the
-// counts and their agreement with each other. A necessary condition, so a
-// scan can reject with it before paying for the pointers a full validation
-// follows, which is most of what a scan does.
+// Header-only check (counts and their agreement): a cheap reject before a full
+// validation follows pointers.
 bool HeaderMightBeObjectArray(std::span<const std::uint8_t> header);
 
 // Probed, not assumed: FUObjectItem gained fields over successive versions.
@@ -55,15 +42,12 @@ struct ObjectItemLayout {
 };
 
 struct ObjectArrayLayout {
-    bool chunked = false;
-    FixedObjectArrayLayout fixed{};
     ChunkedObjectArrayLayout chunks{};
     ObjectItemLayout item{};
     std::int32_t elementsPerChunk = 0;
 };
 
 // Whether the candidate address holds an object array in the given layout.
-bool ValidateLayout(const MemoryReader &reader, Address address, const FixedObjectArrayLayout &layout);
 bool ValidateLayout(const MemoryReader &reader, Address address, const ChunkedObjectArrayLayout &layout);
 
 std::optional<ObjectItemLayout> ProbeObjectItemLayout(const MemoryReader &reader, Address firstItem);

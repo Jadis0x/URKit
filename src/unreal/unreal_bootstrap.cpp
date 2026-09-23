@@ -25,9 +25,7 @@ constexpr std::array kAnchorNames = {"Object", "Class", "Package", "Function", "
 constexpr std::int32_t kNameSampleCount = 0x100;
 constexpr std::size_t kMaxNameLength = 0x80;
 
-// The array outlives individual objects, so some slots are empty and some names
-// belong to content the pool no longer holds; three in four is a match, not a
-// coincidence.
+// Empty slots and unloaded names are normal; three in four is a match.
 constexpr std::int32_t kConfirmedNumerator = 3;
 constexpr std::int32_t kConfirmedDenominator = 4;
 
@@ -42,13 +40,8 @@ bool HoldsNoneEntry(std::span<const std::uint8_t> bytes) {
     return false;
 }
 
-// What one scanned word is worth knowing, asked once per word rather than
-// once per candidate whose window covers it.
-//
-// Reaching "None" in one hop is a pool block table, in two an entry array
-// chunk of entry pointers. The first hop's read serves both: its own bytes
-// answer the one-hop question and its first word is the second hop, so the
-// scan pays one read per hop rather than one per question.
+// Whether a word reaches "None" in one hop (pool block) or two (entry chunk).
+// One read serves both, and it is asked per word, not per candidate.
 bool ReachesNoneEntry(const MemoryReader &reader, Address value) {
     if (!MemoryReader::PlausiblePointer(value))
         return false;
@@ -128,9 +121,8 @@ bool Better(const Runtime &candidate, const Runtime &incumbent) {
 
 enum class Looking { ObjectArray, NameTable };
 
-// Both globals are pointer aligned, so a scan steps by a word and a region is
-// just its words. Read in chunks: one reader call per word over a shipped
-// game's data sections is where the bootstrap used to spend its life.
+// Globals are word aligned; read in chunks, since one call per word was the
+// old bottleneck.
 constexpr std::size_t kChunkWords = 0x8000;
 
 // Words past a chunk's last candidate that the candidate still looks at: the
@@ -138,9 +130,8 @@ constexpr std::size_t kChunkWords = 0x8000;
 constexpr std::size_t kLookaheadWords =
     std::max(kPrefilterSlots / sizeof(Address), (kObjectArrayHeaderBytes + sizeof(Address) - 1) / sizeof(Address));
 
-// A chunk straddling the end of a committed range is halved rather than read
-// a word at a time, so an unreadable tail does not cost the whole chunk.
-// Unreadable words stay zero, which no prefilter accepts.
+// Halve a failing chunk so an unreadable tail costs only itself; unread words
+// stay zero, which no prefilter accepts.
 void ReadWords(const MemoryReader &reader, Address at, std::span<Address> words) {
     if (words.empty() || reader.Read(at, words.data(), words.size() * sizeof(Address)))
         return;
@@ -153,10 +144,8 @@ void ReadWords(const MemoryReader &reader, Address at, std::span<Address> words)
     ReadWords(reader, at + half * sizeof(Address), words.subspan(half));
 }
 
-// Whether a candidate is worth validating, from the chunk alone. The object
-// array is decided by its own header; the name table by whether any slot of
-// its window reached "None", which is the one question that costs a read and
-// so is answered per word rather than per candidate.
+// Worth validating? The object array by its header; the name table by whether
+// any slot of its window reached "None".
 bool Worth(std::span<const Address> words, std::span<const std::uint8_t> facts, std::size_t at, Looking looking) {
     if (looking == Looking::ObjectArray) {
         const auto *bytes = reinterpret_cast<const std::uint8_t *>(words.data() + at);
@@ -221,7 +210,28 @@ std::vector<Address> FindNameTableCandidates(const MemoryReader &reader, std::sp
 std::optional<Runtime> BootstrapRuntime(const MemoryReader &reader, std::span<const ScanRegion> regions) {
     const std::vector<Address> arrays = FindObjectArrayCandidates(reader, regions);
     const std::vector<Address> tables = FindNameTableCandidates(reader, regions);
+    return PairCandidates(reader, arrays, tables);
+}
 
+std::optional<Runtime> BootstrapAnchored(const MemoryReader &reader, const GlobalCandidates &candidates) {
+    const auto resolving = [&reader](std::span<const Address> addresses, Looking looking) {
+        std::vector<Address> kept;
+        for (const Address address : addresses) {
+            if (kept.size() >= kMaxCandidates)
+                break;
+            if (Resolves(reader, address, looking))
+                kept.push_back(address);
+        }
+        return kept;
+    };
+    const std::vector<Address> arrays = resolving(candidates.objectArrays, Looking::ObjectArray);
+    if (arrays.empty())
+        return std::nullopt;
+    return PairCandidates(reader, arrays, resolving(candidates.namePools, Looking::NameTable));
+}
+
+std::optional<Runtime> PairCandidates(const MemoryReader &reader, std::span<const Address> arrays,
+                                      std::span<const Address> tables) {
     std::optional<Runtime> best;
     for (const Address arrayAddress : arrays) {
         const std::optional<ObjectArrayLayout> layout = ResolveObjectArrayLayout(reader, arrayAddress);

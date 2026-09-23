@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <array>
+#include <cstring>
 
 namespace {
 bool ModuleLoaded(const char *name) {
@@ -25,6 +26,31 @@ bool MonoLoaded() {
     return false;
 }
 
+// Static imports of the process image, read from its own mapped headers.
+bool MainImageImports(const char *dll) {
+    const auto *base = reinterpret_cast<const std::uint8_t *>(GetModuleHandleW(nullptr));
+    const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+    if (!base || dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return false;
+    const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return false;
+    const IMAGE_DATA_DIRECTORY &imports = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (imports.VirtualAddress == 0)
+        return false;
+    for (auto *entry = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR *>(base + imports.VirtualAddress); entry->Name;
+         ++entry) {
+        if (_stricmp(reinterpret_cast<const char *>(base + entry->Name), dll) == 0)
+            return true;
+    }
+    return false;
+}
+
+bool IsUnityImage() {
+    static const bool unity = MainImageImports("UnityPlayer.dll");
+    return unity;
+}
+
 // Version resource and module layout, not the bootstrap scan. Cached there.
 const URK::Unreal::UnrealPresence &UnrealPresence() {
     return URK::Unreal::UnrealEngine::Instance().Presence();
@@ -41,7 +67,7 @@ RuntimeModuleSnapshot RuntimeDiscovery_Snapshot() {
         ModuleLoaded("UnityPlayer.dll"),
         ModuleLoaded("GameAssembly.dll"),
         MonoLoaded(),
-        UnrealPresence().WorthScanning(),
+        !IsUnityImage() && UnrealPresence().WorthScanning(),
     };
 }
 

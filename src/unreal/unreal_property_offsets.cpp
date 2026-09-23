@@ -7,9 +7,8 @@ constexpr std::int32_t kMaxChildPropertiesOffset = 0x80;
 constexpr std::int32_t kMaxFieldOffset = 0x48;
 constexpr std::int32_t kMaxPropertyOffset = 0x100;
 
-// FField begins with a vtable and its class pointer; Owner follows, and Next
-// follows Owner. Owner carried a trailing bool before UE5.1.1, so Next sits at
-// one of two offsets and the scan has to start past the narrower form.
+// Next follows Owner, which had a trailing bool before UE5.1.1, so the scan
+// starts past the narrower layout.
 constexpr std::int32_t kFieldClassMinOffset = 0x08;
 constexpr std::int32_t kFieldOwnerOffset = 0x10;
 
@@ -18,9 +17,8 @@ constexpr std::uint64_t kPodMemberFlags = kPropertyFlagEdit | kPropertyFlagZeroC
                                           kPropertyFlagIsPlainOldData | kPropertyFlagNoDestructor |
                                           kPropertyFlagHasGetValueTypeHash;
 
-// The first offset at or after start where both fields hold a pointer into
-// mapped memory. Unlike the object form this does not require a vtable behind
-// the pointer, because FFieldClass has none.
+// First offset where both fields point into mapped memory; FFieldClass has no
+// vtable to check.
 std::int32_t FindSharedReadablePointer(const MemoryReader &reader, Address fieldA, Address fieldB, std::int32_t start,
                                        std::int32_t limit) {
     for (std::int32_t offset = start; offset <= limit; offset += sizeof(Address)) {
@@ -292,9 +290,6 @@ std::int32_t FindPropertyFlagsOffset(const ObjectFinder &finder, const NameTable
 
 FieldOffsets FindFieldOffsets(const ObjectFinder &finder, const NameTable &names, const StructOffsets &structs) {
     FieldOffsets fields;
-    if (!structs.usesFProperty)
-        return fields;
-
     fields.childProperties = FindChildPropertiesOffset(finder, structs);
     fields.fieldClass = FindFieldClassOffset(finder, structs, fields);
     fields.fieldNext = FindFieldNextOffset(finder, structs, fields);

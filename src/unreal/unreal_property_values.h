@@ -1,13 +1,7 @@
 #pragma once
 
-// Reading and writing a member once the field layout is calibrated.
-//
-// Cast flags say which kind a property is; everything past FProperty belongs
-// to that kind. That tail offset is measured by demanding one offset satisfy
-// several kinds at once, which padding cannot do.
-//
-// An array's element property sits further in than the tail in shipped UE5, so
-// it is measured separately - a real game disproved assuming otherwise.
+// Reading and writing members. The per-kind tail offset must satisfy several
+// kinds at once; an array's Inner sits past it in UE5, so it is measured apart.
 
 #include "unreal_property_offsets.h"
 

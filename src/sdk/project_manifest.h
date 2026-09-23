@@ -11,6 +11,7 @@ inline constexpr const char *kProjectManifestRelativePath = ".urk/project.ini";
 enum class Backend {
     Mono,
     Il2Cpp,
+    Unreal,
 };
 
 struct Manifest {

@@ -1894,9 +1894,17 @@ inline bool init_dx12_imgui(IDXGISwapChain *swap_chain) {
 inline bool init_imgui(IDXGISwapChain *swap_chain) {
     if (g_imgui_ready)
         return g_active_swap_chain == swap_chain;
+    // Once each: these paths retry every frame and were silent.
+    static std::atomic<bool> first_present_logged{false};
+    if (!first_present_logged.exchange(true))
+        log("First Present reached the UI hook.");
     DXGI_SWAP_CHAIN_DESC desc{};
-    if (!query_swap_chain_desc(swap_chain, &desc) || (desc.OutputWindow && !is_process_main_window(desc.OutputWindow)))
+    if (!query_swap_chain_desc(swap_chain, &desc) || (desc.OutputWindow && !is_process_main_window(desc.OutputWindow))) {
+        static std::atomic<bool> skipped_logged{false};
+        if (!skipped_logged.exchange(true))
+            log("Present skipped: its swap chain does not draw to this process's main window.");
         return false;
+    }
     ID3D11Device *dx11_device = nullptr;
     const bool is_dx11 =
         SUCCEEDED(swap_chain->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void **>(&dx11_device))) &&

@@ -20,9 +20,10 @@ std::string ConfigModule(const ModuleProjectOptions &options) {
         << "inline bool enable_localization = " << (options.enableLocalization ? "true" : "false") << ";\n"
         << "inline constexpr const char* default_language = \"en\";\n"
         << "// Lets ImGui windows move to another monitor.\n"
-        << "inline bool enable_detached_viewports = false;\n"
-        << "inline bool enable_unity_log_hook = true;\n"
-        << "// Win32 virtual-key code used by the generated ImGui WndProc toggle.\n"
+        << "inline bool enable_detached_viewports = false;\n";
+    if (!IsUnrealProject(options))
+        out << "inline bool enable_unity_log_hook = true;\n";
+    out << "// Win32 virtual-key code used by the generated ImGui WndProc toggle.\n"
         << "// Default: VK_TAB (0x09). Change this value to customize the menu key.\n"
         << "inline int menu_toggle_key = 0x09;\n";
     out << "} // namespace ModConfig\n";
@@ -30,14 +31,21 @@ std::string ConfigModule(const ModuleProjectOptions &options) {
 }
 
 std::string BackendRuntimeHeader(const ModuleProjectOptions &options) {
+    if (IsUnrealProject(options))
+        return "sdk/unreal/unreal_runtime.h";
     return options.backendNamespace == "URK::mono" ? "sdk/mono/mono_runtime.h" : "sdk/il2cpp/il2cpp_runtime.h";
 }
 
+// Unreal has one adapter header; including it twice is harmless.
 std::string BackendHelperHeader(const ModuleProjectOptions &options) {
+    if (IsUnrealProject(options))
+        return "sdk/unreal/unreal_runtime.h";
     return options.backendNamespace == "URK::mono" ? "sdk/mono/mono_helpers.h" : "sdk/il2cpp/il2cpp_helpers.h";
 }
 
 std::string BackendApiField(const ModuleProjectOptions &options) {
+    if (IsUnrealProject(options))
+        return "unreal";
     return options.backendNamespace == "URK::mono" ? "mono" : "il2cpp";
 }
 
@@ -159,9 +167,11 @@ std::string ModHooksSource(const ModuleProjectOptions &options) {
         << "#include \"support/mod_log.h\"\n\n"
         << "#include \"sdk/runtime_api.h\"\n"
         << "#include \"sdk/hook_api.h\"\n"
-        << "#include \"render_imgui_hook.h\"\n"
-        << "#include \"unity_log_hook.h\"\n"
-        << "#include \"" << BackendRuntimeHeader(options) << "\"\n"
+        << "#include \"render_imgui_hook.h\"\n";
+    const bool unity = !IsUnrealProject(options);
+    if (unity)
+        out << "#include \"unity_log_hook.h\"\n";
+    out << "#include \"" << BackendRuntimeHeader(options) << "\"\n"
         << "#include \"" << BackendHelperHeader(options) << "\"\n";
     out << R"URK(
 namespace {
@@ -173,16 +183,19 @@ bool install(const URK_ModContext *ctx) {
     URK::set_context(ctx);
 )URK"
         << "  " << options.backendNamespace << "::init(ctx);\n"
-        << R"URK(
+        << "\n";
+    out << R"URK(
 if (!URK::hooks::available()) {
     ModLog::warn("hook API is unavailable; no hooks were installed");
     return true;
 }
 
 // Register validated targets with g_hooks so uninstall() can detach them.
-if (ModConfig::enable_unity_log_hook && !ModUnityLogHook::install(ctx))
-    ModLog::warn("Unity log hooks were requested but not installed");
-if (!ModRenderHook::install(ctx))
+)URK";
+    if (unity)
+        out << "if (ModConfig::enable_unity_log_hook && !ModUnityLogHook::install(ctx))\n"
+            << "    ModLog::warn(\"Unity log hooks were requested but not installed\");\n";
+    out << R"URK(if (!ModRenderHook::install(ctx))
     ModLog::warn("ImGui render hook could not be installed; continuing without menu");
 
 ModLog::info("hook registry ready; ImGui render hook initialization requested");
@@ -190,8 +203,10 @@ return true;
 }
 
 void uninstall() {
-    ModUnityLogHook::uninstall();
-    if (!ModRenderHook::uninstall())
+)URK";
+    if (unity)
+        out << "    ModUnityLogHook::uninstall();\n";
+    out << R"URK(    if (!ModRenderHook::uninstall())
         ModLog::error("ImGui render hook shutdown was incomplete; see hook diagnostics");
     g_hooks.detach_all();
 }
@@ -252,7 +267,8 @@ std::string GameRuntimeSource(const ModuleProjectOptions &options) {
         << "#include \"support/mod_log.h\"\n\n"
         << "#include \"sdk/runtime_api.h\"\n"
         << "#include \"sdk/runtime_bootstrap.h\"\n"
-        << "#include \"sdk/unity/unity.h\"\n\n"
+        << "#include \"" << (IsUnrealProject(options) ? BackendRuntimeHeader(options) : "sdk/unity/unity.h")
+        << "\"\n\n"
         << "namespace ModRuntime {\n"
         << "bool start(const URK_ModContext* ctx) {\n"
         << "  URK::set_context(ctx);\n"
@@ -267,8 +283,11 @@ std::string GameRuntimeSource(const ModuleProjectOptions &options) {
            "URK::has_scene_events() ? \"yes\" : \"no\");\n"
         << "  return true;\n"
         << "}\n\n"
-        << "void update() {\n"
-        << "  // Put Unity work that must run on the main thread here.\n"
+        << "void update() {\n";
+    out
+        << (IsUnrealProject(options)
+                ? "  // Runs on the game thread once per engine frame.\n"
+                : "  // Put Unity work that must run on the main thread here.\n")
         << "}\n\n"
         << "void on_scene_loaded(const URK_SceneInfo* scene) {\n"
         << "  if (!scene || scene->size < sizeof(URK_SceneInfo)) return;\n"
@@ -295,5 +314,3 @@ std::string GameRuntimeSource(const ModuleProjectOptions &options) {
         << "} // namespace ModRuntime\n";
     return out.str();
 }
-
-

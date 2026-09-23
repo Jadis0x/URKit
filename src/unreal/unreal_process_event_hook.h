@@ -1,10 +1,7 @@
 #pragma once
 
-// Hooking ProcessEvent buys two things: every reflected call, and a foothold on
-// the game thread to run work the engine would otherwise reject.
-//
-// The hook engine stays the host's: it passes attach/detach in, so nothing
-// below this rung depends on SafetyHook.
+// ProcessEvent hook: every reflected call, plus a foothold on the game thread.
+// The host passes attach/detach in, so nothing here depends on SafetyHook.
 
 #include "unreal_process_event.h"
 
@@ -35,6 +32,11 @@ class ProcessEventHook {
     // Runs on the game thread.
     using Work = void (*)(void *user);
 
+    // Runs on the game thread once per engine frame, after the first reflected
+    // call of the frame. Without a frame counter, frames are paced by time.
+    using FrameTick = void (*)(void *user);
+    static constexpr std::uint64_t kUnclockedFrameMs = 16;
+
     static constexpr std::uint32_t kDefaultDrainTimeoutMs = 5000;
 
     // A detour carries no user pointer, hence a singleton.
@@ -44,15 +46,16 @@ class ProcessEventHook {
     bool Install(const HookInstaller &installer, std::span<const Address> implementations,
                  const ProcessEventLocation &location);
 
-    // Drains in-flight calls first: unpatching frees the trampolines a call
-    // inside the detour still has to return through. On timeout nothing is
-    // unpatched and the hook stays in place, passive - leaking beats freeing
-    // memory a thread is standing on.
+    // Drains in-flight calls first; on timeout the hook stays in place, since
+    // leaking beats freeing a trampoline a thread is still inside.
     bool Remove(std::uint32_t timeoutMs = kDefaultDrainTimeoutMs);
 
     bool Installed() const;
 
     void Observe(Observer observer, void *user);
+
+    // frameCounter may be null. Set before or after Install; null tick stops it.
+    void SetFrameTick(FrameTick tick, void *user, const volatile std::uint64_t *frameCounter);
 
     // Fails when the queue is full or no game thread is known yet.
     bool Post(Work work, void *user);
@@ -76,7 +79,8 @@ class ProcessEventHook {
     struct Patched {
         Address target = kNullAddress;
         void *handle = nullptr;
-        ProcessEventFn original = nullptr;
+        // Atomic: the patch is live before attach returns the trampoline.
+        std::atomic<ProcessEventFn> original{nullptr};
     };
 
     struct ThreadTally {
@@ -89,18 +93,22 @@ class ProcessEventHook {
         void *user = nullptr;
     };
 
-    static void __fastcall Detour(void *object, void *function, void *parms);
-    void Dispatch(void *object, void *function, void *parms);
-    ProcessEventFn OriginalFor(void *object) const;
+    // One detour per patch: an override calling Super::ProcessEvent enters the
+    // base's patch and must continue into the base, whatever the object is.
+    template <std::size_t Slot> static void __fastcall DetourAt(void *object, void *function, void *parms);
+    static ProcessEventFn DetourFor(std::size_t slot);
+    void Enter(std::size_t slot, void *object, void *function, void *parms);
+    void Dispatch(ProcessEventFn original, void *object, void *function, void *parms);
+    void ResetPatches();
     void Tally(std::uint32_t thread);
     void Drain();
+    void TickFrame();
 
     // Written while nothing is installed, read-only afterwards.
     HookInstaller installer_{};
     ProcessEventLocation location_{};
     Patched patched_[kMaxImplementations]{};
     std::size_t patchedCount_ = 0;
-    std::int32_t vtableIndex_ = kOffsetNotFound;
 
     std::atomic<bool> installed_{false};
     // Calls inside the detour; Remove() waits for this to empty.
@@ -108,6 +116,12 @@ class ProcessEventHook {
 
     std::atomic<Observer> observer_{nullptr};
     std::atomic<void *> observerUser_{nullptr};
+
+    std::atomic<FrameTick> frameTick_{nullptr};
+    std::atomic<void *> frameTickUser_{nullptr};
+    std::atomic<const volatile std::uint64_t *> frameCounter_{nullptr};
+    // Game thread only.
+    std::uint64_t lastFrame_ = ~std::uint64_t{0};
 
     std::atomic<std::uint64_t> calls_{0};
     std::atomic<std::uint64_t> dropped_{0};

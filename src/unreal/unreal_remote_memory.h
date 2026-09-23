@@ -1,8 +1,7 @@
 #pragma once
 
-// MemoryReader over another process, for proving the calibration against a
-// real title without touching it. Whole pages are cached because each crossing
-// is a syscall; a cached page can go stale, and Forget() drops them.
+// MemoryReader over another process, read-only. Pages are cached to save
+// syscalls; Forget() drops them when they may be stale.
 
 #include "unreal_memory.h"
 
@@ -63,9 +62,7 @@ class RemoteMemory : public MemoryReader {
 
   private:
     static constexpr std::size_t kPageSize = 0x1000;
-    // A shipped title's data sections are tens of megabytes; this is enough to
-    // keep a scan of one from fetching a page twice, and is dropped wholesale
-    // rather than evicted one at a time.
+    // Enough for one scan of a shipped title; dropped wholesale, not evicted.
     static constexpr std::size_t kMaxPages = 0x4000;
 
     struct Range {

@@ -1,9 +1,7 @@
 #pragma once
 
-// FField/FProperty layout calibration. From 4.25 properties are not UObjects:
-// they hang off UStruct::ChildProperties with no class object. Anchored on
-// structs whose C++ declaration fixes everything - FColor is B,G,R,A bytes,
-// FGuid four int32s - which pins names, offsets, sizes and flags at once.
+// FField/FProperty layout (4.25+), anchored on structs whose C++ declaration
+// fixes everything: FColor, FGuid.
 
 #include "unreal_struct_offsets.h"
 

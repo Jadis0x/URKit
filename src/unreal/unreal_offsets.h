@@ -1,9 +1,7 @@
 #pragma once
 
-// UObject header calibration, each offset derived from a property only the
-// right field satisfies: Index stores its own slot number, Class reaches a
-// fixed point, Outer is a shared pointer past Class, Name has FName spread.
-// Order matters - later steps exclude earlier claims.
+// UObject header offsets, each found by a property only the right field has.
+// Order matters: later steps exclude earlier claims.
 
 #include "unreal_object_array.h"
 
