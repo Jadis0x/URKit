@@ -7,23 +7,33 @@
 [![Support](https://img.shields.io/badge/Support-GitHub%20Issues-blue?logo=github)](https://github.com/Jadis0x/URKit/issues)
 [![License](https://img.shields.io/github/license/Jadis0x/URKit)](https://github.com/Jadis0x/URKit/blob/main/LICENSE)
 
-URKit is a native C++ modding toolkit for Windows x64 Unity games. It supports
-Mono and IL2CPP through one loader ABI, and gives you Unity object access,
-managed method calls, hooks, lifecycle callbacks, networking, and an ImGui
-overlay, generated straight into a buildable CMake project.
+URKit lets you write mods for Windows x64 Unity games in plain C++. You point
+it at a game, and it hands you a CMake project that already builds. From
+there you can find and change game objects, call the game's own methods,
+hook functions, react to scene changes, and draw an ImGui overlay. Mono and
+IL2CPP games both work, and your mod code looks the
+same for either one.
+
+Unreal Engine support is on the way, but it isn't ready yet. See
+[where it stands](#unreal-engine-work-in-progress).
 
 <img src="showcase/ss1.png" width="550">
 
 ## What's in a release
 
-- `urk-sdk.exe`: generates a Mono or IL2CPP mod project.
-- `urk-updater.exe`: updates a generated project without touching your own files.
-- `version.dll`, `winhttp.dll`, `winmm.dll`: proxy loaders. Install the one the game actually imports.
-- `URKitInjector.dll`: a proxy-free loader for manual injection workflows.
-- `urk-dev-mcp.exe` + `URKitDevBridge.dll`: optional MCP server for AI coding assistants (build, deploy, runtime diagnostics).
+- `urk-sdk.exe` makes a new mod project for a game.
+- `urk-updater.exe` brings an existing project up to date without touching
+  the files you wrote.
+- `version.dll`, `winhttp.dll` and `winmm.dll` are the loaders. You only need
+  one of them: the one the game actually loads. `version.dll` is a good first
+  try.
+- `URKitInjector.dll` is a loader for when you'd rather inject it yourself
+  than drop a proxy next to the game.
+- `urk-dev-mcp.exe` and `URKitDevBridge.dll` are optional. They let AI coding
+  assistants build, deploy and inspect your mod.
 
-Put the proxy DLL next to the game executable, and built mods in the game's
-`Mods` directory. Only install one proxy, and don't rename it.
+The loader goes next to the game's executable, and your built mods go in a
+`Mods` folder beside it. Install just one loader and keep its name as is.
 
 ## Quick start
 
@@ -34,43 +44,98 @@ cmake --preset clang-debug
 cmake --build --preset clang-debug --parallel
 ```
 
-That builds a debug DLL and drops it in the game's `Mods` directory. You need
-CMake 3.28+, Ninja, and either LLVM/Clang or the MSVC toolchain (VS 2022 Build
-Tools or newer). Use `clang-release` / `msvc-release` when you're ready to
-ship, and `msvc-debug` if you'd rather build with `cl.exe`.
+`--backend auto` works out whether the game is Mono or IL2CPP for you. The
+build puts a debug DLL straight into the game's `Mods` folder.
 
-Launch the game and check `URKit_logs.log` next to the executable. You
-should see the mod initialize. If that file doesn't exist, the game isn't
-importing the proxy you installed.
+You'll need CMake 3.28 or newer, Ninja, and either LLVM/Clang or MSVC (VS 2022
+Build Tools or newer). Prefer `cl.exe`? Use `msvc-debug`. When you're ready to
+share your mod, build with `clang-release` or `msvc-release`.
+
+Now start the game and open `URKit_logs.log` next to its executable. You
+should see your mod load. No log file at all usually means the game doesn't
+load the loader you picked, so try one of the others.
+
+## Unreal Engine (work in progress)
+
+We're working on Unreal support, and honestly it's not ready for real mods
+yet. Unity has an API we can ask about the game; Unreal doesn't, so URKit has
+to find everything on its own while the game runs. That part works, but so
+far it has only been tried on two games, and the second one already turned
+up bugs. Here's where things stand:
+
+| What | Status | Notes |
+|---|---|---|
+| Finding the engine in a running game | Works | Tried on a UE 5.8 game and a UE 5.4 game |
+| Calling game functions, hooking `ProcessEvent` | Works | The 5.4 game needed a fix first |
+| Map load / map change events | Works | |
+| `update()` every frame | Buggy | In quiet scenes like a main menu it can drop to about once a second |
+| Typed headers from the game (`DumpTypes`) | Works on 5.8 | Not tried on other versions yet |
+| Numbers, objects, structs, `FString`, `FName`, `TArray` | Works on 5.8 | |
+| `TSet` and `TMap` | Mostly works | If an edit fails halfway, the container can be left broken |
+| `FText` | 5.8 only | Turned off on 5.4 for now |
+| Enums by name, soft and weak references, delegates | Works on 5.8 | |
+| Sparse delegates, interfaces, lazy pointers | Not yet | |
+| Engines older than 4.25 | Not supported | |
+
+If you want to poke at it anyway: put the loader next to the game's
+`-Win64-Shipping.exe`, add this to `URKit_config.ini` in the same folder,
+and play through the maps you care about:
+
+```ini
+[Unreal]
+DumpTypes=1
+```
+
+Then make a project with `--backend unreal`. The generated
+`sdk/unreal/README.md` explains the rest. If something breaks, an issue with
+your `URKit_logs.log` attached helps a lot.
 
 ## Learn the API
 
-New to URKit? Start with [Getting Started](docs/GETTING_STARTED.md). It
-walks through writing an actual mod, from "hello log" to reading and changing
-game state, step by step.
+New to URKit? Start with [Getting Started](docs/GETTING_STARTED.md). It walks
+you through a real mod, from printing your first log line to reading and
+changing game state.
 
-For a video walkthrough, check out the [URKit SDK Tutorial Series](https://youtube.com/playlist?list=PLP9lUXoova70&si=ATR-n7l7tVEliZlN).
+If you'd rather watch, there's the
+[URKit SDK Tutorial Series](https://youtube.com/playlist?list=PLP9lUXoova70&si=ATR-n7l7tVEliZlN)
+on YouTube.
 
-Once you know the basics, [docs/SDK_HANDBOOK.md](docs/SDK_HANDBOOK.md) is the
-full reference: object search, threading rules, hooks, the render/highlight
-pipeline, caching, and a diagnostics chapter for when something doesn't work.
-[ARCHITECTURE.md](ARCHITECTURE.md) covers how URKit itself is put together,
-and [docs/DEV_MCP.md](docs/DEV_MCP.md) covers the AI-assistant MCP server.
+Once you know the basics, the [SDK Handbook](docs/SDK_HANDBOOK.md) is the full
+reference. It covers finding objects, threading rules, hooks, rendering and
+highlights, caching, and what to check when something doesn't work. Its first
+chapter is about updating projects, including hand-patched ones and running
+the updater from a script.
 
-Updating an existing project, migrating a hand-patched SDK, or automating the
-updater from a script: that's all in the handbook's first chapter.
+Curious how URKit works inside? Read [ARCHITECTURE.md](ARCHITECTURE.md). The
+AI-assistant server has its own page in [docs/DEV_MCP.md](docs/DEV_MCP.md).
 
-## Security software and false positives
+## Building URKit yourself
 
-The proxy loaders and `URKitInjector.dll` load into a game process and can
-install API hooks, which is normal mod-loader behavior, but it can trip
-antivirus heuristics. A detection alone doesn't mean a release is malicious.
+You'll need the same tools as for a mod project. For the MSVC presets, open a
+Developer PowerShell for Visual Studio first so `cl.exe` can be found. Then,
+from the repository root:
 
-Only download releases from this repository, and check the published SHA-256
-digest. Release binaries are self-signed for tamper identification, not as a
-trust signal: Windows won't trust that certificate by default. Don't disable
-your antivirus to run URKit. If you get a false positive, report it to the
-vendor (or open an issue here) with the detection name, the file, and its
-SHA-256 digest.
+```powershell
+cmake --preset msvc-release
+cmake --build out/build/msvc-release
+```
+
+`clang-release`, `clang-debug` and `msvc-debug` work too.
+
+## Antivirus warnings
+
+The loaders get into a game's process and hook functions there. That's just
+what mod loaders do, but some antivirus software flags it anyway. A warning on
+its own doesn't mean a release is malicious.
+
+To stay safe, only download releases from this repository and check the
+SHA-256 digest published with each one. The binaries are self-signed so you
+can tell if they were tampered with, but Windows won't trust that certificate
+by default, and it isn't meant as a seal of approval. Please don't turn off
+your antivirus to run URKit. If you hit a false positive, report it to the
+antivirus vendor or open an issue here, and include the detection name, the
+file and its SHA-256 digest.
+
+## License
 
 URKit is available under the [MIT License](LICENSE).
