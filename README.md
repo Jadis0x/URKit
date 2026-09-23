@@ -10,9 +10,8 @@
 URKit lets you write mods for Windows x64 Unity games in plain C++. You point
 it at a game, and it hands you a CMake project that already builds. From
 there you can find and change game objects, call the game's own methods,
-hook functions, react to scene changes, and draw an ImGui overlay. Mono and
-IL2CPP games both work, and your mod code looks the
-same for either one.
+hook functions, react to scene changes, and draw an ImGui overlay. It works
+with both Mono and IL2CPP games.
 
 Unreal Engine support is on the way, but it isn't ready yet. See
 [where it stands](#unreal-engine-work-in-progress).
