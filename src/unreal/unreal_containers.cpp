@@ -2,7 +2,6 @@
 #include "unreal_owned_values.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 
 namespace URK::Unreal {
@@ -14,12 +13,13 @@ template <typename T> T Load(const std::uint8_t *at) {
     return value;
 }
 
-template <typename T> void Store(std::uint8_t *at, T value) { std::memcpy(at, &value, sizeof(T)); }
+template <typename T> void Store(std::uint8_t *at, T value) {
+    std::memcpy(at, &value, sizeof(T));
+}
 
 constexpr std::int32_t kIndexNone = -1;
-// Evidence, in bits, before a hash rule is trusted: each element whose stored
-// bucket a rule predicts is worth log2(bucket count).
-constexpr int kTrustedBits = 24;
+// Elements of one container checked against the engine's hash per validation.
+constexpr std::int32_t kCheckedPerSet = 256;
 
 std::int32_t Align(std::int32_t value, std::int32_t alignment) {
     return alignment <= 1 ? value : (value + alignment - 1) / alignment * alignment;
@@ -35,7 +35,9 @@ struct StructBuilder {
         alignment = std::max(alignment, align);
         return at;
     }
-    std::int32_t Size() const { return Align(end, alignment); }
+    std::int32_t Size() const {
+        return Align(end, alignment);
+    }
 };
 
 std::uint32_t RoundUpToPowerOfTwo(std::uint32_t value) {
@@ -63,118 +65,6 @@ void SetBit(std::uint8_t *words, std::int32_t index, bool value) {
     Store<std::uint32_t>(word, value ? (bits | mask) : (bits & ~mask));
 }
 
-// --- hash rules: FProperty::GetValueTypeHash as UE has had it from 4.25 to 5.8 ----
-// Read from the engine source (4.25, 4.27, 5.0, 5.8); a rule marked unverified
-// is a formula no checked version has, kept because evidence decides anyway.
-
-enum Rule {
-    kZeroExtended,                // unsigned integers up to 32 bits
-    kSignExtended,                // signed integers up to 32 bits
-    kMaskedByte,                  // FBoolProperty: the byte & FieldMask (5.0+; a native bool is 0/1 either way)
-    kInt64,                       // GetTypeHash64: low + high * 23
-    kFloatBits,                   // the float's bits
-    kFloatPrecise,                // 5.8 UE::PreciseFPHash: NaNs and zeroes hash 0, else the bits
-    kDoubleBits,                  // the double's bits, folded
-    kDoublePrecise,               // 5.8 UE::PreciseFPHash for doubles
-    kNameIndexPlusNumberCombined, // 5.8: HashCombineFast(Index + Number, Index)
-    kNameIndexCombined,           // 5.8 with outlined numbers: HashCombineFast(Index, Index)
-    kNameHandlePlusNumber,        // 4.25-5.0: FNameEntryHandle's block/offset mix + Number
-    kNameIndexPlusNumber,         // Index + Number (unverified)
-    kPointerMurmur,               // 5.8: GetTypeHash64(MurmurFinalize64(p))
-    kPointerCombined,             // 4.25-5.0: HashCombine((uint32)(p >> 4), 0)
-    kPointerCombinedFast,         // HashCombineFast((uint32)(p >> 4), 0), once it stopped being HashCombine
-    kPointerShifted,              // GetTypeHash64(p >> 4) (unverified)
-    kStringCaseless,              // FCrc::Strihash_DEPRECATED
-    kRuleCount,
-};
-
-std::uint32_t TypeHash64(std::uint64_t value) {
-    return static_cast<std::uint32_t>(value) + static_cast<std::uint32_t>(value >> 32) * 23u;
-}
-
-std::uint64_t MurmurFinalize64(std::uint64_t hash) {
-    hash ^= hash >> 33;
-    hash *= 0xff51afd7ed558ccdull;
-    hash ^= hash >> 33;
-    hash *= 0xc4ceb9fe1a85ec53ull;
-    hash ^= hash >> 33;
-    return hash;
-}
-
-std::uint32_t HashCombineFast(std::uint32_t a, std::uint32_t b) { return a ^ (b + 0x9e3779b9u + (a << 6) + (a >> 2)); }
-
-std::uint32_t HashCombine(std::uint32_t a, std::uint32_t c) {
-    std::uint32_t b = 0x9e3779b9u;
-    a += b;
-    a -= b; a -= c; a ^= (c >> 13);
-    b -= c; b -= a; b ^= (a << 8);
-    c -= a; c -= b; c ^= (b >> 13);
-    a -= b; a -= c; a ^= (c >> 12);
-    b -= c; b -= a; b ^= (a << 16);
-    c -= a; c -= b; c ^= (b >> 5);
-    a -= b; a -= c; a ^= (c >> 3);
-    b -= c; b -= a; b ^= (a << 10);
-    c -= a; c -= b; c ^= (b >> 15);
-    return c;
-}
-
-// UnrealNames.cpp, GetTypeHash(FNameEntryHandle): FNameMaxBlockBits 13,
-// FNameBlockOffsetBits 16.
-std::uint32_t NameHandleHash(std::uint32_t id) {
-    const std::uint32_t block = id >> 16;
-    const std::uint32_t offset = id & 0xFFFFu;
-    return (block << (32 - 13)) + block + (offset << 16) + offset + (offset >> 4);
-}
-
-// FCrc::CRCTable_DEPRECATED: MSB-first, polynomial 0x04C11DB7 (entry 1 is the
-// polynomial itself), not the reflected table zlib uses.
-const std::uint32_t *CrcTable() {
-    static std::uint32_t table[256];
-    static const bool built = [] {
-        for (std::uint32_t i = 0; i < 256; ++i) {
-            std::uint32_t crc = i << 24;
-            for (int k = 0; k < 8; ++k)
-                crc = (crc & 0x80000000u) ? (crc << 1) ^ 0x04C11DB7u : crc << 1;
-            table[i] = crc;
-        }
-        return true;
-    }();
-    (void)built;
-    return table;
-}
-
-std::vector<Rule> RulesFor(const PropertyInfo &key) {
-    switch (key.kind) {
-    case PropertyKind::Bool:
-        return {kMaskedByte};
-    case PropertyKind::Byte:
-    case PropertyKind::UInt16:
-    case PropertyKind::UInt32:
-        return {kZeroExtended};
-    case PropertyKind::Int8:
-    case PropertyKind::Int16:
-    case PropertyKind::Int32:
-        return {kSignExtended};
-    case PropertyKind::Int64:
-    case PropertyKind::UInt64:
-        return {kInt64};
-    case PropertyKind::Float:
-        return {kFloatBits, kFloatPrecise};
-    case PropertyKind::Double:
-        return {kDoubleBits, kDoublePrecise};
-    case PropertyKind::Name:
-        return {kNameIndexPlusNumberCombined, kNameIndexCombined, kNameHandlePlusNumber, kNameIndexPlusNumber};
-    case PropertyKind::Object:
-    case PropertyKind::Class:
-        return {kPointerMurmur, kPointerCombined, kPointerCombinedFast, kPointerShifted};
-    case PropertyKind::String:
-        return {kStringCaseless};
-    default:
-        // An enum whose underlying number did not resolve lands here too.
-        return {};
-    }
-}
-
 } // namespace
 
 bool Containers::Fail(std::string why) {
@@ -199,8 +89,8 @@ bool Containers::ArrayInsert(const PropertyInfo &inner, std::uint8_t *array, std
     if (num + count > max) {
         // TArray's growth leaves slack; any capacity the allocation holds is valid.
         const std::int32_t wanted = std::max(num + count, num + num / 2 + 4);
-        const std::optional<EngineCalls::Block> block = engine_->Allocate(static_cast<std::size_t>(wanted) * width,
-                                                                          static_cast<std::size_t>(alignment));
+        const std::optional<EngineCalls::Block> block =
+            engine_->Allocate(static_cast<std::size_t>(wanted) * width, static_cast<std::size_t>(alignment));
         if (!block)
             return Fail(engine_->Failure());
         // Elements are trivially relocatable: TArray moves them bytewise too.
@@ -225,7 +115,8 @@ bool Containers::ArrayInsert(const PropertyInfo &inner, std::uint8_t *array, std
         return Fail(why);
     }
     if (index < num)
-        std::rotate(data + static_cast<std::size_t>(index) * width, fresh, fresh + static_cast<std::size_t>(count) * width);
+        std::rotate(data + static_cast<std::size_t>(index) * width, fresh,
+                    fresh + static_cast<std::size_t>(count) * width);
     Store<std::int32_t>(array + 8, num + count);
     return true;
 }
@@ -295,12 +186,6 @@ std::optional<SetLayout> Containers::LayoutOf(const PropertyInfo &container) {
         return remember(std::nullopt, "the element properties did not resolve");
     layout.key = *key;
     layout.value = *value;
-    layout.hashKey = *key;
-    if (key->kind == PropertyKind::Enum) {
-        const std::optional<PropertyInfo> underlying = values_->Describe(key->inner);
-        if (underlying && underlying->elementSize == key->elementSize)
-            layout.hashKey = *underlying;
-    }
     const std::int32_t keyAlign = values_->AlignmentOf(*key);
     const std::int32_t valueAlign = layout.isMap ? values_->AlignmentOf(*value) : 1;
     if (keyAlign <= 0 || valueAlign <= 0)
@@ -408,15 +293,15 @@ bool Containers::Validate(const SetLayout &layout, const std::uint8_t *constSet)
         return Fail("the set's element array is not readable");
     if (numBits != num || maxBits < numBits || (!bitsSecondary && numBits > SetFields::kBitsInlineWords * 32))
         return Fail("the set's allocation flags disagree with its elements");
-    if (bitsSecondary && !reader.Readable(reinterpret_cast<Address>(bitsSecondary),
-                                          static_cast<std::size_t>((numBits + 31) / 32) * 4))
+    if (bitsSecondary &&
+        !reader.Readable(reinterpret_cast<Address>(bitsSecondary), static_cast<std::size_t>((numBits + 31) / 32) * 4))
         return Fail("the set's allocation flags are not readable");
     if (numFree < 0 || numFree > num)
         return Fail("the set's free list count is out of range");
     if (hashSize < 0 || (hashSize & (hashSize - 1)) != 0 || (hashSize > 1) != (hashSecondary != nullptr))
         return Fail("the set's hash is inconsistent");
-    if (hashSecondary && !reader.Readable(reinterpret_cast<Address>(hashSecondary),
-                                          static_cast<std::size_t>(hashSize) * 4))
+    if (hashSecondary &&
+        !reader.Readable(reinterpret_cast<Address>(hashSecondary), static_cast<std::size_t>(hashSize) * 4))
         return Fail("the set's hash is not readable");
 
     const std::uint8_t *bits = Bits(set);
@@ -460,215 +345,66 @@ bool Containers::Validate(const SetLayout &layout, const std::uint8_t *constSet)
     }
     if (chained != allocated)
         return Fail("not every element is in the set's hash");
-    Learn(layout, set);
+    Check(layout, set);
     return true;
 }
 
 // --- sets and maps: hashing -------------------------------------------------------------
 
+// Per key type: a struct's hash is its own, so the struct is part of it.
 std::string Containers::KeySignature(const PropertyInfo &key) const {
-    return std::to_string(static_cast<int>(key.kind)) + ":" + std::to_string(key.elementSize);
+    return std::to_string(static_cast<int>(key.kind)) + ":" + std::to_string(key.elementSize) + ":" +
+           std::to_string(key.kind == PropertyKind::Struct ? key.inner : 0);
 }
 
-std::optional<std::uint32_t> Containers::Hash(int rule, const PropertyInfo &key, const std::uint8_t *value) const {
-    const auto integer = [&]() -> std::int64_t {
-        switch (key.elementSize) {
-        case 1:
-            return key.kind == PropertyKind::Int8 ? Load<std::int8_t>(value) : Load<std::uint8_t>(value);
-        case 2:
-            return key.kind == PropertyKind::Int16 ? Load<std::int16_t>(value) : Load<std::uint16_t>(value);
-        case 4:
-            return Load<std::int32_t>(value);
-        default:
-            return Load<std::int64_t>(value);
-        }
-    };
-    const auto pointerShifted = [&] { return static_cast<std::uint32_t>(Load<std::uint64_t>(value) >> 4); };
-    switch (rule) {
-    case kZeroExtended: {
-        std::uint32_t bits = 0;
-        std::memcpy(&bits, value, static_cast<std::size_t>(std::min(key.elementSize, 4)));
-        return bits;
-    }
-    case kSignExtended:
-        return static_cast<std::uint32_t>(static_cast<std::int32_t>(integer()));
-    case kMaskedByte:
-        return static_cast<std::uint32_t>(value[key.boolLayout.byteOffset] & key.boolLayout.fieldMask);
-    case kInt64:
-        return TypeHash64(Load<std::uint64_t>(value));
-    case kFloatBits:
-        return Load<std::uint32_t>(value);
-    case kFloatPrecise: {
-        const float number = Load<float>(value);
-        return (std::isnan(number) || number == 0.0f) ? 0u : Load<std::uint32_t>(value);
-    }
-    case kDoubleBits:
-        return TypeHash64(Load<std::uint64_t>(value));
-    case kDoublePrecise: {
-        const double number = Load<double>(value);
-        return (std::isnan(number) || number == 0.0) ? 0u : TypeHash64(Load<std::uint64_t>(value));
-    }
-    case kNameIndexPlusNumberCombined:
-        return HashCombineFast(Load<std::uint32_t>(value) + Load<std::uint32_t>(value + 4), Load<std::uint32_t>(value));
-    case kNameIndexCombined:
-        return HashCombineFast(Load<std::uint32_t>(value), Load<std::uint32_t>(value));
-    case kNameHandlePlusNumber:
-        return NameHandleHash(Load<std::uint32_t>(value)) + Load<std::uint32_t>(value + 4);
-    case kNameIndexPlusNumber:
-        return Load<std::uint32_t>(value) + Load<std::uint32_t>(value + 4);
-    case kPointerMurmur:
-        return TypeHash64(MurmurFinalize64(Load<std::uint64_t>(value)));
-    case kPointerCombined:
-        return HashCombine(pointerShifted(), 0);
-    case kPointerCombinedFast:
-        return HashCombineFast(pointerShifted(), 0);
-    case kPointerShifted:
-        return TypeHash64(Load<std::uint64_t>(value) >> 4);
-    case kStringCaseless: {
-        // ASCII-only ToUpper (TChar); each UTF-16 unit feeds its low byte, then its high byte.
-        const auto *chars = Load<const char16_t *>(value);
-        const std::int32_t num = Load<std::int32_t>(value + 8);
-        const std::uint32_t *table = CrcTable();
-        std::uint32_t hash = 0;
-        for (std::int32_t i = 0; chars && i + 1 < num && chars[i]; ++i) {
-            char16_t ch = chars[i];
-            if (ch >= u'a' && ch <= u'z')
-                ch = static_cast<char16_t>(ch - 32);
-            std::uint32_t b = ch & 0xFF;
-            hash = ((hash >> 8) & 0x00FFFFFF) ^ table[(hash ^ b) & 0xFF];
-            b = (ch >> 8) & 0xFF;
-            hash = ((hash >> 8) & 0x00FFFFFF) ^ table[(hash ^ b) & 0xFF];
-        }
-        return hash;
-    }
-    default:
-        return std::nullopt;
-    }
-}
-
-static const char *RuleName(int rule) {
-    switch (rule) {
-    case kZeroExtended:
-        return "the value";
-    case kSignExtended:
-        return "the sign-extended value";
-    case kMaskedByte:
-        return "the masked byte";
-    case kInt64:
-        return "the 64-bit fold";
-    case kFloatBits:
-        return "the float's bits";
-    case kFloatPrecise:
-        return "the float's bits, zero and NaN as 0";
-    case kDoubleBits:
-        return "the double's bits folded";
-    case kDoublePrecise:
-        return "the double's bits folded, zero and NaN as 0";
-    case kNameIndexPlusNumberCombined:
-        return "HashCombineFast(index + number, index)";
-    case kNameIndexCombined:
-        return "HashCombineFast(index, index)";
-    case kNameHandlePlusNumber:
-        return "the name entry handle mix + number";
-    case kNameIndexPlusNumber:
-        return "index + number";
-    case kPointerMurmur:
-        return "the murmur-finalized pointer";
-    case kPointerCombined:
-        return "HashCombine(pointer >> 4, 0)";
-    case kPointerCombinedFast:
-        return "HashCombineFast(pointer >> 4, 0)";
-    case kPointerShifted:
-        return "the pointer shifted by 4, folded";
-    case kStringCaseless:
-        return "the caseless CRC";
-    default:
-        return "?";
-    }
-}
-
-// Every element's stored bucket in a container the engine hashed is a fact. A
-// rule is trusted once one container alone gives enough evidence, and any miss,
-// before or after that, drops it for good.
-void Containers::Learn(const SetLayout &layout, std::uint8_t *set) {
-    const std::vector<Rule> rules = RulesFor(layout.hashKey);
+// The engine hashed every element it linked; a stored bucket the engine's own
+// hash does not give means the call is not the one the engine used, and it is
+// dropped for that key type for good.
+void Containers::Check(const SetLayout &layout, std::uint8_t *set) {
     const std::int32_t hashSize = Load<std::int32_t>(set + SetFields::kHashSize);
-    if (rules.empty() || hashSize <= 1)
+    if (hashSize <= 1 || !virtuals_.HashReady())
         return;
-    const std::string kind = PropertyKindName(layout.key.kind);
-    std::vector<std::string> notes;
+    const std::string signature = KeySignature(layout.key);
     {
         std::lock_guard lock(hashMutex_);
-        HashEvidence &evidence = hashes_[KeySignature(layout.hashKey)];
-        if (evidence.state.empty())
-            evidence.state.assign(kRuleCount, 0);
-        const auto standing = [&] {
-            return std::any_of(rules.begin(), rules.end(), [&](Rule rule) { return evidence.state[rule] >= 0; });
-        };
-        if (!standing())
+        if (keys_[signature].contradicted)
             return;
-        int bits = 0;
-        while ((1 << bits) < hashSize)
-            ++bits;
-        std::vector<int> gathered(kRuleCount, 0);
-        for (const std::int32_t slot : Slots(set)) {
-            const std::uint8_t *element = Element(layout, set, slot);
-            const std::int32_t stored = Load<std::int32_t>(element + layout.hashIndexOffset);
-            for (const Rule rule : rules) {
-                if (evidence.state[rule] < 0)
-                    continue;
-                const std::optional<std::uint32_t> hash = Hash(rule, layout.hashKey, element);
-                if (hash && static_cast<std::int32_t>(*hash & static_cast<std::uint32_t>(hashSize - 1)) == stored) {
-                    gathered[rule] += bits;
-                    continue;
-                }
-                if (evidence.state[rule] == 1)
-                    notes.push_back(kind + " keys: " + RuleName(rule) +
-                                    " was trusted, but a live container disagrees; it is dropped");
-                evidence.state[rule] = -1;
-            }
-        }
-        for (const Rule rule : rules) {
-            if (evidence.state[rule] == 0 && gathered[rule] >= kTrustedBits) {
-                evidence.state[rule] = 1;
-                notes.push_back(kind + " keys hash as " + RuleName(rule) +
-                                ": proven on every element of a live container, and used to link additions");
-            }
-        }
-        if (!standing() && !evidence.exhaustedNoted) {
-            evidence.exhaustedNoted = true;
-            notes.push_back(kind +
-                            " keys match no known hash rule; additions go into one bucket until the engine rehashes");
-        }
     }
-    for (const std::string &note : notes)
-        NoteMemory(note);
+    std::int32_t checked = 0;
+    for (const std::int32_t slot : Slots(set)) {
+        if (checked++ >= kCheckedPerSet)
+            break;
+        const std::uint8_t *element = Element(layout, set, slot);
+        const std::optional<std::uint32_t> hash = virtuals_.Hash(layout.key, element);
+        if (!hash)
+            return;
+        if (static_cast<std::int32_t>(*hash & static_cast<std::uint32_t>(hashSize - 1)) ==
+            Load<std::int32_t>(element + layout.hashIndexOffset))
+            continue;
+        {
+            std::lock_guard lock(hashMutex_);
+            keys_[signature].contradicted = true;
+        }
+        NoteMemory(std::string(PropertyKindName(layout.key.kind)) +
+                   " keys: a live container stored a bucket the engine's own hash does not give; additions go "
+                   "into one bucket until the engine rehashes");
+        return;
+    }
 }
 
-std::optional<std::uint32_t> Containers::AgreedHash(const SetLayout &layout, const std::uint8_t *key) {
-    const std::vector<Rule> rules = RulesFor(layout.hashKey);
-    std::vector<int> state;
+std::optional<std::uint32_t> Containers::KeyHash(const SetLayout &layout, const std::uint8_t *key) {
     {
         std::lock_guard lock(hashMutex_);
-        const auto found = hashes_.find(KeySignature(layout.hashKey));
-        if (found == hashes_.end() || found->second.state.empty())
+        if (keys_[KeySignature(layout.key)].contradicted)
             return std::nullopt;
-        state = found->second.state;
     }
-    // Rules still standing matched the same elements; where two of them part
-    // (a negative enum, -0.0, a NaN) neither is sure.
-    bool trusted = false;
-    std::optional<std::uint32_t> agreed;
-    for (const Rule rule : rules) {
-        if (state[rule] < 0)
-            continue;
-        trusted = trusted || state[rule] == 1;
-        const std::optional<std::uint32_t> hash = Hash(rule, layout.hashKey, key);
-        if (!hash || (agreed && *agreed != *hash))
-            return std::nullopt;
-        agreed = hash;
-    }
-    return trusted ? agreed : std::nullopt;
+    return virtuals_.Hash(layout.key, key);
+}
+
+bool Containers::KeysEqual(const SetLayout &layout, const std::uint8_t *a, const std::uint8_t *b) {
+    if (const std::optional<bool> same = virtuals_.Identical(layout.key, a, b))
+        return *same;
+    return owned_->Equal(layout.key, a, b);
 }
 
 // --- sets and maps: changes --------------------------------------------------------------
@@ -719,8 +455,8 @@ std::int32_t Containers::AllocateSlot(const SetLayout &layout, std::uint8_t *set
         }
         if (num + 1 > max) {
             const std::int32_t wanted = std::max(num + 1, num + num / 2 + 4);
-            const std::optional<EngineCalls::Block> block =
-                engine_->Allocate(static_cast<std::size_t>(wanted) * stride, static_cast<std::size_t>(layout.alignment));
+            const std::optional<EngineCalls::Block> block = engine_->Allocate(
+                static_cast<std::size_t>(wanted) * stride, static_cast<std::size_t>(layout.alignment));
             if (!block) {
                 Fail(engine_->Failure());
                 return kIndexNone;
@@ -797,7 +533,7 @@ std::int32_t Containers::Find(const SetLayout &layout, std::uint8_t *set, const 
     if (!Validate(layout, set))
         return kIndexNone;
     for (const std::int32_t slot : Slots(set)) {
-        if (owned_->Equal(layout.key, Element(layout, set, slot), key))
+        if (KeysEqual(layout, Element(layout, set, slot), key))
             return slot;
     }
     return kIndexNone;
@@ -808,15 +544,15 @@ std::int32_t Containers::Add(const SetLayout &layout, std::uint8_t *set, std::ui
     if (!Validate(layout, set))
         return kIndexNone;
     for (const std::int32_t slot : Slots(set)) {
-        if (owned_->Equal(layout.key, Element(layout, set, slot), key))
+        if (KeysEqual(layout, Element(layout, set, slot), key))
             return slot;
     }
 
     // The hash plan (TScriptSparseSet::AddNewElement's ConditionalRehash). A
-    // rebuilt table needs every key's hash agreed, not only the new one's;
-    // anything unsure links into one bucket instead.
+    // rebuilt table needs every key's hash, not only the new one's; without
+    // them the set links into one bucket instead.
     const std::int32_t hashSize = Load<std::int32_t>(set + SetFields::kHashSize);
-    const std::optional<std::uint32_t> keyHash = AgreedHash(layout, key);
+    const std::optional<std::uint32_t> keyHash = KeyHash(layout, key);
     std::int32_t buckets = hashSize;
     std::vector<std::pair<std::int32_t, std::uint32_t>> hashes;
     bool collapse = !keyHash && hashSize > 1;
@@ -827,7 +563,7 @@ std::int32_t Containers::Add(const SetLayout &layout, std::uint8_t *set, std::ui
         if (hashSize < desired) {
             buckets = desired;
             for (const std::int32_t slot : Slots(set)) {
-                const std::optional<std::uint32_t> hash = AgreedHash(layout, Element(layout, set, slot));
+                const std::optional<std::uint32_t> hash = KeyHash(layout, Element(layout, set, slot));
                 if (!hash) {
                     collapse = true;
                     break;
@@ -879,14 +615,17 @@ std::int32_t Containers::Add(const SetLayout &layout, std::uint8_t *set, std::ui
         bool first = false;
         {
             std::lock_guard lock(hashMutex_);
-            HashEvidence &evidence = hashes_[KeySignature(layout.hashKey)];
-            first = !evidence.collapsedNoted;
-            evidence.collapsedNoted = true;
+            KeyRecord &record = keys_[KeySignature(layout.key)];
+            first = !record.collapsedNoted;
+            record.collapsedNoted = true;
         }
-        if (first)
-            NoteMemory(std::string(PropertyKindName(layout.key.kind)) +
-                       " keys: no hash is sure yet, so an addition relinks the set into one bucket; the engine "
-                       "rehashes on its next add");
+        if (first) {
+            const std::string why = virtuals_.HashReady()
+                                        ? "this key type has none, or a live container contradicted it"
+                                        : virtuals_.Failure();
+            NoteMemory(std::string(PropertyKindName(layout.key.kind)) + " keys: no engine hash (" + why +
+                       "), so an addition relinks the set into one bucket; the engine rehashes on its next add");
+        }
         return slot;
     }
     if (table) {

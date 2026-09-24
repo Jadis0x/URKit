@@ -27,7 +27,7 @@ class OwnedValues {
     OwnedValues(const ObjectFinder &finder, const PropertyChain &chain, const PropertyValues &values,
                 const TypeQueries &types, EngineCalls &engine)
         : finder_(&finder), chain_(&chain), values_(&values), types_(&types), engine_(&engine),
-          containers_(finder, values, engine, *this) {}
+          containers_(finder, chain, values, engine, *this) {}
 
     // Reflection only; safe off the game thread.
     Ownership Classify(const PropertyInfo &info, int depth = 0) const;

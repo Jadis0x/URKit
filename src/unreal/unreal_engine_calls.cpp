@@ -9,6 +9,18 @@
 #include <cstring>
 
 namespace URK::Unreal {
+
+// A leaf function (AddRef is one) has no exception table entry, so this is the
+// most an address can be checked for; what the function does is proven by
+// calling it on a probe.
+bool ImageCode(const void *address) {
+    MEMORY_BASIC_INFORMATION info{};
+    if (!address || VirtualQuery(address, &info, sizeof(info)) != sizeof(info))
+        return false;
+    constexpr DWORD kExecutable = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    return info.State == MEM_COMMIT && info.Type == MEM_IMAGE && (info.Protect & kExecutable) != 0;
+}
+
 namespace {
 
 constexpr const char *kLibraryPackage = "/Script/Engine";
@@ -51,17 +63,6 @@ struct InputString {
 // that takes none ignores it, one that does returns it.
 using CountFn = void *(__fastcall *)(const void *self, std::uint32_t *result);
 using AddRefFn = void(__fastcall *)(const void *self);
-
-// Executable code of a loaded image. A leaf function (AddRef is one) has no
-// exception table entry, so this is the most an address can be checked for;
-// what the function does is proven by calling it on a probe.
-bool ImageCode(const void *address) {
-    MEMORY_BASIC_INFORMATION info{};
-    if (!address || VirtualQuery(address, &info, sizeof(info)) != sizeof(info))
-        return false;
-    constexpr DWORD kExecutable = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-    return info.State == MEM_COMMIT && info.Type == MEM_IMAGE && (info.Protect & kExecutable) != 0;
-}
 
 std::uint32_t CallCount(void *function, const void *self) {
     alignas(8) std::uint32_t buffer[2] = {0xFFFFFFFFu, 0};

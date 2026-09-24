@@ -30,6 +30,9 @@ using MemoryNote = void (*)(const std::string &message);
 void SetMemoryNote(MemoryNote note);
 void NoteMemory(const std::string &message);
 
+// Executable code of a loaded image (in process).
+bool ImageCode(const void *address);
+
 struct ParameterSpec {
     const char *name;
     PropertyKind kind;

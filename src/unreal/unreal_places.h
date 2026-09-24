@@ -35,17 +35,27 @@ using NameCheck = bool (*)(void *context, const std::uint8_t *name, std::size_t 
 // Whether proposed may replace current as a value of structObject: numbers
 // change freely, objects must be live and of their class, names only when
 // names confirms them, and anything owning an allocation or not checkable must
-// stay byte-identical.
+// stay byte-identical. With strings, a string may differ when its characters
+// are readable and terminated: for a value the engine will copy, never adopt.
 bool StructChangeAllowed(const UnrealEngine &engine, Address structObject, const std::uint8_t *current,
                          const std::uint8_t *proposed, std::size_t size, int depth = 0, NameCheck names = nullptr,
-                         void *namesContext = nullptr);
+                         void *namesContext = nullptr, bool strings = false);
+
+// Writes into merged (holding the current value) what proposed gives its
+// reflected members, bools by their field mask. A vtable, padding and native-only
+// fields stay as they were: a mod's copy of them is never trusted.
+void MergeStructMembers(const UnrealEngine &engine, Address structObject, std::uint8_t *merged,
+                        const std::uint8_t *proposed, std::size_t size, int depth = 0);
 
 class Places {
   public:
     Places(UnrealEngine &engine, OwnedValues &owned, EnumNames &enums)
-        : engine_(&engine), owned_(&owned), enums_(&enums) {}
+        : engine_(&engine), owned_(&owned), enums_(&enums) {
+    }
 
-    const std::string &Failure() const { return failure_; }
+    const std::string &Failure() const {
+        return failure_;
+    }
 
     std::optional<PlaceTarget> Walk(std::uint8_t *root, const PropertyInfo &rootInfo, const URK_UnrealStep *steps,
                                     std::uint32_t count, bool describe);

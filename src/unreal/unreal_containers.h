@@ -5,7 +5,9 @@
 // A sparse set's element layout is computed with the engine's own rules
 // (FStructBuilder, TScriptSparseSet::GetScriptLayout) and must be found verbatim
 // in the layout the engine stored in the property; a container is checked link
-// by link before it is changed. Game thread only.
+// by link before it is changed. Keys are hashed and compared by the key
+// property's own virtuals (unreal_property_virtuals), as the engine's script
+// helpers do. Game thread only.
 //
 // Every change is a transaction: whatever can fail (allocating, making or
 // checking values) happens before the container changes, and a failure leaves
@@ -14,6 +16,7 @@
 // leaves it reachable.
 
 #include "unreal_engine_calls.h"
+#include "unreal_property_virtuals.h"
 
 #include <cstdint>
 #include <map>
@@ -50,9 +53,6 @@ struct SetLayout {
     bool isMap = false;
     PropertyInfo key;   // the set's element, or the map's key
     PropertyInfo value; // map only
-    // The key as the engine hashes it: an enum by its underlying number
-    // (FEnumProperty::GetValueTypeHashInternal).
-    PropertyInfo hashKey;
     std::int32_t valueOffset = 0;
     // TSetElement: the element (or pair), then HashNextId and HashIndex.
     std::int32_t hashNextIdOffset = 0;
@@ -64,10 +64,14 @@ struct SetLayout {
 
 class Containers {
   public:
-    Containers(const ObjectFinder &finder, const PropertyValues &values, EngineCalls &engine, OwnedValues &owned)
-        : finder_(&finder), values_(&values), engine_(&engine), owned_(&owned) {}
+    Containers(const ObjectFinder &finder, const PropertyChain &chain, const PropertyValues &values,
+               EngineCalls &engine, OwnedValues &owned)
+        : finder_(&finder), values_(&values), engine_(&engine), owned_(&owned), virtuals_(finder, chain, values) {
+    }
 
-    const std::string &Failure() const { return failure_; }
+    const std::string &Failure() const {
+        return failure_;
+    }
 
     // --- TArray (and a multicast delegate's invocation list) ---
     // count default elements before index; all made, or none.
@@ -96,11 +100,14 @@ class Containers {
     void FreeStorage(std::uint8_t *set);
     static bool HoldsStorage(const std::uint8_t *set);
 
+    PropertyVirtuals &Virtuals() {
+        return virtuals_;
+    }
+
   private:
-    struct HashEvidence {
-        // Per rule: 0 open, 1 trusted, -1 contradicted (for good).
-        std::vector<int> state;
-        bool exhaustedNoted = false;
+    struct KeyRecord {
+        // A live container stored a bucket the engine's hash does not give (for good).
+        bool contradicted = false;
         bool collapsedNoted = false;
     };
     struct CachedLayout {
@@ -112,11 +119,13 @@ class Containers {
         std::optional<SetLayout> layout;
         std::string failure;
     };
-    // Every validated container is evidence, before and after a rule is trusted.
-    void Learn(const SetLayout &layout, std::uint8_t *set);
-    // The key's hash if a rule is trusted and every rule not contradicted agrees
-    // on it; otherwise no hash is sure, and the caller links into one bucket.
-    std::optional<std::uint32_t> AgreedHash(const SetLayout &layout, const std::uint8_t *key);
+    // Every validated container checks the engine's hash against the buckets it stored.
+    void Check(const SetLayout &layout, std::uint8_t *set);
+    // The engine's hash of the key; none when it is unavailable or a live
+    // container contradicted it, and the caller links into one bucket.
+    std::optional<std::uint32_t> KeyHash(const SetLayout &layout, const std::uint8_t *key);
+    // The engine's Identical where measured, else the loader's own equality.
+    bool KeysEqual(const SetLayout &layout, const std::uint8_t *a, const std::uint8_t *b);
     bool Fail(std::string why);
     std::uint8_t *Bits(std::uint8_t *set);
     std::int32_t *Buckets(std::uint8_t *set);
@@ -126,19 +135,19 @@ class Containers {
     void Collapse(const SetLayout &layout, std::uint8_t *set);
     void Relink(const SetLayout &layout, std::uint8_t *set, std::uint8_t *table, std::int32_t buckets,
                 const std::vector<std::pair<std::int32_t, std::uint32_t>> &hashes);
-    std::optional<std::uint32_t> Hash(int rule, const PropertyInfo &key, const std::uint8_t *value) const;
     std::string KeySignature(const PropertyInfo &key) const;
 
     const ObjectFinder *finder_;
     const PropertyValues *values_;
     EngineCalls *engine_;
     OwnedValues *owned_;
+    PropertyVirtuals virtuals_;
     // Per thread: reads run off the game thread too.
     inline static thread_local std::string failure_;
     std::mutex layoutMutex_;
     std::map<Address, CachedLayout> layouts_;
     std::mutex hashMutex_;
-    std::map<std::string, HashEvidence> hashes_;
+    std::map<std::string, KeyRecord> keys_;
 };
 
 } // namespace URK::Unreal

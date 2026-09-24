@@ -17,7 +17,9 @@ template <typename T> T Load(const std::uint8_t *at) {
     return value;
 }
 
-template <typename T> void Store(std::uint8_t *at, T value) { std::memcpy(at, &value, sizeof(T)); }
+template <typename T> void Store(std::uint8_t *at, T value) {
+    std::memcpy(at, &value, sizeof(T));
+}
 
 bool Live(const UnrealEngine &engine, Address object) {
     return engine.Available() && IsLiveObject(engine.Finder(), object);
@@ -30,21 +32,21 @@ bool IsStruct(const UnrealEngine &engine, Address object) {
 // Plain numbers: every bit pattern is a value the engine can hold.
 bool FreeKind(PropertyKind kind) {
     switch (kind) {
-    case PropertyKind::Bool:
-    case PropertyKind::Byte:
-    case PropertyKind::Int8:
-    case PropertyKind::Int16:
-    case PropertyKind::Int32:
-    case PropertyKind::Int64:
-    case PropertyKind::UInt16:
-    case PropertyKind::UInt32:
-    case PropertyKind::UInt64:
-    case PropertyKind::Float:
-    case PropertyKind::Double:
-    case PropertyKind::Enum:
-        return true;
-    default:
-        return false;
+        case PropertyKind::Bool:
+        case PropertyKind::Byte:
+        case PropertyKind::Int8:
+        case PropertyKind::Int16:
+        case PropertyKind::Int32:
+        case PropertyKind::Int64:
+        case PropertyKind::UInt16:
+        case PropertyKind::UInt32:
+        case PropertyKind::UInt64:
+        case PropertyKind::Float:
+        case PropertyKind::Double:
+        case PropertyKind::Enum:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -56,13 +58,28 @@ bool StringKind(PropertyKind kind) {
     return kind == PropertyKind::String || kind == PropertyKind::Utf8String || kind == PropertyKind::AnsiString;
 }
 
-bool SoftClass(const PropertyInfo &info) { return (info.castFlags & kCastFlagSoftClassProperty) != 0; }
+bool SoftClass(const PropertyInfo &info) {
+    return (info.castFlags & kCastFlagSoftClassProperty) != 0;
+}
 
 // Engine flag values (EPropertyFlags) that make two signatures differ.
 constexpr std::uint64_t kSignatureFlags = kPropertyFlagParm | kPropertyFlagOutParm | kPropertyFlagReturnParm;
 
 bool CheckName(void *context, const std::uint8_t *name, std::size_t size) {
     return static_cast<EngineCalls *>(context)->ValidName(name, size);
+}
+
+// An FString the engine can copy from: its characters readable and terminated.
+bool CopyableString(const UnrealEngine &engine, const std::uint8_t *header) {
+    const auto data = reinterpret_cast<Address>(Load<const std::uint8_t *>(header));
+    const std::int32_t num = Load<std::int32_t>(header + 8);
+    const std::int32_t max = Load<std::int32_t>(header + 12);
+    if (num == 0)
+        return true;
+    const std::size_t bytes = static_cast<std::size_t>(num) * sizeof(char16_t);
+    return num > 0 && max >= num && num <= kMaxContainerElements && data != kNullAddress &&
+           engine.Reader().Readable(data, bytes) &&
+           engine.Reader().ReadAs<std::uint16_t>(data + bytes - sizeof(char16_t)) == 0;
 }
 
 } // namespace
@@ -78,8 +95,8 @@ bool Assignable(const UnrealEngine &engine, const PropertyInfo &info, Address va
 }
 
 bool StructChangeAllowed(const UnrealEngine &engine, Address structObject, const std::uint8_t *current,
-                         const std::uint8_t *proposed, std::size_t size, int depth, NameCheck names,
-                         void *namesContext) {
+                         const std::uint8_t *proposed, std::size_t size, int depth, NameCheck names, void *namesContext,
+                         bool strings) {
     if (depth > kMaxStructDepth || !IsStruct(engine, structObject))
         return false;
     const PropertyChain &chain = engine.Chain();
@@ -108,15 +125,51 @@ bool StructChangeAllowed(const UnrealEngine &engine, Address structObject, const
                 } else if (info->kind == PropertyKind::Name) {
                     if (!names || !names(namesContext, proposed + at, width))
                         return false;
+                } else if (info->kind == PropertyKind::String && strings) {
+                    if (!CopyableString(engine, proposed + at))
+                        return false;
                 } else if (info->kind != PropertyKind::Struct ||
                            !StructChangeAllowed(engine, info->inner, current + at, proposed + at, width, depth + 1,
-                                                names, namesContext)) {
+                                                names, namesContext, strings)) {
                     return false;
                 }
             }
         }
     }
     return true;
+}
+
+void MergeStructMembers(const UnrealEngine &engine, Address structObject, std::uint8_t *merged,
+                        const std::uint8_t *proposed, std::size_t size, int depth) {
+    if (depth > kMaxStructDepth)
+        return;
+    const PropertyChain &chain = engine.Chain();
+    int level = 0;
+    for (Address owner = structObject; owner != kNullAddress && level < kMaxStructDepth;
+         owner = engine.Types().SuperOf(owner), ++level) {
+        Address field = chain.First(owner);
+        for (int step = 0; field != kNullAddress && step < kMaxStructFields; ++step, field = chain.Next(field)) {
+            const std::optional<PropertyInfo> info = engine.Values().Describe(field);
+            if (!info || !info->Resolved() || info->offset < 0 || info->elementSize <= 0 || info->arrayDim < 1)
+                continue;
+            const std::size_t width = static_cast<std::size_t>(info->elementSize);
+            for (std::int32_t i = 0; i < info->arrayDim; ++i) {
+                const std::size_t at = static_cast<std::size_t>(info->offset) + static_cast<std::size_t>(i) * width;
+                if (at + width > size)
+                    continue;
+                if (info->kind == PropertyKind::Bool) {
+                    const std::size_t byte = at + info->boolLayout.byteOffset;
+                    const std::uint8_t mask = info->boolLayout.fieldMask;
+                    if (byte < size)
+                        merged[byte] = static_cast<std::uint8_t>((merged[byte] & ~mask) | (proposed[byte] & mask));
+                } else if (info->kind == PropertyKind::Struct) {
+                    MergeStructMembers(engine, info->inner, merged + at, proposed + at, width, depth + 1);
+                } else {
+                    std::memcpy(merged + at, proposed + at, width);
+                }
+            }
+        }
+    }
 }
 
 bool Places::Fail(std::string why) {
@@ -134,8 +187,8 @@ bool Places::ArrayHeader(const std::uint8_t *value, std::int32_t elementSize, st
     const std::int32_t max = Load<std::int32_t>(value + 12);
     if (*num < 0 || max < *num || *num > kMaxContainerElements || elementSize <= 0)
         return Fail("the array header is not one");
-    if (*num > 0 && (data == kNullAddress ||
-                     !engine_->Reader().Readable(data, static_cast<std::size_t>(*num) * elementSize)))
+    if (*num > 0 &&
+        (data == kNullAddress || !engine_->Reader().Readable(data, static_cast<std::size_t>(*num) * elementSize)))
         return Fail("the array's elements are not readable");
     return true;
 }
@@ -174,93 +227,94 @@ std::optional<PlaceTarget> Places::Walk(std::uint8_t *root, const PropertyInfo &
         const URK_UnrealStep &step = steps[i];
         PropertyInfo &info = target.info;
         switch (step.kind) {
-        case URK_UNREAL_STEP_MEMBER: {
-            if (info.kind != PropertyKind::Struct || !step.name) {
-                Fail("a member step needs a struct");
-                return std::nullopt;
+            case URK_UNREAL_STEP_MEMBER: {
+                if (info.kind != PropertyKind::Struct || !step.name) {
+                    Fail("a member step needs a struct");
+                    return std::nullopt;
+                }
+                const Address field = engine_->Chain().FindMemberDeep(info.inner, step.name);
+                const std::optional<PropertyInfo> member =
+                    field != kNullAddress ? engine_->Values().Describe(field) : std::nullopt;
+                if (!member || !member->Resolved() || step.index < 0 || step.index >= member->arrayDim ||
+                    member->offset + member->elementSize * member->arrayDim > info.elementSize) {
+                    Fail(std::string("no member ") + step.name + " at that index");
+                    return std::nullopt;
+                }
+                if (target.value)
+                    target.value += member->offset + static_cast<std::size_t>(step.index) * member->elementSize;
+                target.info = *member;
+                break;
             }
-            const Address field = engine_->Chain().FindMemberDeep(info.inner, step.name);
-            const std::optional<PropertyInfo> member =
-                field != kNullAddress ? engine_->Values().Describe(field) : std::nullopt;
-            if (!member || !member->Resolved() || step.index < 0 || step.index >= member->arrayDim ||
-                member->offset + member->elementSize * member->arrayDim > info.elementSize) {
-                Fail(std::string("no member ") + step.name + " at that index");
-                return std::nullopt;
+            case URK_UNREAL_STEP_ELEMENT: {
+                if (info.kind == PropertyKind::Set) {
+                    const std::optional<SetLayout> layout = owned_->Stores().LayoutOf(info);
+                    if (!layout) {
+                        Fail(owned_->Stores().Failure());
+                        return std::nullopt;
+                    }
+                    std::uint8_t *element = nullptr;
+                    if (target.value && !(describe && step.index == -1)) {
+                        element = Containers::Element(*layout, target.value, step.index);
+                        if (!element) {
+                            Fail("the set slot is not occupied");
+                            return std::nullopt;
+                        }
+                    }
+                    target.value = element;
+                    target.info = layout->key;
+                    target.key = true;
+                    break;
+                }
+                const std::optional<PropertyInfo> element = ElementOf(info);
+                if (!element)
+                    return std::nullopt;
+                std::uint8_t *at = nullptr;
+                if (target.value && !(describe && step.index == -1)) {
+                    std::int32_t num = 0;
+                    if (!ArrayHeader(target.value, element->elementSize, &num))
+                        return std::nullopt;
+                    if (step.index < 0 || step.index >= num) {
+                        Fail("the element index is out of range");
+                        return std::nullopt;
+                    }
+                    at = Load<std::uint8_t *>(target.value) +
+                         static_cast<std::size_t>(step.index) * element->elementSize;
+                }
+                target.value = at;
+                target.info = *element;
+                break;
             }
-            if (target.value)
-                target.value += member->offset + static_cast<std::size_t>(step.index) * member->elementSize;
-            target.info = *member;
-            break;
-        }
-        case URK_UNREAL_STEP_ELEMENT: {
-            if (info.kind == PropertyKind::Set) {
+            case URK_UNREAL_STEP_KEY:
+            case URK_UNREAL_STEP_VALUE: {
+                if (info.kind != PropertyKind::Map) {
+                    Fail("a key or value step needs a map");
+                    return std::nullopt;
+                }
                 const std::optional<SetLayout> layout = owned_->Stores().LayoutOf(info);
                 if (!layout) {
                     Fail(owned_->Stores().Failure());
                     return std::nullopt;
                 }
+                const bool isValue = step.kind == URK_UNREAL_STEP_VALUE;
                 std::uint8_t *element = nullptr;
                 if (target.value && !(describe && step.index == -1)) {
                     element = Containers::Element(*layout, target.value, step.index);
                     if (!element) {
-                        Fail("the set slot is not occupied");
+                        Fail("the map slot is not occupied");
                         return std::nullopt;
                     }
+                    if (isValue)
+                        element += layout->valueOffset;
                 }
                 target.value = element;
-                target.info = layout->key;
-                target.key = true;
+                target.info = isValue ? layout->value : layout->key;
+                target.key = !isValue;
+                target.info.offset = 0;
                 break;
             }
-            const std::optional<PropertyInfo> element = ElementOf(info);
-            if (!element)
+            default:
+                Fail("unknown step kind");
                 return std::nullopt;
-            std::uint8_t *at = nullptr;
-            if (target.value && !(describe && step.index == -1)) {
-                std::int32_t num = 0;
-                if (!ArrayHeader(target.value, element->elementSize, &num))
-                    return std::nullopt;
-                if (step.index < 0 || step.index >= num) {
-                    Fail("the element index is out of range");
-                    return std::nullopt;
-                }
-                at = Load<std::uint8_t *>(target.value) + static_cast<std::size_t>(step.index) * element->elementSize;
-            }
-            target.value = at;
-            target.info = *element;
-            break;
-        }
-        case URK_UNREAL_STEP_KEY:
-        case URK_UNREAL_STEP_VALUE: {
-            if (info.kind != PropertyKind::Map) {
-                Fail("a key or value step needs a map");
-                return std::nullopt;
-            }
-            const std::optional<SetLayout> layout = owned_->Stores().LayoutOf(info);
-            if (!layout) {
-                Fail(owned_->Stores().Failure());
-                return std::nullopt;
-            }
-            const bool isValue = step.kind == URK_UNREAL_STEP_VALUE;
-            std::uint8_t *element = nullptr;
-            if (target.value && !(describe && step.index == -1)) {
-                element = Containers::Element(*layout, target.value, step.index);
-                if (!element) {
-                    Fail("the map slot is not occupied");
-                    return std::nullopt;
-                }
-                if (isValue)
-                    element += layout->valueOffset;
-            }
-            target.value = element;
-            target.info = isValue ? layout->value : layout->key;
-            target.key = !isValue;
-            target.info.offset = 0;
-            break;
-        }
-        default:
-            Fail("unknown step kind");
-            return std::nullopt;
         }
         if (!target.value && !describe) {
             Fail("the place names no value");
@@ -278,47 +332,47 @@ bool Places::ReadInteger(const PlaceTarget &target, std::int64_t *output) {
         return Fail("not an integer");
     const std::uint8_t *at = target.value;
     switch (info.kind) {
-    case PropertyKind::Int8:
-        *output = Load<std::int8_t>(at);
-        return true;
-    case PropertyKind::Int16:
-        *output = Load<std::int16_t>(at);
-        return true;
-    case PropertyKind::Int32:
-        *output = Load<std::int32_t>(at);
-        return true;
-    case PropertyKind::Int64:
-    case PropertyKind::UInt64:
-        *output = Load<std::int64_t>(at);
-        return true;
-    case PropertyKind::Byte:
-        *output = Load<std::uint8_t>(at);
-        return true;
-    case PropertyKind::UInt16:
-        *output = Load<std::uint16_t>(at);
-        return true;
-    case PropertyKind::UInt32:
-        *output = Load<std::uint32_t>(at);
-        return true;
-    case PropertyKind::Enum:
-        switch (info.elementSize) {
-        case 1:
-            *output = Load<std::uint8_t>(at);
+        case PropertyKind::Int8:
+            *output = Load<std::int8_t>(at);
             return true;
-        case 2:
-            *output = Load<std::uint16_t>(at);
+        case PropertyKind::Int16:
+            *output = Load<std::int16_t>(at);
             return true;
-        case 4:
+        case PropertyKind::Int32:
             *output = Load<std::int32_t>(at);
             return true;
-        case 8:
+        case PropertyKind::Int64:
+        case PropertyKind::UInt64:
             *output = Load<std::int64_t>(at);
             return true;
+        case PropertyKind::Byte:
+            *output = Load<std::uint8_t>(at);
+            return true;
+        case PropertyKind::UInt16:
+            *output = Load<std::uint16_t>(at);
+            return true;
+        case PropertyKind::UInt32:
+            *output = Load<std::uint32_t>(at);
+            return true;
+        case PropertyKind::Enum:
+            switch (info.elementSize) {
+                case 1:
+                    *output = Load<std::uint8_t>(at);
+                    return true;
+                case 2:
+                    *output = Load<std::uint16_t>(at);
+                    return true;
+                case 4:
+                    *output = Load<std::int32_t>(at);
+                    return true;
+                case 8:
+                    *output = Load<std::int64_t>(at);
+                    return true;
+                default:
+                    return Fail("an enum of unexpected width");
+            }
         default:
-            return Fail("an enum of unexpected width");
-        }
-    default:
-        return Fail("not an integer");
+            return Fail("not an integer");
     }
 }
 
@@ -389,25 +443,25 @@ Address Places::ReadObject(const PlaceTarget &target, bool gameThread) {
     }
     EngineCalls &calls = owned_->Engine();
     switch (info.kind) {
-    case PropertyKind::Object:
-    case PropertyKind::Class:
-    case PropertyKind::Interface:
-        return Load<Address>(target.value);
-    case PropertyKind::WeakObject:
-    case PropertyKind::LazyObject:
-    case PropertyKind::Delegate:
-        if (!gameThread && !calls.WeakReady()) {
-            Fail("weak references are measured on the game thread first");
+        case PropertyKind::Object:
+        case PropertyKind::Class:
+        case PropertyKind::Interface:
+            return Load<Address>(target.value);
+        case PropertyKind::WeakObject:
+        case PropertyKind::LazyObject:
+        case PropertyKind::Delegate:
+            if (!gameThread && !calls.WeakReady()) {
+                Fail("weak references are measured on the game thread first");
+                return kNullAddress;
+            }
+            return calls.WeakTarget(target.value);
+        case PropertyKind::SoftObject:
+            if (!NeedGameThread(gameThread))
+                return kNullAddress;
+            return calls.SoftTarget(target.value, static_cast<std::size_t>(info.elementSize), SoftClass(info));
+        default:
+            Fail("not a reference");
             return kNullAddress;
-        }
-        return calls.WeakTarget(target.value);
-    case PropertyKind::SoftObject:
-        if (!NeedGameThread(gameThread))
-            return kNullAddress;
-        return calls.SoftTarget(target.value, static_cast<std::size_t>(info.elementSize), SoftClass(info));
-    default:
-        Fail("not a reference");
-        return kNullAddress;
     }
 }
 
@@ -419,31 +473,32 @@ bool Places::WriteObject(const PlaceTarget &target, Address value, bool gameThre
         return Fail("the object is not live or not of the declared class");
     EngineCalls &calls = owned_->Engine();
     switch (info.kind) {
-    case PropertyKind::Object:
-    case PropertyKind::Class:
-        Store<Address>(target.value, value);
-        return true;
-    case PropertyKind::WeakObject: {
-        if (!NeedGameThread(gameThread))
-            return false;
-        std::uint8_t weak[EngineCalls::kWeakSize];
-        if (!calls.MakeWeak(value, weak))
-            return Fail(calls.Failure());
-        std::memcpy(target.value, weak, sizeof(weak));
-        return true;
-    }
-    case PropertyKind::SoftObject:
-        if (!NeedGameThread(gameThread))
-            return false;
-        return calls.AssignSoftObject(target.value, static_cast<std::size_t>(info.elementSize), value, SoftClass(info))
-                   ? true
-                   : Fail(calls.Failure());
-    case PropertyKind::LazyObject:
-        return Fail("a lazy pointer names its object by a GUID only the engine can create");
-    case PropertyKind::Delegate:
-        return Fail("a delegate is bound with an object and a function together");
-    default:
-        return Fail("not a writable reference");
+        case PropertyKind::Object:
+        case PropertyKind::Class:
+            Store<Address>(target.value, value);
+            return true;
+        case PropertyKind::WeakObject: {
+            if (!NeedGameThread(gameThread))
+                return false;
+            std::uint8_t weak[EngineCalls::kWeakSize];
+            if (!calls.MakeWeak(value, weak))
+                return Fail(calls.Failure());
+            std::memcpy(target.value, weak, sizeof(weak));
+            return true;
+        }
+        case PropertyKind::SoftObject:
+            if (!NeedGameThread(gameThread))
+                return false;
+            return calls.AssignSoftObject(target.value, static_cast<std::size_t>(info.elementSize), value,
+                                          SoftClass(info))
+                       ? true
+                       : Fail(calls.Failure());
+        case PropertyKind::LazyObject:
+            return Fail("a lazy pointer names its object by a GUID only the engine can create");
+        case PropertyKind::Delegate:
+            return Fail("a delegate is bound with an object and a function together");
+        default:
+            return Fail("not a writable reference");
     }
 }
 
@@ -459,46 +514,47 @@ std::optional<std::string> Places::ReadText(const PlaceTarget &target, bool game
     if (StringKind(info.kind))
         return engine_->Values().ReadStringAt(reinterpret_cast<Address>(target.value), info.kind);
     switch (info.kind) {
-    case PropertyKind::Name:
-        return engine_->Finder().Names().ReadFName(reinterpret_cast<Address>(target.value));
-    case PropertyKind::Delegate:
-        return engine_->Finder().Names().ReadFName(reinterpret_cast<Address>(target.value + EngineCalls::kWeakSize));
-    case PropertyKind::Text:
-        if (!NeedGameThread(gameThread))
+        case PropertyKind::Name:
+            return engine_->Finder().Names().ReadFName(reinterpret_cast<Address>(target.value));
+        case PropertyKind::Delegate:
+            return engine_->Finder().Names().ReadFName(
+                reinterpret_cast<Address>(target.value + EngineCalls::kWeakSize));
+        case PropertyKind::Text:
+            if (!NeedGameThread(gameThread))
+                return std::nullopt;
+            if (std::optional<std::string> text = calls.TextToString(target.value))
+                return text;
+            Fail(calls.Failure());
             return std::nullopt;
-        if (std::optional<std::string> text = calls.TextToString(target.value))
-            return text;
-        Fail(calls.Failure());
-        return std::nullopt;
-    case PropertyKind::SoftObject:
-        if (!NeedGameThread(gameThread))
+        case PropertyKind::SoftObject:
+            if (!NeedGameThread(gameThread))
+                return std::nullopt;
+            if (std::optional<std::string> path =
+                    calls.SoftPath(target.value, static_cast<std::size_t>(info.elementSize), SoftClass(info)))
+                return path;
+            Fail(calls.Failure());
             return std::nullopt;
-        if (std::optional<std::string> path =
-                calls.SoftPath(target.value, static_cast<std::size_t>(info.elementSize), SoftClass(info)))
-            return path;
-        Fail(calls.Failure());
-        return std::nullopt;
-    case PropertyKind::Enum:
-    case PropertyKind::Byte: {
-        if (info.typeObject == kNullAddress) {
-            Fail("a plain byte has no names");
+        case PropertyKind::Enum:
+        case PropertyKind::Byte: {
+            if (info.typeObject == kNullAddress) {
+                Fail("a plain byte has no names");
+                return std::nullopt;
+            }
+            if (!enums_->Measured() && !(gameThread && enums_->Measure(calls))) {
+                Fail("enum names are unavailable (" + enums_->Failure() + ")");
+                return std::nullopt;
+            }
+            std::int64_t value = 0;
+            if (!ReadInteger(target, &value))
+                return std::nullopt;
+            if (std::optional<std::string> name = enums_->NameOf(info.typeObject, value))
+                return name;
+            Fail("the value has no name in its enum");
             return std::nullopt;
         }
-        if (!enums_->Measured() && !(gameThread && enums_->Measure(calls))) {
-            Fail("enum names are unavailable (" + enums_->Failure() + ")");
+        default:
+            Fail("the value has no text form");
             return std::nullopt;
-        }
-        std::int64_t value = 0;
-        if (!ReadInteger(target, &value))
-            return std::nullopt;
-        if (std::optional<std::string> name = enums_->NameOf(info.typeObject, value))
-            return name;
-        Fail("the value has no name in its enum");
-        return std::nullopt;
-    }
-    default:
-        Fail("the value has no text form");
-        return std::nullopt;
     }
 }
 
@@ -521,30 +577,31 @@ bool Places::WriteText(const PlaceTarget &target, const char *utf8, bool gameThr
     const std::u16string wide = Utf8ToUtf16(text);
     bool done = false;
     switch (info.kind) {
-    case PropertyKind::Name:
-        done = calls.MakeName(wide, target.value, static_cast<std::size_t>(info.elementSize));
-        break;
-    case PropertyKind::String:
-        done = calls.AssignChars(target.value, wide.data(), wide.size(), sizeof(char16_t));
-        break;
-    case PropertyKind::Utf8String:
-        done = calls.AssignChars(target.value, text.data(), text.size(), 1);
-        break;
-    case PropertyKind::AnsiString: {
-        std::string latin(wide.size(), '?');
-        for (std::size_t i = 0; i < wide.size(); ++i)
-            latin[i] = wide[i] < 0x100 ? static_cast<char>(wide[i]) : '?';
-        done = calls.AssignChars(target.value, latin.data(), latin.size(), 1);
-        break;
-    }
-    case PropertyKind::Text:
-        done = calls.AssignText(target.value, wide);
-        break;
-    case PropertyKind::SoftObject:
-        done = calls.AssignSoftPath(target.value, static_cast<std::size_t>(info.elementSize), wide, SoftClass(info));
-        break;
-    default:
-        return Fail("the value has no text form");
+        case PropertyKind::Name:
+            done = calls.MakeName(wide, target.value, static_cast<std::size_t>(info.elementSize));
+            break;
+        case PropertyKind::String:
+            done = calls.AssignChars(target.value, wide.data(), wide.size(), sizeof(char16_t));
+            break;
+        case PropertyKind::Utf8String:
+            done = calls.AssignChars(target.value, text.data(), text.size(), 1);
+            break;
+        case PropertyKind::AnsiString: {
+            std::string latin(wide.size(), '?');
+            for (std::size_t i = 0; i < wide.size(); ++i)
+                latin[i] = wide[i] < 0x100 ? static_cast<char>(wide[i]) : '?';
+            done = calls.AssignChars(target.value, latin.data(), latin.size(), 1);
+            break;
+        }
+        case PropertyKind::Text:
+            done = calls.AssignText(target.value, wide);
+            break;
+        case PropertyKind::SoftObject:
+            done =
+                calls.AssignSoftPath(target.value, static_cast<std::size_t>(info.elementSize), wide, SoftClass(info));
+            break;
+        default:
+            return Fail("the value has no text form");
     }
     return done ? true : Fail(calls.Failure());
 }
@@ -564,10 +621,12 @@ bool Places::WriteBytes(const PlaceTarget &target, const void *value, std::size_
         size != static_cast<std::size_t>(target.info.elementSize))
         return Fail("not a struct of that size");
     // Names are confirmed through the engine, so only on the game thread.
-    if (!StructChangeAllowed(*engine_, target.info.inner, target.value, static_cast<const std::uint8_t *>(value),
-                             size, 0, gameThread ? &CheckName : nullptr, &owned_->Engine()))
+    if (!StructChangeAllowed(*engine_, target.info.inner, target.value, static_cast<const std::uint8_t *>(value), size,
+                             0, gameThread ? &CheckName : nullptr, &owned_->Engine()))
         return Fail("the struct write would change what the engine owns");
-    std::memcpy(target.value, value, size);
+    std::vector<std::uint8_t> merged(target.value, target.value + size);
+    MergeStructMembers(*engine_, target.info.inner, merged.data(), static_cast<const std::uint8_t *>(value), size);
+    std::memcpy(target.value, merged.data(), size);
     return true;
 }
 
@@ -619,8 +678,7 @@ bool Places::Insert(const PlaceTarget &target, std::int32_t index, std::int32_t 
         return false;
     if (target.info.kind == PropertyKind::MulticastDelegate && owned_->Classify(*element) != Ownership::None)
         return Fail("delegates here are not the plain weak-object-and-name layout");
-    return owned_->Stores().ArrayInsert(*element, target.value, index, count) ? true
-                                                                               : Fail(owned_->Stores().Failure());
+    return owned_->Stores().ArrayInsert(*element, target.value, index, count) ? true : Fail(owned_->Stores().Failure());
 }
 
 bool Places::Remove(const PlaceTarget &target, std::int32_t index, std::int32_t count, bool gameThread) {
@@ -647,24 +705,24 @@ bool Places::Clear(const PlaceTarget &target, bool gameThread) {
         return false;
     const PropertyInfo &info = target.info;
     switch (info.kind) {
-    case PropertyKind::Text:
-        return owned_->Engine().MakeEmptyText(target.value) ? true : Fail(owned_->Engine().Failure());
-    case PropertyKind::Delegate:
-        if (info.elementSize != 16)
-            return Fail("delegates here are not the plain weak-object-and-name layout");
-        std::memset(target.value, 0, 16);
-        return true;
-    case PropertyKind::String:
-    case PropertyKind::Utf8String:
-    case PropertyKind::AnsiString:
-    case PropertyKind::Array:
-    case PropertyKind::Set:
-    case PropertyKind::Map:
-    case PropertyKind::MulticastDelegate:
-    case PropertyKind::SoftObject:
-        return owned_->Destroy(info, target.value) ? true : Fail(owned_->Failure());
-    default:
-        return Fail("the value is not something that empties");
+        case PropertyKind::Text:
+            return owned_->Engine().MakeEmptyText(target.value) ? true : Fail(owned_->Engine().Failure());
+        case PropertyKind::Delegate:
+            if (info.elementSize != 16)
+                return Fail("delegates here are not the plain weak-object-and-name layout");
+            std::memset(target.value, 0, 16);
+            return true;
+        case PropertyKind::String:
+        case PropertyKind::Utf8String:
+        case PropertyKind::AnsiString:
+        case PropertyKind::Array:
+        case PropertyKind::Set:
+        case PropertyKind::Map:
+        case PropertyKind::MulticastDelegate:
+        case PropertyKind::SoftObject:
+            return owned_->Destroy(info, target.value) ? true : Fail(owned_->Failure());
+        default:
+            return Fail("the value is not something that empties");
     }
 }
 
@@ -674,76 +732,95 @@ bool Places::BuildKey(const PropertyInfo &key, const URK_UnrealKey &input, bool 
     std::uint8_t *at = bytes->data();
     EngineCalls &calls = owned_->Engine();
     switch (key.kind) {
-    case PropertyKind::Bool:
-        at[key.boolLayout.byteOffset] = input.integer ? key.boolLayout.byteMask : 0;
-        return true;
-    case PropertyKind::Enum:
-    case PropertyKind::Byte:
-        if (input.text && key.typeObject != kNullAddress) {
-            if (!enums_->Measured() && !enums_->Measure(calls))
-                return Fail("enum names are unavailable (" + enums_->Failure() + ")");
-            const std::optional<std::int64_t> value = enums_->ValueOf(key.typeObject, input.text);
-            if (!value)
-                return Fail("the enum has no value named " + std::string(input.text));
-            std::memcpy(at, &*value, std::min<std::size_t>(bytes->size(), 8));
+        case PropertyKind::Bool:
+            at[key.boolLayout.byteOffset] = input.integer ? key.boolLayout.byteMask : 0;
+            return true;
+        case PropertyKind::Enum:
+        case PropertyKind::Byte:
+            if (input.text && key.typeObject != kNullAddress) {
+                if (!enums_->Measured() && !enums_->Measure(calls))
+                    return Fail("enum names are unavailable (" + enums_->Failure() + ")");
+                const std::optional<std::int64_t> value = enums_->ValueOf(key.typeObject, input.text);
+                if (!value)
+                    return Fail("the enum has no value named " + std::string(input.text));
+                std::memcpy(at, &*value, std::min<std::size_t>(bytes->size(), 8));
+                return true;
+            }
+            [[fallthrough]];
+        case PropertyKind::Int8:
+        case PropertyKind::Int16:
+        case PropertyKind::Int32:
+        case PropertyKind::Int64:
+        case PropertyKind::UInt16:
+        case PropertyKind::UInt32:
+        case PropertyKind::UInt64:
+            std::memcpy(at, &input.integer, std::min<std::size_t>(bytes->size(), 8));
+            return true;
+        case PropertyKind::Float:
+            Store<float>(at, static_cast<float>(input.floating));
+            return true;
+        case PropertyKind::Double:
+            Store<double>(at, input.floating);
+            return true;
+        case PropertyKind::Name:
+            if (!input.text)
+                return Fail("a name key needs text");
+            return calls.MakeName(Utf8ToUtf16(input.text), at, bytes->size()) ? true : Fail(calls.Failure());
+        case PropertyKind::String: {
+            if (!input.text)
+                return Fail("a string key needs text");
+            *text = Utf8ToUtf16(input.text);
+            if (forAdd)
+                return calls.AssignChars(at, text->data(), text->size(), sizeof(char16_t)) ? true
+                                                                                           : Fail(calls.Failure());
+            // A stand-in pointing at our own characters: compared, never stored.
+            text->push_back(u'\0');
+            Store<const char16_t *>(at, text->data());
+            Store<std::int32_t>(at + 8, static_cast<std::int32_t>(text->size()));
+            Store<std::int32_t>(at + 12, static_cast<std::int32_t>(text->size()));
             return true;
         }
-        [[fallthrough]];
-    case PropertyKind::Int8:
-    case PropertyKind::Int16:
-    case PropertyKind::Int32:
-    case PropertyKind::Int64:
-    case PropertyKind::UInt16:
-    case PropertyKind::UInt32:
-    case PropertyKind::UInt64:
-        std::memcpy(at, &input.integer, std::min<std::size_t>(bytes->size(), 8));
-        return true;
-    case PropertyKind::Float:
-        Store<float>(at, static_cast<float>(input.floating));
-        return true;
-    case PropertyKind::Double:
-        Store<double>(at, input.floating);
-        return true;
-    case PropertyKind::Name:
-        if (!input.text)
-            return Fail("a name key needs text");
-        return calls.MakeName(Utf8ToUtf16(input.text), at, bytes->size()) ? true : Fail(calls.Failure());
-    case PropertyKind::String: {
-        if (!input.text)
-            return Fail("a string key needs text");
-        *text = Utf8ToUtf16(input.text);
-        if (forAdd)
-            return calls.AssignChars(at, text->data(), text->size(), sizeof(char16_t)) ? true : Fail(calls.Failure());
-        // A stand-in pointing at our own characters: compared, never stored.
-        text->push_back(u'\0');
-        Store<const char16_t *>(at, text->data());
-        Store<std::int32_t>(at + 8, static_cast<std::int32_t>(text->size()));
-        Store<std::int32_t>(at + 12, static_cast<std::int32_t>(text->size()));
-        return true;
-    }
-    case PropertyKind::Object:
-    case PropertyKind::Class:
-        if (forAdd && !Assignable(*engine_, key, input.object))
-            return Fail("the object is not live or not of the declared class");
-        Store<Address>(at, input.object);
-        return true;
-    case PropertyKind::Struct: {
-        if (!input.bytes || input.size != bytes->size())
-            return Fail("a struct key needs its whole value");
-        if (!StructChangeAllowed(*engine_, key.inner, at, static_cast<const std::uint8_t *>(input.bytes),
-                                 bytes->size(), 0, &CheckName, &calls))
-            return Fail("a struct key may carry numbers, objects and names, not engine-owned values");
-        std::memcpy(at, input.bytes, bytes->size());
-        if (forAdd && !owned_->Initialize(key, at)) {
-            // Texts made before the failure go back with the rest.
-            const std::string why = owned_->Failure();
-            owned_->Destroy(key, at);
-            return Fail(why);
+        case PropertyKind::Object:
+        case PropertyKind::Class:
+            if (forAdd && !Assignable(*engine_, key, input.object))
+                return Fail("the object is not live or not of the declared class");
+            Store<Address>(at, input.object);
+            return true;
+        case PropertyKind::Struct: {
+            if (!input.bytes || input.size != bytes->size())
+                return Fail("a struct key needs its whole value");
+            const auto *proposed = static_cast<const std::uint8_t *>(input.bytes);
+            // With the engine's own construction and copy, a key may carry strings:
+            // the key stored is the engine's copy of them, never the mod's buffer.
+            PropertyVirtuals &virtuals = owned_->Stores().Virtuals();
+            const bool engineMade = key.arrayDim == 1 && virtuals.ValueOpsReady();
+            if (!StructChangeAllowed(*engine_, key.inner, at, proposed, bytes->size(), 0, &CheckName, &calls,
+                                     engineMade))
+                return Fail(engineMade ? "a struct key may carry numbers, objects, names and strings, not other "
+                                         "engine-owned values"
+                                       : "a struct key may carry numbers, objects and names, not engine-owned values");
+            if (engineMade) {
+                // A stand-in for a lookup is only compared, never stored.
+                if (!forAdd) {
+                    std::memcpy(at, proposed, bytes->size());
+                    return true;
+                }
+                if (virtuals.Initialize(key, at) && virtuals.Copy(key, at, proposed))
+                    return true;
+                owned_->Destroy(key, at);
+                return Fail("the engine could not make the struct key");
+            }
+            std::memcpy(at, proposed, bytes->size());
+            if (forAdd && !owned_->Initialize(key, at)) {
+                // Texts made before the failure go back with the rest.
+                const std::string why = owned_->Failure();
+                owned_->Destroy(key, at);
+                return Fail(why);
+            }
+            return true;
         }
-        return true;
-    }
-    default:
-        return Fail(std::string("a ") + PropertyKindName(key.kind) + " key is not supported");
+        default:
+            return Fail(std::string("a ") + PropertyKindName(key.kind) + " key is not supported");
     }
 }
 
@@ -864,8 +941,7 @@ bool Places::Bind(const PlaceTarget &target, Address object, const char *functio
     if (!calls.MakeWeak(object, weak))
         return Fail(calls.Failure());
     // The function's own FName: exactly what the engine looks the name up by.
-    const std::optional<std::uint64_t> name =
-        engine_->Reader().ReadAs<std::uint64_t>(found + finder.Offsets().name);
+    const std::optional<std::uint64_t> name = engine_->Reader().ReadAs<std::uint64_t>(found + finder.Offsets().name);
     if (!name)
         return Fail("the function's name is unreadable");
     std::memcpy(target.value, weak, sizeof(weak));
