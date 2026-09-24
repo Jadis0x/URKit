@@ -352,9 +352,7 @@ std::string Containers::KeySignature(const PropertyInfo &key) const {
            std::to_string(key.kind == PropertyKind::Struct ? key.inner : 0);
 }
 
-// The engine hashed every element it linked; a stored bucket the engine's own
-// hash does not give means the call is not the one the engine used, and it is
-// dropped for that key type for good.
+// A stored bucket our hash disagrees with drops that hash for the key type.
 void Containers::Check(const SetLayout &layout, std::uint8_t *set) {
     const std::int32_t hashSize = Load<std::int32_t>(set + SetFields::kHashSize);
     if (hashSize <= 1 || !virtuals_.HashReady())
@@ -404,9 +402,7 @@ bool Containers::KeysEqual(const SetLayout &layout, const std::uint8_t *a, const
 
 // --- sets and maps: changes --------------------------------------------------------------
 
-// TSparseArray::AddUninitialized: a free slot if there is one, else a new one.
-// A buffer grows into a larger copy before the old one is freed, so a failure
-// leaves the set as it was, only with more capacity.
+// TSparseArray::AddUninitialized; a failure leaves the set unchanged.
 std::int32_t Containers::AllocateSlot(const SetLayout &layout, std::uint8_t *set) {
     auto *data = Load<std::uint8_t *>(set + SetFields::kData);
     const std::int32_t num = Load<std::int32_t>(set + SetFields::kNum);
@@ -498,9 +494,7 @@ void Containers::LinkInto(const SetLayout &layout, std::uint8_t *set, std::int32
     buckets[bucket] = slot;
 }
 
-// Every element into one bucket. Correct for any key: a lookup hashes to bucket
-// 0 and walks the chain. The engine's next add sees fewer buckets than it wants
-// and rehashes with the real hashes.
+// Every element into bucket 0: valid for any key; the engine rehashes later.
 void Containers::Collapse(const SetLayout &layout, std::uint8_t *set) {
     auto *old = Load<std::uint8_t *>(set + SetFields::kHashSecondary);
     Store<std::uint8_t *>(set + SetFields::kHashSecondary, nullptr);
@@ -543,9 +537,7 @@ std::int32_t Containers::Add(const SetLayout &layout, std::uint8_t *set, std::ui
             return slot;
     }
 
-    // The hash plan (TScriptSparseSet::AddNewElement's ConditionalRehash). A
-    // rebuilt table needs every key's hash, not only the new one's; without
-    // them the set links into one bucket instead.
+    // TScriptSparseSet::AddNewElement's ConditionalRehash.
     const std::int32_t hashSize = Load<std::int32_t>(set + SetFields::kHashSize);
     const std::optional<std::uint32_t> keyHash = KeyHash(layout, key);
     std::int32_t buckets = hashSize;

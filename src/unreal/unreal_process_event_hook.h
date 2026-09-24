@@ -32,15 +32,11 @@ class ProcessEventHook {
     // Runs on the game thread.
     using Work = void (*)(void *user);
 
-    // Runs on the game thread once per engine frame: at the frame boundary once
-    // that is proven (see FrameBoundary), until then after the first reflected
-    // call of the frame. Without a frame counter, frames are paced by time.
+    // Game thread, once per frame.
     using FrameTick = void (*)(void *user);
     static constexpr std::uint64_t kUnclockedFrameMs = 16;
 
-    // The loader's own reflected calls, made while this lives on the calling
-    // thread, pass straight through: no observer, frame tick or posted work runs
-    // in the middle of an operation that has engine memory in flight.
+    // The loader's own calls bypass observers and ticks while alive.
     class PassThrough {
       public:
         PassThrough();
@@ -69,14 +65,8 @@ class ProcessEventHook {
     // frameCounter may be null. Set before or after Install; null tick stops it.
     void SetFrameTick(FrameTick tick, void *user, const volatile std::uint64_t *frameCounter);
 
-    // Called by a hook on an instruction that advances GFrameCounter; site
-    // numbers them. Besides FEngineLoop::Tick's end of frame, the counter is
-    // advanced by a loading screen's own loop, a high-resolution screenshot and
-    // tool code. The boundary is the site that alone advanced the counter over
-    // its last kBoundaryEvidence calls, on one thread: a frame loop. A write
-    // that interleaves with another (a screenshot) never qualifies; a loop that
-    // takes over (a loading screen) does. From then on frames tick there, so a
-    // frame with no reflected call (a quiet menu) still ticks.
+    // GFrameCounter write hooks; the site that alone advances it becomes the
+    // frame boundary (loading screens may take over, screenshots never).
     static constexpr std::size_t kMaxBoundarySites = 16;
     void FrameBoundary(std::size_t site);
     bool FrameBoundaryProven() const { return boundarySite_.load(std::memory_order_acquire) >= 0; }

@@ -1,10 +1,6 @@
 #pragma once
 
-// URK_UnrealPlace: a value inside an object or a call frame, reached by steps
-// (struct member, array element, set/map slot, map key or value) and resolved
-// again on every use, each step bounds-checked against the live value. The
-// operations here are what each kind supports; anything that makes, changes
-// or frees engine memory goes through EngineCalls and needs the game thread.
+// URK_UnrealPlace: a path to a value, resolved and bounds-checked on each use.
 
 #include "mod_sdk.h"
 #include "unreal_enums.h"
@@ -32,18 +28,12 @@ bool Assignable(const UnrealEngine &engine, const PropertyInfo &info, Address va
 // Checks an FName a struct write proposes; null refuses every changed name.
 using NameCheck = bool (*)(void *context, const std::uint8_t *name, std::size_t size);
 
-// Whether proposed may replace current as a value of structObject: numbers
-// change freely, objects must be live and of their class, names only when
-// names confirms them, and anything owning an allocation or not checkable must
-// stay byte-identical. With strings, a string may differ when its characters
-// are readable and terminated: for a value the engine will copy, never adopt.
+// Whether proposed may replace current: owned or unverifiable bytes must match.
 bool StructChangeAllowed(const UnrealEngine &engine, Address structObject, const std::uint8_t *current,
                          const std::uint8_t *proposed, std::size_t size, int depth = 0, NameCheck names = nullptr,
                          void *namesContext = nullptr, bool strings = false);
 
-// Writes into merged (holding the current value) what proposed gives its
-// reflected members, bools by their field mask. A vtable, padding and native-only
-// fields stay as they were: a mod's copy of them is never trusted.
+// Copies only reflected members into merged; native bytes stay.
 void MergeStructMembers(const UnrealEngine &engine, Address structObject, std::uint8_t *merged,
                         const std::uint8_t *proposed, std::size_t size, int depth = 0);
 

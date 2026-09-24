@@ -22,9 +22,7 @@ FunctionRange BodyAt(const FunctionTable &bounds, Address entry) {
     return FunctionRange{.begin = entry, .end = end};
 }
 
-// The target of a write to [rip + disp32] by the forms a compiler emits for
-// `++global`: mov r/m,r (89), add r/m,r (01), xadd (0F C1), mov r/m,imm32
-// (C7 /0), add r/m,imm (81 /0, 83 /0), inc r/m (FF /0). Anything else: none.
+// Target of a `++global`-style write to [rip+disp32], if any.
 std::optional<Address> RipWriteTarget(const std::uint8_t *code, std::size_t length, Address at) {
     std::size_t i = 0;
     while (i < length && (code[i] == 0xF0 || code[i] == 0xF2 || code[i] == 0xF3 || code[i] == 0x2E ||

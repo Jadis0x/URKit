@@ -22,10 +22,7 @@ inline constexpr const char *kTypeDumpMagic = "URKIT-UNREAL-TYPES";
 // maps merge: a Blueprint class exists only while its map is loaded.
 using TypeDumpBlocks = std::map<std::string, std::string>;
 
-// Classes carry no offsets. Structs do: a struct is copied by value into a mod,
-// so its layout is compiled in and verified against the live struct at runtime.
-// Must run on the game thread: the GC does not move under it there.
-// Enums are dumped when enums is given: their names as the running game has them.
+// Structs carry layouts (verified at runtime), classes do not. Game thread.
 TypeDumpBlocks DumpClasses(const ObjectFinder &finder, const StructOffsets &structs, const PropertyChain &chain,
                            const PropertyValues &values, const FunctionOffsets &functions, const TypeQueries &types,
                            const EnumNames *enums = nullptr);

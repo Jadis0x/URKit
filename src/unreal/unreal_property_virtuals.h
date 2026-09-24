@@ -1,21 +1,7 @@
 #pragma once
 
-// FProperty's own virtuals, called on the engine's property objects: the hash
-// and the equality a TSet/TMap key has in the engine (GetValueTypeHashInternal,
-// Identical), as FScriptSetHelper uses them. A container is then linked exactly
-// as the engine links it, for any key, a struct with its own C++ hash included.
-//
-// Only the slot indexes are measured, once, from the parameters of two Kismet
-// functions (an int32 and a byte property). The hash is the one slot whose
-// int32 body is `mov eax,[rdx]; ret` and whose byte body is
-// `movzx eax,byte [rdx]; ret`. Identical is the one slot before it whose bodies
-// compare (sete, no call) and whose probe calls answer as equality must.
-// ClearValue is the one slot after the hash whose bodies store zero
-// (`mov [rdx],0; ret`); DestroyValue follows it (a no-op for numbers), and
-// InitializeValue is the one slot a few past that which zeroes a probe value.
-// CopyValues is the slot before the hash, proven by copying probes. Every
-// FProperty class keeps FProperty's slot order, so the address is read from
-// each property's own vtable at the call.
+// FProperty virtuals (hash, Identical, value ops) as the engine's set helpers
+// use them. Slots are measured once from function bodies and probes.
 
 #include "unreal_property_offsets.h"
 #include "unreal_property_values.h"

@@ -1,8 +1,6 @@
 #pragma once
 
-// Engine globals located from the code that uses them instead of by scanning
-// data. Only the image is read, so candidates exist before the engine builds
-// either global; validating them is the caller's job.
+// Engine globals found from the code that uses them; callers validate.
 
 #include "unreal_module.h"
 
@@ -19,9 +17,7 @@ struct GlobalCandidates {
     bool Empty() const { return objectArrays.empty() && namePools.empty(); }
 };
 
-// GUObjectArray from UObjectBaseInit, which reads the "gc.MaxObjectsInGame"
-// config key; FNamePool from its constructor, which stores "ByteProperty".
-// Both literals are unchanged from UE4.25 to UE5.8 and survive shipping builds.
+// GUObjectArray via "gc.MaxObjectsInGame", FNamePool via "ByteProperty" (4.25-5.8).
 GlobalCandidates FindGlobalCandidates(const MemoryReader &reader, Address moduleBase);
 
 // Functions taking the text's address, directly or via a UE5 log record.

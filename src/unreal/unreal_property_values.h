@@ -143,9 +143,7 @@ struct PropertyInfo {
 
     BoolLayout boolLayout{};
 
-    // Object/Class/Weak/Soft/Lazy: the UClass. Struct: UScriptStruct. Array
-    // and Set: the element property. Map: the key property. Enum: the
-    // underlying numeric property.
+    // Class, struct, element, key or enum underlying property.
     Address inner = kNullAddress;
     // Map: the value property.
     Address valueInner = kNullAddress;

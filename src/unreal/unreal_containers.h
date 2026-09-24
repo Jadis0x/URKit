@@ -1,19 +1,7 @@
 #pragma once
 
-// TArray, TSet and TMap storage changed the way the engine's own templates
-// change it, every buffer taken from and returned to the engine's allocator.
-// A sparse set's element layout is computed with the engine's own rules
-// (FStructBuilder, TScriptSparseSet::GetScriptLayout) and must be found verbatim
-// in the layout the engine stored in the property; a container is checked link
-// by link before it is changed. Keys are hashed and compared by the key
-// property's own virtuals (unreal_property_virtuals), as the engine's script
-// helpers do. Game thread only.
-//
-// Every change is a transaction: whatever can fail (allocating, making or
-// checking values) happens before the container changes, and a failure leaves
-// it as it was. Past that point nothing fails; a replaced buffer is detached
-// first and freed last, so an engine failure there leaks it (noted), never
-// leaves it reachable.
+// TArray/TSet/TMap changes the engine's way, via its allocator. Game thread.
+// Each change is a transaction: a failure leaves the container unchanged.
 
 #include "unreal_engine_calls.h"
 #include "unreal_property_virtuals.h"

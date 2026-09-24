@@ -36,9 +36,7 @@ struct ProcessEventLocation {
     }
 };
 
-// Nothing when no slot qualifies; an unresolved location with rivals listed
-// when more than one does. Slot bodies end where bounds says; a slot it has no
-// entry for ends at the next known function entry instead.
+// Unresolved with rivals listed when more than one slot qualifies.
 std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder, const TypeQueries &types,
                                                      const StructOffsets &structs, const FunctionOffsets &functions,
                                                      std::span<const ScanRegion> codeRegions,

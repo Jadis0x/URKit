@@ -19,10 +19,7 @@ constexpr std::size_t kSamplesPerKind = 4;
 constexpr std::int32_t kMaxObjectsWalked = 0x4000;
 constexpr std::int32_t kMaxChainLength = 0x200;
 
-// A bool describes itself (FBoolProperty::SetBoolSize, same 4.25-5.8): FieldSize
-// is its ElementSize (1 for bool and uint8 bitfields, 4 for uint32 ones), a
-// native bool has ByteOffset 0, ByteMask 1 and FieldMask 0xFF, and a bitfield
-// one bit in both masks at a ByteOffset inside the field.
+// FBoolProperty::SetBoolSize invariants (4.25-5.8).
 bool PlausibleBoolTail(const MemoryReader &reader, const FieldOffsets &fields, Address field, std::int32_t offset) {
     const std::optional<std::uint8_t> fieldSize = reader.ReadAs<std::uint8_t>(field + offset);
     const std::optional<std::uint8_t> byteOffset = reader.ReadAs<std::uint8_t>(field + offset + 1);

@@ -1,8 +1,6 @@
 #pragma once
 
-// What a per-frame game loop needs from the engine, reached through reflection:
-// GFrameCounter via KismetSystemLibrary::GetFrameCount, and the world the game
-// viewport shows via GEngine->GameViewport->World. Same members UE4.25-5.8.
+// GFrameCounter and the viewport world via reflection (4.25-5.8).
 
 #include "unreal_code_anchors.h"
 #include "unreal_functions.h"
@@ -38,11 +36,7 @@ class GameLoop {
     // it does not decode.
     using InstructionLength = Unreal::InstructionLength;
 
-    // The instructions that write GFrameCounter: FEngineLoop::Tick's one
-    // `GFrameCounter++` per frame, on the game thread (UE4.25-5.8). Found by
-    // their rip-relative displacement, then kept only where decoding the
-    // containing function from its .pdata start lands on them exactly, so a
-    // hook placed there is on an instruction boundary.
+    // GFrameCounter writes, kept only on decoded instruction boundaries.
     static std::vector<Address> FindFrameCounterWrites(const MemoryReader &reader, std::span<const ScanRegion> code,
                                                        const FunctionTable &bounds, Address counter,
                                                        InstructionLength length);

@@ -863,9 +863,7 @@ std::int32_t Places::Add(const PlaceTarget &target, const URK_UnrealKey &key, bo
 
 // --- delegates -------------------------------------------------------------------------------------
 
-// UFunction::IsSignatureCompatibleWith, reduced to what a call through the
-// delegate relies on: the same parameters in the same order, of the same kinds
-// and sizes, passed the same way.
+// Reduced UFunction::IsSignatureCompatibleWith.
 bool Places::SignatureCompatible(Address signature, Address function) {
     const PropertyChain &chain = engine_->Chain();
     const auto parameters = [&](Address owner) {

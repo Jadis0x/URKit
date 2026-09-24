@@ -44,9 +44,7 @@ bool AssignableMember(const UnrealEngine &engine, const PropertyInfo &info, Addr
     return (info.kind == PropertyKind::Object || info.kind == PropertyKind::Class) && Assignable(engine, info, value);
 }
 
-// Members resolved per class. A class is the same one while it keeps its name
-// and its package's name: a package name is one asset, so a Blueprint class
-// reloaded at the same address has the same layout.
+// Members per class, keyed by class and package name.
 class MemberCache {
   public:
     std::optional<PropertyInfo> Find(const UnrealEngine &engine, Address classObject, const std::string &member) {

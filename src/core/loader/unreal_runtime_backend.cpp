@@ -209,9 +209,7 @@ std::string MeasuredLayout(URK::Unreal::UnrealEngine &engine) {
     return text;
 }
 
-// Hooks every instruction that advances GFrameCounter, so the game loop ticks
-// once per engine frame even when nothing makes a reflected call.
-// ProcessEventHook picks the one that is the frame loop by watching them.
+// Hooks every GFrameCounter write; ProcessEventHook elects the frame loop.
 std::size_t HookFrameBoundary(URK::Unreal::UnrealEngine &engine, URK::Unreal::Address counter, std::size_t *found) {
     using namespace URK::Unreal;
     *found = 0;

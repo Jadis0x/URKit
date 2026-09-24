@@ -1,11 +1,6 @@
 #pragma once
 
-// What a value owns, and giving it back. Strings, arrays and container storage
-// are FMemory buffers freed through a native call's move assignment; texts drop
-// their reference through the text data's own measured Release; soft references
-// free their path string. Nothing is freed by an address the loader found.
-// Values a reflected call leaves in its frame are the caller's, as for a C++
-// caller of ProcessEvent, and are released here.
+// Releases what a value owns, always through engine code.
 
 #include "unreal_containers.h"
 #include "unreal_engine_calls.h"
@@ -35,10 +30,7 @@ class OwnedValues {
     // engine's empty text).
     bool NeedsInitialize(const PropertyInfo &info, int depth = 0) const;
 
-    // Game thread. One element (elementSize bytes): releases what it owns and
-    // leaves it zeroed. Everything that could refuse is checked first, and a
-    // refused value is left unchanged. Past that check only an engine call can
-    // fail; what it held is then leaked (and noted), never left reachable.
+    // Game thread. Releases and zeroes one element; unchanged when refused.
     bool Destroy(const PropertyInfo &info, std::uint8_t *value, int depth = 0);
     // Game thread. Whether Destroy would release the value; changes nothing.
     bool Releasable(const PropertyInfo &info, const std::uint8_t *value);
@@ -49,9 +41,7 @@ class OwnedValues {
     bool FillNullTexts(const PropertyInfo &info, std::uint8_t *value, bool *made, int depth = 0);
     // Whether the value, or anything it contains, is an FText.
     bool HoldsText(const PropertyInfo &info, int depth = 0) const;
-    // Key equality as the engine's DefaultKeyFuncs has it: numbers by value,
-    // names by comparison index and number, strings case-insensitively, objects
-    // by address, structs member by member.
+    // DefaultKeyFuncs equality; strings ignore case.
     bool Equal(const PropertyInfo &info, const std::uint8_t *a, const std::uint8_t *b, int depth = 0) const;
 
     const std::string &Failure() const { return failure_; }

@@ -131,9 +131,7 @@ bool UnrealSdk_HoldProcessEventHook();
 using LogSink = void (*)(const char *message);
 void UnrealSdk_SetLog(LogSink log);
 
-// Game thread, once per frame: releases engine memory in call frames a mod
-// destroyed on another thread. The first call measures what engine memory
-// operations rely on and logs anything unavailable.
+// Game thread, per frame: releases frames other threads destroyed.
 void UnrealSdk_ReleasePending();
 
 class EnumNames;

@@ -57,10 +57,7 @@ Address RootClass(const ObjectFinder &finder, const TypeQueries &types) {
     return kNullAddress;
 }
 
-// How many slots the vtable at vtable can have. With RTTI the next vtable is
-// preceded by its locator, which is not code, and the walk stops there; without
-// it vtables abut. Every live object's first word is its class's vtable, so the
-// nearest one above is a start this one cannot run past.
+// Upper bound on a vtable: its RTTI locator or the next vtable.
 std::int32_t VtableBound(const ObjectFinder &finder, Address vtable) {
     Address nearest = vtable + static_cast<Address>(kMaxVtableSlots) * sizeof(Address);
     const ObjectArray &objects = finder.Objects();

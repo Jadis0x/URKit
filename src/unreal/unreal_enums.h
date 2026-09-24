@@ -1,11 +1,7 @@
 #pragma once
 
-// A UEnum's names and values as the running game holds them. Where UEnum keeps
-// them moved between versions (a TArray of name/value pairs, then two parallel
-// arrays in UE5.8), so the storage is found by what it holds and accepted only
-// when the engine's own KismetNodeHelperLibrary::GetEnumeratorName agrees with
-// every name it can be asked about. Measuring runs on the game thread; reading
-// afterwards works from any thread.
+// UEnum names and values, storage found by content and checked against
+// GetEnumeratorName. Measure on the game thread.
 
 #include "unreal_engine_calls.h"
 

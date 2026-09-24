@@ -10,9 +10,7 @@
 
 namespace URK::Unreal {
 
-// A leaf function (AddRef is one) has no exception table entry, so this is the
-// most an address can be checked for; what the function does is proven by
-// calling it on a probe.
+// Leaf functions have no .pdata entry; probes prove the rest.
 bool ImageCode(const void *address) {
     MEMORY_BASIC_INFORMATION info{};
     if (!address || VirtualQuery(address, &info, sizeof(info)) != sizeof(info))
@@ -57,10 +55,7 @@ struct InputString {
     std::u16string units;
 };
 
-// IRefCountedObject::GetRefCount/Release return FReturnedRefCountValue, which
-// MSVC hands back through a hidden pointer for a member function; older
-// builds returned uint32 in eax. Passing the pointer serves both: a function
-// that takes none ignores it, one that does returns it.
+// Hidden result pointer (FReturnedRefCountValue); older builds ignore it.
 using CountFn = void *(__fastcall *)(const void *self, std::uint32_t *result);
 using AddRefFn = void(__fastcall *)(const void *self);
 
@@ -152,9 +147,7 @@ bool EngineCalls::Ensure(State &state, NativeCall &call, const char *library, co
     return true;
 }
 
-// FString UKismetStringLibrary::Left(const FString&, int32): for an empty source
-// it returns FString(), which owns nothing. Its move assignment into the return
-// slot frees whatever buffer the slot held, through FMemory.
+// Left("", 0) returns an empty FString; its move assignment frees the slot.
 bool EngineCalls::FreeReady() {
     const bool fresh = leftState_ == State::Unbound;
     if (!Ensure(leftState_, left_, "KismetStringLibrary", "Left",
@@ -353,12 +346,7 @@ bool EngineCalls::MakeEmptyText(std::uint8_t *text) {
     return called && Load<void *>(text) != nullptr;
 }
 
-// FText holds a TRefCountPtr<ITextData> from UE5's later releases: one pointer
-// and flags, 16 bytes. Dropping a reference is ITextData's IRefCountedObject
-// Release - what TRefCountPtr's own destructor calls. The slots are the
-// interface's declaration order (destructor, AddRef, Release, GetRefCount), and
-// are proven on a fresh text before use: GetRefCount must read 1, then 2 after
-// AddRef, then 1 after Release.
+// ITextData's Release slot, proven by GetRefCount reading 1, 2, 1.
 bool EngineCalls::MeasureTextRelease() {
     if (textReleaseState_ != State::Unbound)
         return textReleaseState_ == State::Ready;
@@ -384,9 +372,7 @@ bool EngineCalls::MeasureTextRelease() {
     const std::uint32_t added = CallCount(vtable[3], data);
     if (added != 2)
         return Fail(textReleaseState_, "AddRef left " + std::to_string(added) + " references, not 2");
-    // What Release returns is not evidence: UE deprecates reading it (a release
-    // can be deferred), and UE5.4 returned 0 with one reference left. The count
-    // after it is.
+    // Release's return value is unreliable (5.4 returns 0); the count isn't.
     CallCount(vtable[2], data);
     const std::uint32_t after = CallCount(vtable[3], data);
     if (after != 1)

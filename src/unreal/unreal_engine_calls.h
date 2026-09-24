@@ -1,10 +1,7 @@
 #pragma once
 
-// Engine memory made, changed and freed by the engine itself: native Kismet
-// functions called through ProcessEvent. Each is found by name, its signature
-// checked against what the operation needs, and what it does measured before
-// it is trusted. A measurement that fails disables that operation for good and
-// says why. Everything here runs on the game thread only.
+// Engine memory handled by native Kismet calls, each measured before use.
+// Game thread only.
 
 #include "unreal_functions.h"
 #include "unreal_module.h"
@@ -87,9 +84,7 @@ class EngineCalls {
     // Frees an array's buffer (never its elements) and zeroes the header. If
     // the engine failed after taking the buffer, the header is zeroed anyway.
     bool EmptyArray(std::uint8_t *header);
-    // Replaces a string's characters with count characters of charSize bytes
-    // (a terminator is added): the new buffer is the engine's, the old one is
-    // freed by it. count 0 leaves the string empty.
+    // New engine-owned buffer; the old one is freed by the engine.
     bool AssignChars(std::uint8_t *header, const void *chars, std::size_t count, std::size_t charSize);
 
     // FText. Reads go through the engine's own conversion; assignment puts the

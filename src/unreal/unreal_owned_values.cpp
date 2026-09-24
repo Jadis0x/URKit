@@ -240,10 +240,7 @@ void OwnedValues::Leaked(const std::string &why) {
         leakReason_ = why;
 }
 
-// One walk for both passes, so the check covers exactly what the release does.
-// Checking (apply false) touches nothing and refuses on anything that could
-// fail. Releasing (apply true) runs only after the check passed; an engine call
-// failing then is leaked and counted, the walk goes on, and the value ends zeroed.
+// apply=false only checks; apply=true releases, leaking on engine failure.
 bool OwnedValues::Release(const PropertyInfo &info, std::uint8_t *value, int depth, bool apply) {
     if (depth > kMaxDepth)
         return Fail("a value is nested too deeply");
