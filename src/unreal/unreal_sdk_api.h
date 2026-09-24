@@ -65,6 +65,8 @@ class UnrealEngine {
 
     bool Available() const;
     const EngineVersion &Version() const { return version_; }
+    // Fills a version the resource lacks from engine code.
+    void ResolveVersionFromCode(InstructionLength length);
     // Stable once Available().
     const BootstrapProfile &Profile() const { return profile_; }
 
@@ -76,6 +78,8 @@ class UnrealEngine {
     const PropertyValues &Values() const { return *values_; }
     const TypeQueries &Types() const { return *types_; }
     const StructOffsets &Structs() const { return structs_; }
+    const FieldOffsets &Fields() const { return fields_; }
+    const ClassOffsets &Classes() const { return classes_; }
     const FunctionOffsets &Functions() const { return functions_; }
     // Exact function bounds from the engine image's exception table.
     const FunctionTable &Bounds() const { return functionTable_; }

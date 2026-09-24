@@ -64,6 +64,7 @@ struct InputString {
 using CountFn = void *(__fastcall *)(const void *self, std::uint32_t *result);
 using AddRefFn = void(__fastcall *)(const void *self);
 
+
 std::uint32_t CallCount(void *function, const void *self) {
     alignas(8) std::uint32_t buffer[2] = {0xFFFFFFFFu, 0};
     void *returned = reinterpret_cast<CountFn>(function)(self, buffer);

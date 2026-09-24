@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 namespace URK::Unreal {
@@ -221,6 +222,7 @@ std::string ReadModuleVersionString(const MemoryReader &reader, Address moduleBa
 EngineVersion ParseEngineVersion(const std::string &text) {
     EngineVersion version;
     version.branch = text;
+    version.source = "the version resource";
     if (text.empty())
         return version;
 
@@ -371,6 +373,180 @@ UnrealPresence DetectUnreal(const MemoryReader &reader, std::span<const ModuleCa
     presence.reason = versionText.empty() ? "no version resource and no build-tool layout"
                                           : "version resource carries no engine branch";
     return presence;
+}
+
+namespace {
+
+// A ModRM/SIB memory operand at code[at].
+struct Operand {
+    int base = -1; // -1: none, 16: rip
+    int index = -1;
+    int scale = 0;
+    std::int64_t displacement = 0;
+    std::size_t end = 0;
+    int reg = 0;
+};
+
+constexpr int kRip = 16;
+
+std::optional<Operand> MemoryOperand(const std::uint8_t *code, std::size_t size, std::size_t at, std::uint8_t rex) {
+    if (at >= size)
+        return std::nullopt;
+    const std::uint8_t modrm = code[at];
+    const int mod = modrm >> 6;
+    const int rm = modrm & 7;
+    if (mod == 3)
+        return std::nullopt;
+    Operand operand;
+    operand.reg = (modrm >> 3) & 7;
+    operand.base = rm | ((rex & 1) << 3);
+    std::size_t next = at + 1;
+    if (rm == 4) {
+        if (next >= size)
+            return std::nullopt;
+        const std::uint8_t sib = code[next++];
+        const int index = ((sib >> 3) & 7) | ((rex & 2) << 2);
+        operand.index = index == 4 ? -1 : index;
+        operand.scale = sib >> 6;
+        operand.base = (sib & 7) | ((rex & 1) << 3);
+        if ((sib & 7) == 5 && mod == 0)
+            operand.base = -1;
+    } else if (rm == 5 && mod == 0) {
+        operand.base = kRip;
+    }
+    const std::size_t bytes = mod == 1 ? 1 : (mod == 2 || operand.base == kRip || operand.base == -1) ? 4 : 0;
+    if (next + bytes > size)
+        return std::nullopt;
+    if (bytes == 1) {
+        operand.displacement = static_cast<std::int8_t>(code[next]);
+    } else if (bytes == 4) {
+        std::int32_t displacement = 0;
+        std::memcpy(&displacement, code + next, sizeof(displacement));
+        operand.displacement = displacement;
+    }
+    operand.end = next + bytes;
+    return operand;
+}
+
+// `mov r/m32, imm32` or `mov r/m32, r32` (after 0x66: 16 bits) at code[at].
+struct Store {
+    Operand target;
+    std::optional<std::uint32_t> immediate;
+    std::size_t end = 0;
+
+    // Absolute for rip, else the raw displacement.
+    std::int64_t Where(Address codeBase) const {
+        return target.base == kRip ? static_cast<std::int64_t>(codeBase + end) + target.displacement
+                                   : target.displacement;
+    }
+    bool SameBase(const Store &other) const {
+        return target.base == other.target.base && target.index == other.target.index &&
+               target.scale == other.target.scale;
+    }
+};
+
+std::optional<Store> DecodeStore(const std::uint8_t *code, std::size_t size, std::size_t at, bool sixteen) {
+    std::size_t next = at;
+    if (sixteen) {
+        if (next >= size || code[next] != 0x66)
+            return std::nullopt;
+        ++next;
+    }
+    std::uint8_t rex = 0;
+    if (next < size && (code[next] & 0xF0) == 0x40)
+        rex = code[next++];
+    if (next >= size || (code[next] != 0xC7 && code[next] != 0x89))
+        return std::nullopt;
+    const bool immediate = code[next++] == 0xC7;
+    const std::optional<Operand> operand = MemoryOperand(code, size, next, rex);
+    if (!operand || (immediate && operand->reg != 0))
+        return std::nullopt;
+    Store store;
+    store.target = *operand;
+    store.end = operand->end;
+    if (immediate) {
+        const std::size_t width = sixteen ? 2 : 4;
+        if (store.end + width > size)
+            return std::nullopt;
+        std::uint32_t value = 0;
+        std::memcpy(&value, code + store.end, width);
+        store.immediate = value;
+        store.end += width;
+    }
+    return store;
+}
+
+constexpr std::uint8_t kMaxMinor = 30;
+// REX + opcode + ModRM + SIB + disp32 + imm32.
+constexpr std::size_t kLongestStore = 12;
+constexpr int kChangelistWithin = 4;
+constexpr std::size_t kChunk = std::size_t{1} << 20;
+
+} // namespace
+
+EngineVersion FindVersionInCode(const MemoryReader &reader, std::span<const ScanRegion> code,
+                                InstructionLength length) {
+    EngineVersion found;
+    std::vector<std::uint8_t> buffer;
+    // Chunks overlap by a few instructions, so a store is never cut in two.
+    constexpr std::size_t kOverlap = kLongestStore * (kChangelistWithin + 3);
+    for (const ScanRegion &region : code) {
+        for (std::uint64_t offset = 0; offset < region.size; offset += kChunk) {
+            const auto take =
+                static_cast<std::size_t>(std::min<std::uint64_t>(kChunk + kOverlap, region.size - offset));
+            const Address base = region.start + offset;
+            buffer.resize(take);
+            if (!reader.Read(base, buffer.data(), take))
+                continue;
+            const std::uint8_t *bytes = buffer.data();
+            const std::size_t scanEnd = std::min(take, kChunk);
+            for (std::size_t p = 2; p + 4 <= scanEnd; ++p) {
+                // Major (4 or 5) and a minor, 16 bits each.
+                if ((bytes[p] != 4 && bytes[p] != 5) || bytes[p + 1] != 0 || bytes[p + 2] == 0 ||
+                    bytes[p + 2] > kMaxMinor || bytes[p + 3] != 0)
+                    continue;
+                for (std::size_t start = p > kLongestStore ? p - kLongestStore : 0; start + 2 <= p; ++start) {
+                    const std::optional<Store> version = DecodeStore(bytes, take, start, false);
+                    if (!version || !version->immediate || version->end != p + 4)
+                        continue;
+                    const std::int64_t at = version->Where(base);
+                    // FEngineVersionBase is 4-byte aligned.
+                    if (version->target.base != kRip && at % 4 != 0)
+                        continue;
+                    const std::optional<Store> patch = DecodeStore(bytes, take, version->end, true);
+                    if (!patch || !patch->SameBase(*version) || patch->Where(base) != at + 4 ||
+                        (patch->immediate && *patch->immediate > kMaxMinor))
+                        continue;
+                    bool changelist = false;
+                    std::size_t next = patch->end;
+                    for (int step = 0; step < kChangelistWithin && next < take; ++step) {
+                        const std::optional<Store> store = DecodeStore(bytes, take, next, false);
+                        if (store && store->SameBase(*version) && store->Where(base) == at + 8) {
+                            changelist = true;
+                            break;
+                        }
+                        const std::size_t size = length ? length(bytes + next, take - next) : 0;
+                        if (size == 0)
+                            break;
+                        next += size;
+                    }
+                    if (!changelist)
+                        continue;
+                    const std::int32_t major = bytes[p];
+                    const std::int32_t minor = bytes[p + 2];
+                    if (found.Known() && (found.major != major || found.minor != minor))
+                        return {};
+                    found.major = major;
+                    found.minor = minor;
+                    if (patch->immediate)
+                        found.patch = std::max(found.patch, static_cast<std::int32_t>(*patch->immediate));
+                    found.source = "FEngineVersion's constructor in code";
+                    break;
+                }
+            }
+        }
+    }
+    return found;
 }
 
 } // namespace URK::Unreal

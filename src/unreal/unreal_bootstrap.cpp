@@ -250,6 +250,7 @@ std::optional<Runtime> PairCandidates(const MemoryReader &reader, std::span<cons
             if (!names)
                 continue;
             names->CalibrateBlockOffsetBits(objects, header.name);
+            names->CalibrateNameLayout(objects, header.name, header.outer);
 
             const std::int32_t confirmed = ConfirmNames(objects, *names, header);
             if (confirmed == 0)

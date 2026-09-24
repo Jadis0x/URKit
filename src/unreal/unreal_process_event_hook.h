@@ -80,6 +80,16 @@ class ProcessEventHook {
     static constexpr std::size_t kMaxBoundarySites = 16;
     void FrameBoundary(std::size_t site);
     bool FrameBoundaryProven() const { return boundarySite_.load(std::memory_order_acquire) >= 0; }
+    // The elected site, -1 before one is.
+    std::int32_t ElectedBoundary() const { return boundarySite_.load(std::memory_order_acquire); }
+
+    // Innermost ProcessEvent call on this thread, or null.
+    struct Call {
+        Address object = kNullAddress;
+        Address function = kNullAddress;
+        void *parms = nullptr;
+    };
+    static const Call *CurrentCall();
 
     // Fails when the queue is full or no game thread is known yet.
     bool Post(Work work, void *user);

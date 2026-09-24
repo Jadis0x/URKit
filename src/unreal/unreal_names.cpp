@@ -197,6 +197,31 @@ void NameTable::CalibrateBlockOffsetBits(const ObjectArray &objects, std::int32_
     }
 }
 
+void NameTable::CalibrateNameLayout(const ObjectArray &objects, std::int32_t nameOffset, std::int32_t outerOffset) {
+    constexpr std::int32_t kSamples = 4096;
+    const std::int32_t room = outerOffset > nameOffset ? outerOffset - nameOffset : 8;
+    std::int32_t sampled = 0;
+    std::int32_t repeated = 0;
+    const std::int32_t total = objects.Num();
+    for (std::int32_t index = 0; index < total && sampled < kSamples; ++index) {
+        const Address object = objects.ObjectAt(index);
+        if (object == kNullAddress)
+            continue;
+        const std::optional<std::uint32_t> comparison = reader_->ReadUInt32(object + nameOffset);
+        const std::optional<std::uint32_t> second = reader_->ReadUInt32(object + nameOffset + 4);
+        if (!comparison || !second || *comparison == 0)
+            continue;
+        ++sampled;
+        repeated += *second == *comparison ? 1 : 0;
+    }
+    // A display index almost always equals the comparison index.
+    if (sampled == 0 || repeated * 10 < sampled * 9)
+        return;
+    layout_.displayIndexOffset = 4;
+    layout_.numberOffset = room >= 12 ? 8 : kOffsetNotFound;
+    layout_.size = room >= 12 ? 12 : 8;
+}
+
 std::optional<std::string> NameTable::ReadFromPool(std::uint32_t comparisonIndex, int depth) const {
     if (depth > kMaxNumberedDepth)
         return std::nullopt;
@@ -263,7 +288,9 @@ std::optional<std::string> NameTable::ReadFName(Address fname) const {
     if (!name)
         return std::nullopt;
 
-    const std::optional<std::int32_t> number = reader_->ReadInt32(fname + sizeof(std::int32_t));
+    if (layout_.numberOffset == kOffsetNotFound)
+        return name;
+    const std::optional<std::int32_t> number = reader_->ReadInt32(fname + layout_.numberOffset);
     if (number && *number > 0)
         name->append("_").append(std::to_string(*number - 1));
     return name;

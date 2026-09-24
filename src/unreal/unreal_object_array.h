@@ -63,6 +63,8 @@ class ObjectArray {
 
     const MemoryReader &Reader() const { return *reader_; }
     const ObjectArrayLayout &Layout() const { return layout_; }
+    // GUObjectArray's ObjObjects.
+    Address BaseAddress() const { return address_; }
 
     std::int32_t Num() const;
 

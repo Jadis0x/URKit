@@ -23,8 +23,12 @@ struct NamePoolLayout {
     std::int32_t blockOffsetBits = 0xE;
 };
 
+// FName: ComparisonIndex, [DisplayIndex], [Number].
 struct NameLayout {
     NamePoolLayout pool{};
+    std::int32_t displayIndexOffset = kOffsetNotFound;
+    std::int32_t numberOffset = 4;
+    std::int32_t size = 8;
 };
 
 class NameTable {
@@ -37,6 +41,9 @@ class NameTable {
 
     // Raises blockOffsetBits until every object's name lands in a real block.
     void CalibrateBlockOffsetBits(const ObjectArray &objects, std::int32_t nameOffset);
+
+    // Detects DisplayIndex and Number from object names.
+    void CalibrateNameLayout(const ObjectArray &objects, std::int32_t nameOffset, std::int32_t outerOffset);
 
     std::optional<std::string> Read(std::uint32_t comparisonIndex) const;
 

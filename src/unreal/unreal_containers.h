@@ -66,12 +66,9 @@ class Containers {
   public:
     Containers(const ObjectFinder &finder, const PropertyChain &chain, const PropertyValues &values,
                EngineCalls &engine, OwnedValues &owned)
-        : finder_(&finder), values_(&values), engine_(&engine), owned_(&owned), virtuals_(finder, chain, values) {
-    }
+        : finder_(&finder), values_(&values), engine_(&engine), owned_(&owned), virtuals_(finder, chain, values) {}
 
-    const std::string &Failure() const {
-        return failure_;
-    }
+    const std::string &Failure() const { return failure_; }
 
     // --- TArray (and a multicast delegate's invocation list) ---
     // count default elements before index; all made, or none.
@@ -100,9 +97,7 @@ class Containers {
     void FreeStorage(std::uint8_t *set);
     static bool HoldsStorage(const std::uint8_t *set);
 
-    PropertyVirtuals &Virtuals() {
-        return virtuals_;
-    }
+    PropertyVirtuals &Virtuals() { return virtuals_; }
 
   private:
     struct KeyRecord {

@@ -2,11 +2,14 @@
 #include "unreal_enums.h"
 #include "unreal_owned_values.h"
 #include "unreal_places.h"
+#include "unreal_object_life_hook.h"
+#include "unreal_script_hook.h"
 
 #include <windows.h>
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <set>
@@ -145,9 +148,7 @@ std::optional<ResolvedMember> Resolve(UnrealEngine &engine, Address object, cons
 
 // --- availability / version ---------------------------------------------
 
-int Unreal_IsAvailable() {
-    return UnrealEngine::Instance().EnsureBootstrapped() ? 1 : 0;
-}
+int Unreal_IsAvailable() { return UnrealEngine::Instance().EnsureBootstrapped() ? 1 : 0; }
 
 void Unreal_EngineVersion(std::int32_t *major, std::int32_t *minor, std::int32_t *patch) {
     const EngineVersion &version = UnrealEngine::Instance().Version();
@@ -159,9 +160,7 @@ void Unreal_EngineVersion(std::int32_t *major, std::int32_t *minor, std::int32_t
         *patch = version.patch;
 }
 
-int Unreal_UsesFieldProperties() {
-    return UnrealEngine::Instance().Version().UsesFieldProperties() ? 1 : 0;
-}
+int Unreal_UsesFieldProperties() { return UnrealEngine::Instance().Version().UsesFieldProperties() ? 1 : 0; }
 
 // --- object lookup --------------------------------------------------------
 
@@ -362,10 +361,10 @@ std::int32_t Unreal_StructSize(URK_UnrealObject structObject) {
         return 0;
     // GetStructureSize(): what a member of this type occupies.
     const std::int32_t size = engine.Reader().ReadInt32(structObject + structs.propertiesSize).value_or(0);
-    const std::int32_t alignment =
-        structs.minAlignment == kOffsetNotFound
-            ? 1
-            : engine.Reader().ReadAs<std::int16_t>(structObject + structs.minAlignment).value_or(1);
+    const std::int32_t alignment = structs.minAlignment == kOffsetNotFound
+                                       ? 1
+                                       : engine.Reader().ReadAs<std::int16_t>(structObject + structs.minAlignment)
+                                             .value_or(1);
     if (size <= 0 || alignment <= 0)
         return size > 0 ? size : 0;
     return (size + alignment - 1) / alignment * alignment;
@@ -425,8 +424,7 @@ struct Services {
         : calls(engine.Finder(), engine.Chain(), engine.Values(), engine.Functions(), engine.Types(), engine.Structs(),
                 engine.ProcessEvent(), engine.Bounds()),
           owned(engine.Finder(), engine.Chain(), engine.Values(), engine.Types(), calls),
-          enums(engine.Finder(), engine.Structs()), places(engine, owned, enums) {
-    }
+          enums(engine.Finder(), engine.Structs()), places(engine, owned, enums) {}
     EngineCalls calls;
     OwnedValues owned;
     EnumNames enums;
@@ -474,8 +472,7 @@ bool OnGameThread() {
 // engine memory the loader must give back.
 struct LoaderFrame {
     explicit LoaderFrame(FunctionInfo info)
-        : frame(std::move(info)), engineOwned(frame.Function().parameters.size(), 0) {
-    }
+        : frame(std::move(info)), engineOwned(frame.Function().parameters.size(), 0) {}
     CallFrame frame;
     // Made through a place, or written by a call.
     std::vector<char> engineOwned;
@@ -484,12 +481,8 @@ struct LoaderFrame {
     bool called = false;
 };
 
-LoaderFrame *FrameOf(URK_UnrealCallFrame *frame) {
-    return reinterpret_cast<LoaderFrame *>(frame);
-}
-const LoaderFrame *FrameOf(const URK_UnrealCallFrame *frame) {
-    return reinterpret_cast<const LoaderFrame *>(frame);
-}
+LoaderFrame *FrameOf(URK_UnrealCallFrame *frame) { return reinterpret_cast<LoaderFrame *>(frame); }
+const LoaderFrame *FrameOf(const URK_UnrealCallFrame *frame) { return reinterpret_cast<const LoaderFrame *>(frame); }
 
 // Engine flag value (EPropertyFlags).
 constexpr std::uint64_t kPropertyFlagConstParm = 0x2;
@@ -581,8 +574,8 @@ URK_UnrealCallFrame *Unreal_CallFrameCreate(URK_UnrealObject function) {
 
 void Unreal_CallFrameDestroy(URK_UnrealCallFrame *frame) {
     std::unique_ptr<LoaderFrame> loaderFrame(FrameOf(frame));
-    if (!loaderFrame || std::find(loaderFrame->engineOwned.begin(), loaderFrame->engineOwned.end(), 1) ==
-                            loaderFrame->engineOwned.end())
+    if (!loaderFrame ||
+        std::find(loaderFrame->engineOwned.begin(), loaderFrame->engineOwned.end(), 1) == loaderFrame->engineOwned.end())
         return;
     if (OnGameThread() && !t_releasing) {
         t_releasing = true;
@@ -640,7 +633,8 @@ int Unreal_CallFrameSet(URK_UnrealCallFrame *frame, const char *parameterName, c
     return callFrame->Set(parameterName, value, size) ? 1 : 0;
 }
 
-int Unreal_CallFrameGet(const URK_UnrealCallFrame *frame, const char *parameterName, void *output, std::size_t size) {
+int Unreal_CallFrameGet(const URK_UnrealCallFrame *frame, const char *parameterName, void *output,
+                        std::size_t size) {
     if (!frame || !parameterName)
         return 0;
     return FrameOf(frame)->frame.Get(parameterName, output, size) ? 1 : 0;
@@ -786,8 +780,7 @@ int Unreal_PlaceReadInteger(const URK_UnrealPlace *place, std::int64_t *output) 
 }
 
 int Unreal_PlaceWriteInteger(const URK_UnrealPlace *place, std::int64_t value) {
-    return Changed(place,
-                   [&](Places &places, const PlaceTarget &target) { return places.WriteInteger(target, value); });
+    return Changed(place, [&](Places &places, const PlaceTarget &target) { return places.WriteInteger(target, value); });
 }
 
 int Unreal_PlaceReadFloating(const URK_UnrealPlace *place, double *output) {
@@ -810,8 +803,7 @@ int Unreal_PlaceReadBool(const URK_UnrealPlace *place, int *output) {
 }
 
 int Unreal_PlaceWriteBool(const URK_UnrealPlace *place, int value) {
-    return Changed(place,
-                   [&](Places &places, const PlaceTarget &target) { return places.WriteBool(target, value != 0); });
+    return Changed(place, [&](Places &places, const PlaceTarget &target) { return places.WriteBool(target, value != 0); });
 }
 
 URK_UnrealObject Unreal_PlaceReadObject(const URK_UnrealPlace *place) {
@@ -844,8 +836,9 @@ int Unreal_PlaceReadText(const URK_UnrealPlace *place, char *output, std::size_t
 
 int Unreal_PlaceWriteText(const URK_UnrealPlace *place, const char *utf8) {
     const bool gameThread = OnGameThread();
-    return Changed(
-        place, [&](Places &places, const PlaceTarget &target) { return places.WriteText(target, utf8, gameThread); });
+    return Changed(place, [&](Places &places, const PlaceTarget &target) {
+        return places.WriteText(target, utf8, gameThread);
+    });
 }
 
 int Unreal_PlaceReadBytes(const URK_UnrealPlace *place, void *output, std::size_t size) {
@@ -997,9 +990,7 @@ int Unreal_HookInstall() {
     return 1;
 }
 
-int Unreal_HookInstalled() {
-    return ProcessEventHook::Instance().Installed() ? 1 : 0;
-}
+int Unreal_HookInstalled() { return ProcessEventHook::Instance().Installed() ? 1 : 0; }
 
 int Unreal_HookRemove() {
     std::lock_guard lock(g_hookMutex);
@@ -1029,9 +1020,81 @@ void Unreal_ProcessEventObserve(URK_UnrealProcessEventObserverFn observer, void 
     ProcessEventHook::Instance().Observe(observer ? &ObserverTrampoline : nullptr, nullptr);
 }
 
-std::uint32_t Unreal_GameThreadId() {
-    return ProcessEventHook::Instance().GameThreadId();
+// The Blueprint call observer: bool and int differ here too.
+std::atomic<URK_UnrealScriptCallObserverFn> g_scriptObserverFn{nullptr};
+std::atomic<void *> g_scriptObserverUser{nullptr};
+std::mutex g_scriptHookMutex;
+
+void ScriptObserverTrampoline(void *, Address object, Address function, void *locals, void *result, bool after) {
+    if (const URK_UnrealScriptCallObserverFn fn = g_scriptObserverFn.load(std::memory_order_acquire))
+        fn(g_scriptObserverUser.load(std::memory_order_acquire), object, function, locals, result, after ? 1 : 0);
 }
+
+int Unreal_ScriptCallObserve(URK_UnrealScriptCallObserverFn observer, void *userData) {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    ScriptCallHook &hook = ScriptCallHook::Instance();
+    if (observer && !hook.Installed()) {
+        std::lock_guard lock(g_scriptHookMutex);
+        if (!engine.EnsureBootstrapped() || !g_installer.Valid())
+            return 0;
+        std::vector<ScanRegion> code;
+        for (const Address module : engine.Presence().runtimeModules) {
+            const std::vector<ScanRegion> regions = ModuleCodeRegions(engine.Reader(), module);
+            code.insert(code.end(), regions.begin(), regions.end());
+        }
+        if (!hook.Install(engine.Finder(), engine.Types(), engine.Functions(), engine.Bounds(), code, g_installer)) {
+            Report(kNullAddress, "Blueprint calls cannot be observed: " + hook.Failure());
+            return 0;
+        }
+        char where[128];
+        std::snprintf(where, sizeof(where), "Blueprint call hooks at ProcessInternal %p and ProcessLocalScriptFunction %p",
+                      reinterpret_cast<void *>(hook.ProcessInternal()),
+                      reinterpret_cast<void *>(hook.ProcessLocalScriptFunction()));
+        Report(kNullAddress, where);
+    }
+    if (!observer && hook.Installed())
+        Report(kNullAddress, "Blueprint call observer cleared: " + std::to_string(hook.InternalCalls()) +
+                                 " calls through ProcessInternal, " + std::to_string(hook.LocalCalls()) +
+                                 " through ProcessLocalScriptFunction, frame layout " +
+                                 (hook.NodeOffset() >= 0 ? "measured" : "not measured: " + hook.MeasureState()));
+    g_scriptObserverUser.store(userData, std::memory_order_release);
+    g_scriptObserverFn.store(observer, std::memory_order_release);
+    hook.Observe(observer ? &ScriptObserverTrampoline : nullptr, nullptr);
+    return hook.Installed() ? 1 : 0;
+}
+
+std::atomic<URK_UnrealObjectLifeObserverFn> g_lifeObserverFn{nullptr};
+std::atomic<void *> g_lifeObserverUser{nullptr};
+
+void LifeObserverTrampoline(void *, Address object, bool created) {
+    if (const URK_UnrealObjectLifeObserverFn fn = g_lifeObserverFn.load(std::memory_order_acquire))
+        fn(g_lifeObserverUser.load(std::memory_order_acquire), object, created ? 1 : 0);
+}
+
+int Unreal_ObjectLifeObserve(URK_UnrealObjectLifeObserverFn observer, void *userData) {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    ObjectLifeHook &hook = ObjectLifeHook::Instance();
+    if (observer && !hook.Installed()) {
+        std::lock_guard lock(g_scriptHookMutex);
+        if (!engine.EnsureBootstrapped() || !g_installer.Valid())
+            return 0;
+        if (!hook.Install(engine.Reader(), engine.Presence().runtimeModules, engine.Bounds(), engine.Finder().Objects(),
+                          engine.Finder().Offsets().index, g_installer)) {
+            Report(kNullAddress, "objects cannot be followed: " + hook.Failure());
+            return 0;
+        }
+        char where[128];
+        std::snprintf(where, sizeof(where), "object life hooks at AllocateUObjectIndex %p and FreeUObjectIndex %p",
+                      reinterpret_cast<void *>(hook.Allocate()), reinterpret_cast<void *>(hook.Free()));
+        Report(kNullAddress, where);
+    }
+    g_lifeObserverUser.store(userData, std::memory_order_release);
+    g_lifeObserverFn.store(observer, std::memory_order_release);
+    hook.Observe(observer ? &LifeObserverTrampoline : nullptr, nullptr);
+    return hook.Installed() ? 1 : 0;
+}
+
+std::uint32_t Unreal_GameThreadId() { return ProcessEventHook::Instance().GameThreadId(); }
 
 int Unreal_PostToGameThread(URK_UnrealPostedWorkFn work, void *userData) {
     if (!work)
@@ -1115,6 +1178,8 @@ URK_UnrealApi BuildTable() {
     api.enum_entry = &Unreal_EnumEntry;
     api.enum_value = &Unreal_EnumValue;
     api.enum_name = &Unreal_EnumName;
+    api.script_call_observe = &Unreal_ScriptCallObserve;
+    api.object_life_observe = &Unreal_ObjectLifeObserve;
 
     return api;
 }
@@ -1235,11 +1300,27 @@ bool UnrealEngine::EnsureBootstrapped() {
     functions_ = FindFunctionOffsets(*finder_, structs_, fields_, tail_, codeRegions);
     profile_.functionsMs = lap();
     processEvent_ = FindProcessEvent(*finder_, *types_, structs_, functions_, codeRegions, functionTable_)
-                        .value_or(ProcessEventLocation{});
+                       .value_or(ProcessEventLocation{});
     profile_.processEventMs = lap();
 
     available_.store(true, std::memory_order_release);
     return true;
+}
+
+void UnrealEngine::ResolveVersionFromCode(InstructionLength length) {
+    if (!Available() || version_.Known())
+        return;
+    std::vector<ScanRegion> code;
+    for (const Address module : Presence().runtimeModules) {
+        const std::vector<ScanRegion> regions = ModuleCodeRegions(memory_, module);
+        code.insert(code.end(), regions.begin(), regions.end());
+    }
+    EngineVersion found = FindVersionInCode(memory_, code, length);
+    if (!found.Known())
+        return;
+    found.branch = version_.branch;
+    found.changelist = version_.changelist;
+    version_ = std::move(found);
 }
 
 const UnrealPresence &UnrealEngine::Presence() {
@@ -1268,13 +1349,9 @@ const UnrealPresence &UnrealEngine::Presence() {
     return *presence_;
 }
 
-bool UnrealEngine::RuledOut() const {
-    return ruledOut_.load(std::memory_order_acquire);
-}
+bool UnrealEngine::RuledOut() const { return ruledOut_.load(std::memory_order_acquire); }
 
-bool UnrealEngine::Available() const {
-    return available_.load(std::memory_order_acquire);
-}
+bool UnrealEngine::Available() const { return available_.load(std::memory_order_acquire); }
 
 const URK_UnrealApi *UnrealSdkApi(const HookInstaller &installer) {
     static const URK_UnrealApi table = BuildTable();
@@ -1282,9 +1359,7 @@ const URK_UnrealApi *UnrealSdkApi(const HookInstaller &installer) {
     return &table;
 }
 
-void UnrealSdk_SetLog(LogSink log) {
-    g_log.store(log, std::memory_order_release);
-}
+void UnrealSdk_SetLog(LogSink log) { g_log.store(log, std::memory_order_release); }
 
 void UnrealSdk_ReleasePending() {
     if (!UnrealEngine::Instance().Available() || !OnGameThread())
@@ -1308,9 +1383,7 @@ void UnrealSdk_ReleasePending() {
     ReleasePending();
 }
 
-const EnumNames *UnrealSdk_Enums() {
-    return Enums();
-}
+const EnumNames *UnrealSdk_Enums() { return Enums(); }
 
 bool UnrealSdk_HoldProcessEventHook() {
     std::lock_guard lock(g_hookMutex);

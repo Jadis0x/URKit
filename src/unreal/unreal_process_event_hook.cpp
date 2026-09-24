@@ -21,7 +21,26 @@ struct DepthGuard {
 
 std::uint32_t CurrentThread() { return static_cast<std::uint32_t>(GetCurrentThreadId()); }
 
+thread_local ProcessEventHook::Call g_current;
+thread_local bool g_inCall = false;
+
+// The call in progress on this thread, the outer one back when it returns.
+struct CurrentScope {
+    CurrentScope(void *object, void *function, void *parms) : saved(g_current), savedIn(g_inCall) {
+        g_current = {reinterpret_cast<Address>(object), reinterpret_cast<Address>(function), parms};
+        g_inCall = true;
+    }
+    ~CurrentScope() {
+        g_current = saved;
+        g_inCall = savedIn;
+    }
+    ProcessEventHook::Call saved;
+    bool savedIn;
+};
+
 } // namespace
+
+const ProcessEventHook::Call *ProcessEventHook::CurrentCall() { return g_inCall ? &g_current : nullptr; }
 
 ProcessEventHook &ProcessEventHook::Instance() {
     static ProcessEventHook hook;
@@ -245,6 +264,7 @@ void ProcessEventHook::Dispatch(ProcessEventFn original, void *object, void *fun
     const DepthGuard depth;
     if (!depth.Outermost()) {
         // Reentrant: pass through rather than run posted work mid-call.
+        const CurrentScope current(object, function, parms);
         if (original)
             original(object, function, parms);
         return;
@@ -259,6 +279,7 @@ void ProcessEventHook::Dispatch(ProcessEventFn original, void *object, void *fun
                            reinterpret_cast<Address>(function), parms);
 
     if (proceed) {
+        const CurrentScope current(object, function, parms);
         if (original)
             original(object, function, parms);
     } else {

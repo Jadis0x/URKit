@@ -262,6 +262,69 @@ GlobalCandidates FindGlobalCandidates(const MemoryReader &reader, Address module
     return candidates;
 }
 
+std::vector<std::size_t> AddressTakenCounts(const MemoryReader &reader, std::span<const ScanRegion> code,
+                                            const std::vector<Address> &targets) {
+    std::vector<std::size_t> counts(targets.size(), 0);
+    for (const auto &[site, which] : LeaReferences(reader, code, targets))
+        ++counts[which];
+    return counts;
+}
+
+std::vector<Address> FunctionsReferencingText(const MemoryReader &reader, Address moduleBase,
+                                              const FunctionTable &functions, std::string_view text) {
+    const std::vector<ScanRegion> code = ModuleCodeRegions(reader, moduleBase);
+    const std::vector<ScanRegion> constants = ModuleConstantRegions(reader, moduleBase);
+    if (code.empty() || constants.empty() || functions.Empty() || text.empty())
+        return {};
+    std::vector<std::uint8_t> ascii(text.begin(), text.end());
+    std::vector<std::uint8_t> wide;
+    for (const char c : text) {
+        wide.push_back(static_cast<std::uint8_t>(c));
+        wide.push_back(0);
+    }
+    std::vector<Address> targets = FindLiteral(reader, constants, wide, 2);
+    const std::vector<Address> narrow = FindLiteral(reader, constants, ascii, 1);
+    targets.insert(targets.end(), narrow.begin(), narrow.end());
+    if (targets.empty())
+        return {};
+    // A record holding the literal's address: the code takes the record's.
+    std::vector<ScanRegion> records = constants;
+    const std::vector<ScanRegion> data = ModuleDataRegions(reader, moduleBase);
+    records.insert(records.end(), data.begin(), data.end());
+    const std::vector<Address> literals = targets;
+    ForEachChunk(reader, records, [&](Address base, const std::uint8_t *bytes, std::size_t size, std::size_t owned) {
+        for (std::size_t i = (8 - base % 8) % 8; i < owned && i + 8 <= size; i += 8) {
+            Address value = 0;
+            std::memcpy(&value, bytes + i, sizeof(value));
+            if (std::find(literals.begin(), literals.end(), value) != literals.end())
+                targets.push_back(base + i);
+        }
+    });
+    std::vector<Address> owners;
+    for (const auto &[site, which] : LeaReferences(reader, code, targets)) {
+        const Address owner = functions.PrimaryBegin(site);
+        if (owner != kNullAddress && std::find(owners.begin(), owners.end(), owner) == owners.end())
+            owners.push_back(owner);
+    }
+    return owners;
+}
+
+Address FindEngineLoopTick(const MemoryReader &reader, Address moduleBase, const FunctionTable &functions) {
+    std::vector<Address> tick = FunctionsReferencingText(reader, moduleBase, functions, "r.OneFrameThreadLag");
+    const std::vector<Address> benchmarking =
+        FunctionsReferencingText(reader, moduleBase, functions, "FEngineLoop::Tick.Benchmarking");
+    tick.insert(tick.end(), benchmarking.begin(), benchmarking.end());
+    Address found = kNullAddress;
+    for (const Address owner : FunctionsReferencingText(reader, moduleBase, functions, "t.IdleWhenNotForeground")) {
+        if (std::find(tick.begin(), tick.end(), owner) == tick.end())
+            continue;
+        if (found != kNullAddress && found != owner)
+            return kNullAddress;
+        found = owner;
+    }
+    return found;
+}
+
 std::vector<Address> GlobalReferences(const MemoryReader &reader, const FunctionRange &range,
                                       std::span<const ScanRegion> writable) {
     return DataReferences(reader, range, writable);

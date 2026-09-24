@@ -13,9 +13,7 @@ template <typename T> T Load(const std::uint8_t *at) {
     return value;
 }
 
-template <typename T> void Store(std::uint8_t *at, T value) {
-    std::memcpy(at, &value, sizeof(T));
-}
+template <typename T> void Store(std::uint8_t *at, T value) { std::memcpy(at, &value, sizeof(T)); }
 
 constexpr std::int32_t kIndexNone = -1;
 // Elements of one container checked against the engine's hash per validation.
@@ -35,9 +33,7 @@ struct StructBuilder {
         alignment = std::max(alignment, align);
         return at;
     }
-    std::int32_t Size() const {
-        return Align(end, alignment);
-    }
+    std::int32_t Size() const { return Align(end, alignment); }
 };
 
 std::uint32_t RoundUpToPowerOfTwo(std::uint32_t value) {
@@ -89,8 +85,8 @@ bool Containers::ArrayInsert(const PropertyInfo &inner, std::uint8_t *array, std
     if (num + count > max) {
         // TArray's growth leaves slack; any capacity the allocation holds is valid.
         const std::int32_t wanted = std::max(num + count, num + num / 2 + 4);
-        const std::optional<EngineCalls::Block> block =
-            engine_->Allocate(static_cast<std::size_t>(wanted) * width, static_cast<std::size_t>(alignment));
+        const std::optional<EngineCalls::Block> block = engine_->Allocate(static_cast<std::size_t>(wanted) * width,
+                                                                          static_cast<std::size_t>(alignment));
         if (!block)
             return Fail(engine_->Failure());
         // Elements are trivially relocatable: TArray moves them bytewise too.
@@ -115,8 +111,7 @@ bool Containers::ArrayInsert(const PropertyInfo &inner, std::uint8_t *array, std
         return Fail(why);
     }
     if (index < num)
-        std::rotate(data + static_cast<std::size_t>(index) * width, fresh,
-                    fresh + static_cast<std::size_t>(count) * width);
+        std::rotate(data + static_cast<std::size_t>(index) * width, fresh, fresh + static_cast<std::size_t>(count) * width);
     Store<std::int32_t>(array + 8, num + count);
     return true;
 }
@@ -293,15 +288,15 @@ bool Containers::Validate(const SetLayout &layout, const std::uint8_t *constSet)
         return Fail("the set's element array is not readable");
     if (numBits != num || maxBits < numBits || (!bitsSecondary && numBits > SetFields::kBitsInlineWords * 32))
         return Fail("the set's allocation flags disagree with its elements");
-    if (bitsSecondary &&
-        !reader.Readable(reinterpret_cast<Address>(bitsSecondary), static_cast<std::size_t>((numBits + 31) / 32) * 4))
+    if (bitsSecondary && !reader.Readable(reinterpret_cast<Address>(bitsSecondary),
+                                          static_cast<std::size_t>((numBits + 31) / 32) * 4))
         return Fail("the set's allocation flags are not readable");
     if (numFree < 0 || numFree > num)
         return Fail("the set's free list count is out of range");
     if (hashSize < 0 || (hashSize & (hashSize - 1)) != 0 || (hashSize > 1) != (hashSecondary != nullptr))
         return Fail("the set's hash is inconsistent");
-    if (hashSecondary &&
-        !reader.Readable(reinterpret_cast<Address>(hashSecondary), static_cast<std::size_t>(hashSize) * 4))
+    if (hashSecondary && !reader.Readable(reinterpret_cast<Address>(hashSecondary),
+                                          static_cast<std::size_t>(hashSize) * 4))
         return Fail("the set's hash is not readable");
 
     const std::uint8_t *bits = Bits(set);
@@ -455,8 +450,8 @@ std::int32_t Containers::AllocateSlot(const SetLayout &layout, std::uint8_t *set
         }
         if (num + 1 > max) {
             const std::int32_t wanted = std::max(num + 1, num + num / 2 + 4);
-            const std::optional<EngineCalls::Block> block = engine_->Allocate(
-                static_cast<std::size_t>(wanted) * stride, static_cast<std::size_t>(layout.alignment));
+            const std::optional<EngineCalls::Block> block =
+                engine_->Allocate(static_cast<std::size_t>(wanted) * stride, static_cast<std::size_t>(layout.alignment));
             if (!block) {
                 Fail(engine_->Failure());
                 return kIndexNone;

@@ -11,6 +11,7 @@
 #include "platform_paths.h"
 #include "runtime_events.h"
 #include "safetyhook_backend.h"
+#include "unreal_code_anchors.h"
 #include "unreal_game_loop.h"
 #include "unreal_process_memory.h"
 #include "unreal_sdk_api.h"
@@ -19,6 +20,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -54,6 +56,9 @@ struct GameLoopState {
     DWORD thread = 0;
     bool dumpTypes = false;
     bool boundaryNoted = false;
+    // Tick's counter write, found by strings: cross-checks the elected site.
+    std::int32_t tickSite = -1;
+    bool tickFound = false;
 };
 GameLoopState g_gameLoop;
 
@@ -97,6 +102,14 @@ void OnGameFrame(void *) {
     if (!g_gameLoop.boundaryNoted && ProcessEventHook::Instance().FrameBoundaryProven()) {
         g_gameLoop.boundaryNoted = true;
         Log("[Unreal] frames now tick at the engine's frame boundary (GFrameCounter), game thread %lu.", thread);
+        const std::int32_t elected = ProcessEventHook::Instance().ElectedBoundary();
+        if (!g_gameLoop.tickFound)
+            Log("[Unreal] the frame boundary (site %d) is not cross-checked: FEngineLoop::Tick was not found.", elected);
+        else if (elected == g_gameLoop.tickSite)
+            Log("[Unreal] the frame boundary (site %d) is FEngineLoop::Tick's counter write, found both ways.", elected);
+        else
+            Log("[Unreal][WARNING] the elected frame boundary (site %d) is not FEngineLoop::Tick's write (site %d).",
+                elected, g_gameLoop.tickSite);
     }
 
     const WorldState world = g_gameLoop.loop->CurrentWorld();
@@ -139,6 +152,63 @@ void OnFrameBoundary(URK_HookRegisters *, void *site) {
     URK::Unreal::ProcessEventHook::Instance().FrameBoundary(reinterpret_cast<std::uintptr_t>(site));
 }
 
+// Measured offsets under UE4SS table names, for check-layout.py.
+std::string MeasuredLayout(URK::Unreal::UnrealEngine &engine) {
+    using namespace URK::Unreal;
+    std::string text;
+    const auto add = [&text](const char *name, std::int32_t offset) {
+        char item[96];
+        if (offset == kOffsetNotFound)
+            std::snprintf(item, sizeof(item), " %s=?", name);
+        else
+            std::snprintf(item, sizeof(item), " %s=0x%X", name, static_cast<unsigned>(offset));
+        text += item;
+    };
+    const ObjectOffsets &object = engine.Finder().Offsets();
+    add("UObjectBase.ObjectFlags", object.flags);
+    add("UObjectBase.InternalIndex", object.index);
+    add("UObjectBase.ClassPrivate", object.classPointer);
+    add("UObjectBase.NamePrivate", object.name);
+    add("UObjectBase.OuterPrivate", object.outer);
+    const ObjectItemLayout &item = engine.Finder().Objects().Layout().item;
+    add("FUObjectItem.Object", item.pointerOffset);
+    add("FUObjectItem.UEP_TotalSize", item.stride);
+    const StructOffsets &structs = engine.Structs();
+    add("UField.Next", structs.fieldNext);
+    add("UStruct.SuperStruct", structs.superStruct);
+    add("UStruct.Children", structs.children);
+    add("UStruct.PropertiesSize", structs.propertiesSize);
+    add("UStruct.MinAlignment", structs.minAlignment);
+    add("UClass.ClassCastFlags", structs.castFlags);
+    add("UClass.ClassDefaultObject", engine.Classes().classDefaultObject);
+    const FieldOffsets &fields = engine.Fields();
+    add("UStruct.ChildProperties", fields.childProperties);
+    add("FField.ClassPrivate", fields.fieldClass);
+    add("FField.Next", fields.fieldNext);
+    add("FField.NamePrivate", fields.fieldName);
+    add("FFieldClass.CastFlags", fields.fieldClassCastFlags);
+    add("FProperty.ArrayDim", fields.arrayDim);
+    add("FProperty.ElementSize", fields.elementSize);
+    add("FProperty.PropertyFlags", fields.propertyFlags);
+    add("FProperty.Offset_Internal", fields.offsetInternal);
+    const PropertyTailOffsets &tail = engine.Values().Tail();
+    add("FProperty.UEP_TotalSize", tail.tail);
+    add("FArrayProperty.Inner", tail.arrayInner);
+    add("FSetProperty.ElementProp", tail.setElement);
+    add("FMapProperty.KeyProp", tail.mapKey);
+    add("FMapProperty.ValueProp", tail.mapValue);
+    add("FEnumProperty.Enum", tail.enumPropertyEnum);
+    const FunctionOffsets &functions = engine.Functions();
+    add("UFunction.FunctionFlags", functions.functionFlags);
+    add("UFunction.NumParms", functions.numParms);
+    add("UFunction.ParmsSize", functions.parmsSize);
+    add("UFunction.ReturnValueOffset", functions.returnValueOffset);
+    add("UFunction.Func", functions.func);
+    const ProcessEventLocation &processEvent = engine.ProcessEvent();
+    add("vtable:UObject.ProcessEvent", processEvent.Resolved() ? processEvent.vtableIndex : kOffsetNotFound);
+    return text;
+}
+
 // Hooks every instruction that advances GFrameCounter, so the game loop ticks
 // once per engine frame even when nothing makes a reflected call.
 // ProcessEventHook picks the one that is the frame loop by watching them.
@@ -155,6 +225,16 @@ std::size_t HookFrameBoundary(URK::Unreal::UnrealEngine &engine, URK::Unreal::Ad
     const std::vector<Address> writes = GameLoop::FindFrameCounterWrites(engine.Reader(), code, engine.Bounds(),
                                                                          counter, &SafetyHookBackend_InstructionLength);
     *found = writes.size();
+    for (const Address module : engine.Presence().runtimeModules) {
+        const Address tick = FindEngineLoopTick(engine.Reader(), module, engine.Bounds());
+        if (tick == kNullAddress)
+            continue;
+        g_gameLoop.tickFound = true;
+        for (std::size_t i = 0; i < writes.size(); ++i) {
+            if (engine.Bounds().PrimaryBegin(writes[i]) == tick)
+                g_gameLoop.tickSite = static_cast<std::int32_t>(i);
+        }
+    }
     std::size_t hooked = 0;
     for (std::size_t i = 0; i < writes.size() && i < ProcessEventHook::kMaxBoundarySites; ++i) {
         URK_MidHookOptions options{};
@@ -255,9 +335,12 @@ bool RunUnreal(Config &config) {
         profile.anchorMs, profile.anchoredArrays, profile.anchoredPools, profile.locateMs, profile.indexMs,
         profile.offsetsMs, profile.functionsMs, profile.processEventMs, engine.Reader().Queries());
 
+    const ULONGLONG versionStarted = GetTickCount64();
+    engine.ResolveVersionFromCode(&SafetyHookBackend_InstructionLength);
     const EngineVersion &version = engine.Version();
     const ProcessEventLocation &processEvent = engine.ProcessEvent();
-    Log("[Unreal] engine=%d.%d.%d branch='%s' processEventSlot=%d.", version.major, version.minor, version.patch,
+    Log("[Unreal] engine=%d.%d.%d (from %s, %llums) branch='%s' processEventSlot=%d.", version.major, version.minor,
+        version.patch, version.Known() ? version.source.c_str() : "nowhere", GetTickCount64() - versionStarted,
         version.branch.c_str(), processEvent.Resolved() ? processEvent.vtableIndex : -1);
     const PropertyTailOffsets &tail = engine.Values().Tail();
     Log("[Unreal] property tail=0x%X arrayInner=0x%X setElement=0x%X mapKey=0x%X mapValue=0x%X enum=0x%X.", tail.tail,
@@ -265,6 +348,11 @@ bool RunUnreal(Config &config) {
     if (!tail.Resolved())
         Log("[Unreal][WARNING] property tail unresolved: %s; containers, structs and object classes are unavailable.",
             tail.failure.c_str());
+    Log("[Unreal] layout:%s.", MeasuredLayout(engine).c_str());
+    const NameLayout &names = engine.Finder().Names().Layout();
+    Log("[Unreal] FName: %d bytes, display index %s, number %s.", names.size,
+        names.displayIndexOffset == kOffsetNotFound ? "none" : "at +4",
+        names.numberOffset == kOffsetNotFound ? "kept in the name pool" : (names.numberOffset == 8 ? "at +8" : "at +4"));
     IntroStage(kIntroRuntimeReady, "Unreal reflection ready");
 
     if (config.safeMode) {

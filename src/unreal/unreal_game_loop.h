@@ -36,7 +36,7 @@ class GameLoop {
 
     // The host's decoder: the length of the instruction code starts with, 0 if
     // it does not decode.
-    using InstructionLength = std::size_t (*)(const std::uint8_t *code, std::size_t available);
+    using InstructionLength = Unreal::InstructionLength;
 
     // The instructions that write GFrameCounter: FEngineLoop::Tick's one
     // `GFrameCounter++` per frame, on the game thread (UE4.25-5.8). Found by

@@ -33,8 +33,7 @@ class ObjectFinder;
 class PropertyVirtuals {
   public:
     PropertyVirtuals(const ObjectFinder &finder, const PropertyChain &chain, const PropertyValues &values)
-        : finder_(&finder), chain_(&chain), values_(&values) {
-    }
+        : finder_(&finder), chain_(&chain), values_(&values) {}
 
     // Measured on first use; false (with Failure) when the slot was not proven.
     bool HashReady();

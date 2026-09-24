@@ -81,6 +81,8 @@ set(URK_UNREAL_SRC
     ${URK_SRC_DIR}/unreal/unreal_engine_calls.cpp
     ${URK_SRC_DIR}/unreal/unreal_containers.cpp
     ${URK_SRC_DIR}/unreal/unreal_property_virtuals.cpp
+    ${URK_SRC_DIR}/unreal/unreal_script_hook.cpp
+    ${URK_SRC_DIR}/unreal/unreal_object_life_hook.cpp
     ${URK_SRC_DIR}/unreal/unreal_enums.cpp
     ${URK_SRC_DIR}/unreal/unreal_places.cpp
     ${URK_SRC_DIR}/unreal/unreal_module.cpp
@@ -292,6 +294,8 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/unreal/unreal_engine_calls.h
     ${URK_SRC_DIR}/unreal/unreal_containers.h
     ${URK_SRC_DIR}/unreal/unreal_property_virtuals.h
+    ${URK_SRC_DIR}/unreal/unreal_script_hook.h
+    ${URK_SRC_DIR}/unreal/unreal_object_life_hook.h
     ${URK_SRC_DIR}/unreal/unreal_enums.h
     ${URK_SRC_DIR}/unreal/unreal_places.h
     ${URK_SRC_DIR}/unreal/unreal_text.h

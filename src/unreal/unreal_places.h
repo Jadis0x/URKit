@@ -50,12 +50,9 @@ void MergeStructMembers(const UnrealEngine &engine, Address structObject, std::u
 class Places {
   public:
     Places(UnrealEngine &engine, OwnedValues &owned, EnumNames &enums)
-        : engine_(&engine), owned_(&owned), enums_(&enums) {
-    }
+        : engine_(&engine), owned_(&owned), enums_(&enums) {}
 
-    const std::string &Failure() const {
-        return failure_;
-    }
+    const std::string &Failure() const { return failure_; }
 
     std::optional<PlaceTarget> Walk(std::uint8_t *root, const PropertyInfo &rootInfo, const URK_UnrealStep *steps,
                                     std::uint32_t count, bool describe);

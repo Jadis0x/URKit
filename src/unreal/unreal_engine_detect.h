@@ -4,6 +4,7 @@
 // directory layout. A claim, not proof; also picks which modules to scan.
 
 #include "unreal_memory.h"
+#include "unreal_module.h"
 
 #include <cstdint>
 #include <span>
@@ -19,6 +20,8 @@ struct EngineVersion {
     std::uint64_t changelist = 0;
     // Verbatim, for logs and for branches this cannot parse.
     std::string branch;
+    // Where the numbers came from, for logs.
+    std::string source;
 
     bool Known() const { return major > 0; }
 
@@ -71,6 +74,10 @@ std::string ReadModuleVersionString(const MemoryReader &reader, Address moduleBa
 // Handles "++UE5+Release-5.8-CL-56702186" and "5.3.2-29314046+++UE5+Release-5.3";
 // anything else stays in branch with nothing claimed.
 EngineVersion ParseEngineVersion(const std::string &text);
+
+// From FEngineVersion's constructor stores, for custom branches. X.0 is never
+// claimed: `mov dword [x], 5` is too common.
+EngineVersion FindVersionInCode(const MemoryReader &reader, std::span<const ScanRegion> code, InstructionLength length);
 
 // The caller supplies the module list: enumerating differs in-process vs out.
 UnrealPresence DetectUnreal(const MemoryReader &reader, std::span<const ModuleCandidate> modules);

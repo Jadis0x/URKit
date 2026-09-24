@@ -12,7 +12,7 @@ extern "C" {
 #define URK_IL2CPP_API_VERSION 7
 #define URK_NETWORK_API_VERSION 1
 #define URK_HOOK_API_VERSION 1
-#define URK_UNREAL_API_VERSION 3
+#define URK_UNREAL_API_VERSION 4
 
 #define URK_SCENE_NAME_MAX 128
 #define URK_OBJECT_NAME_MAX 128
@@ -830,6 +830,16 @@ typedef struct URK_UnrealCallFrame URK_UnrealCallFrame;
  * sees it. Do as little as this signature allows: anything heavier belongs on
  * a callback registered through unreal_post_to_game_thread instead.
  */
+/* Every Blueprint call, including script-to-script ones ProcessEvent misses.
+ * Called before (after=0) and after (after=1) the body on the calling thread;
+ * locals starts with the parameters. Hot path: return quickly. */
+typedef void (*URK_UnrealScriptCallObserverFn)(void *user_data, URK_UnrealObject object, URK_UnrealObject function,
+                                               void *locals, void *result, int after);
+
+/* An object getting (created=1, before its constructors) or losing (created=0,
+ * after its destructors) its object array slot. Any thread; record the handle only. */
+typedef void (*URK_UnrealObjectLifeObserverFn)(void *user_data, URK_UnrealObject object, int created);
+
 typedef int (*URK_UnrealProcessEventObserverFn)(void *user_data, URK_UnrealObject object, URK_UnrealObject function,
                                                 void *parms);
 
@@ -1150,6 +1160,12 @@ typedef struct URK_UnrealApi {
     /* By name, with or without the "Enum::" prefix. */
     int (*enum_value)(URK_UnrealObject enum_object, const char *name, int64_t *value);
     int (*enum_name)(URK_UnrealObject enum_object, int64_t value, char *output, size_t output_size);
+
+    /* Version 4 */
+    /* One observer; NULL clears. Nonzero when the script hooks are in. */
+    int (*script_call_observe)(URK_UnrealScriptCallObserverFn observer, void *user_data);
+    /* One observer; NULL clears. Nonzero when the object array hooks are in. */
+    int (*object_life_observe)(URK_UnrealObjectLifeObserverFn observer, void *user_data);
 } URK_UnrealApi;
 
 #ifdef __cplusplus

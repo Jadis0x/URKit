@@ -26,6 +26,9 @@ struct ModuleSection {
 };
 
 // A span of mapped memory to search. Sections are the only source today.
+// Length of the instruction at code (Zydis in the loader); 0 when undecodable.
+using InstructionLength = std::size_t (*)(const std::uint8_t *code, std::size_t available);
+
 struct ScanRegion {
     Address start = kNullAddress;
     std::uint64_t size = 0;
