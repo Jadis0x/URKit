@@ -146,16 +146,19 @@ std::int64_t ReadNumber(const std::string &text, std::size_t &at) {
     return value;
 }
 
-// Engine module names in a split build; editor and modular games both prefix them.
-bool LooksLikeEngineModule(const std::string &lowered, const char *suffix) {
-    if (!Contains(lowered, suffix))
-        return false;
-    return StartsWith(lowered, "unrealeditor-") || StartsWith(lowered, "ue4editor-") ||
-           StartsWith(lowered, "ue5editor-") || StartsWith(lowered, "unrealgame-") ||
-           Contains(lowered, "-core.dll") || Contains(lowered, "-coreuobject.dll");
+// "<Target>-Core.dll" in a split build: the module name whole, so CoreMessaging is not Core.
+bool LooksLikeEngineModule(const std::string &lowered, const char *module) {
+    const std::size_t dash = lowered.rfind('-');
+    return dash != std::string::npos && lowered.compare(dash + 1, std::string::npos, std::string(module) + ".dll") == 0;
 }
 
 } // namespace
+
+bool IsEngineCoreModule(const std::string &name) {
+    const std::string lowered = Lowered(name);
+    return LooksLikeEngineModule(lowered, "core") || LooksLikeEngineModule(lowered, "coreuobject") ||
+           LooksLikeEngineModule(lowered, "engine");
+}
 
 std::string ReadModuleVersionString(const MemoryReader &reader, Address moduleBase) {
     if (moduleBase == kNullAddress)
@@ -315,12 +318,15 @@ UnrealPresence DetectUnreal(const MemoryReader &reader, std::span<const ModuleCa
     // so both have to be scanned.
     Address core = kNullAddress;
     Address coreUObject = kNullAddress;
+    Address engine = kNullAddress;
     for (const ModuleCandidate &module : modules) {
         const std::string lowered = Lowered(module.name);
         if (coreUObject == kNullAddress && LooksLikeEngineModule(lowered, "coreuobject"))
             coreUObject = module.base;
         else if (core == kNullAddress && LooksLikeEngineModule(lowered, "core"))
             core = module.base;
+        else if (engine == kNullAddress && LooksLikeEngineModule(lowered, "engine"))
+            engine = module.base;
     }
 
     if (coreUObject != kNullAddress) {
@@ -329,6 +335,11 @@ UnrealPresence DetectUnreal(const MemoryReader &reader, std::span<const ModuleCa
         presence.runtimeModules.push_back(coreUObject);
         if (core != kNullAddress)
             presence.runtimeModules.push_back(core);
+        // Engine holds UEngine and the gameplay classes; the exe links Launch (FEngineLoop::Tick).
+        if (engine != kNullAddress)
+            presence.runtimeModules.push_back(engine);
+        if (modules.front().base != coreUObject && modules.front().base != core)
+            presence.runtimeModules.push_back(modules.front().base);
         presence.version = ParseEngineVersion(ReadModuleVersionString(reader, coreUObject));
         presence.reason = "engine modules loaded";
         return presence;

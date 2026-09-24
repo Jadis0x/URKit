@@ -52,6 +52,8 @@ class UnrealEngine {
     // with them it is a fallback for anchors that validate nothing.
     static constexpr std::uint64_t kScanRetryMs = 2000;
     static constexpr std::uint64_t kScanFallbackMs = 10000;
+    // Too early in startup ProcessEvent may not pin down yet; retried this long.
+    static constexpr std::uint64_t kProcessEventGraceMs = 10000;
 
     // Version resource and module layout only, no scan. Cached; the answer
     // cannot change while the process lives.
@@ -86,6 +88,7 @@ class UnrealEngine {
 
     const ProcessEventLocation &ProcessEvent() const { return processEvent_; }
     bool ProcessEventResolved() const { return processEvent_.Resolved(); }
+    const std::string &ProcessEventFailure() const { return processEventFailure_; }
 
   private:
     UnrealEngine() = default;
@@ -94,6 +97,8 @@ class UnrealEngine {
     // Only for a process that can never be Unreal, not for "not ready yet".
     std::atomic<bool> ruledOut_{false};
     std::atomic<std::uint64_t> lastAttemptMs_{0};
+    // First attempt that found everything but ProcessEvent.
+    std::uint64_t processEventMissingSinceMs_ = 0;
     std::atomic<const char *> failure_{""};
     std::mutex bootstrapMutex_;
     std::mutex presenceMutex_;
@@ -116,6 +121,7 @@ class UnrealEngine {
     std::unique_ptr<PropertyValues> values_;
     std::unique_ptr<TypeQueries> types_;
     ProcessEventLocation processEvent_{};
+    std::string processEventFailure_;
     BootstrapProfile profile_{};
 };
 

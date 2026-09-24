@@ -1,5 +1,6 @@
 #include "unreal_type_queries.h"
 
+#include <optional>
 #include <string>
 
 namespace URK::Unreal {
@@ -85,10 +86,130 @@ std::int32_t FindClassDefaultObjectOffset(const ObjectFinder &finder, const Stru
     return kOffsetNotFound;
 }
 
+namespace {
+
+struct ImplementedInterface {
+    Address interfaceClass = kNullAddress;
+    std::int32_t pointerOffset = 0;
+    bool byK2 = false;
+};
+constexpr std::int32_t kImplementedInterfaceSize = 16;
+constexpr std::int32_t kMaxInterfaces = 64;
+constexpr std::int32_t kMaxInterfacesOffset = 0x400;
+
+bool DerivesFrom(const ObjectFinder &finder, const StructOffsets &structs, Address type, Address base) {
+    for (std::int32_t depth = 0; type != kNullAddress && depth < kMaxDepth; ++depth) {
+        if (type == base)
+            return true;
+        type = finder.Reader().ReadPointer(type + structs.superStruct).value_or(kNullAddress);
+    }
+    return false;
+}
+
+// The TArray at offset read as interfaces; nothing when any entry is not one.
+std::optional<std::vector<ImplementedInterface>> ReadInterfaces(const ObjectFinder &finder,
+                                                                const StructOffsets &structs, Address classObject,
+                                                                std::int32_t offset, Address interfaceBase) {
+    const MemoryReader &reader = finder.Reader();
+    const std::optional<Address> data = reader.ReadPointer(classObject + offset);
+    const std::optional<std::int32_t> num = reader.ReadInt32(classObject + offset + 8);
+    const std::optional<std::int32_t> max = reader.ReadInt32(classObject + offset + 12);
+    if (!data || !num || !max || *num < 0 || *num > kMaxInterfaces || *max < *num || (*num > 0 && *data == kNullAddress))
+        return std::nullopt;
+    std::vector<ImplementedInterface> found;
+    for (std::int32_t i = 0; i < *num; ++i) {
+        const Address at = *data + static_cast<Address>(i) * kImplementedInterfaceSize;
+        const std::optional<Address> type = reader.ReadPointer(at);
+        const std::optional<std::int32_t> pointerOffset = reader.ReadInt32(at + 8);
+        const std::optional<std::uint8_t> byK2 = reader.ReadAs<std::uint8_t>(at + 12);
+        if (!type || !pointerOffset || !byK2 || *byK2 > 1 || *pointerOffset < 0 || *pointerOffset > 0x100000 ||
+            *type == interfaceBase || !ObjectIs(finder, structs, *type, kCastFlagClass) ||
+            !DerivesFrom(finder, structs, *type, interfaceBase))
+            return std::nullopt;
+        found.push_back({*type, *pointerOffset, *byK2 != 0});
+    }
+    return found;
+}
+
+// Classes that implement a native interface natively in every build.
+std::int32_t FindInterfacesOffset(const ObjectFinder &finder, const StructOffsets &structs) {
+    const Address interfaceBase = finder.Find("Interface");
+    if (structs.superStruct == kOffsetNotFound || interfaceBase == kNullAddress ||
+        !ObjectIs(finder, structs, interfaceBase, kCastFlagClass))
+        return kOffsetNotFound;
+    std::vector<Address> samples;
+    for (const char *name : {"Pawn", "PrimitiveComponent", "ActorComponent", "PlayerController", "Actor", "Object"}) {
+        const Address type = finder.Find(name);
+        if (type != kNullAddress && ObjectIs(finder, structs, type, kCastFlagClass))
+            samples.push_back(type);
+    }
+    std::int32_t found = kOffsetNotFound;
+    for (std::int32_t offset = structs.superStruct + 8; offset <= kMaxInterfacesOffset; offset += 8) {
+        std::size_t implemented = 0;
+        bool consistent = true;
+        for (const Address type : samples) {
+            const auto interfaces = ReadInterfaces(finder, structs, type, offset, interfaceBase);
+            if (!interfaces) {
+                consistent = false;
+                break;
+            }
+            for (const ImplementedInterface &entry : *interfaces)
+                implemented += !entry.byK2 && entry.pointerOffset > 0 ? 1 : 0;
+        }
+        if (!consistent || implemented < 2)
+            continue;
+        if (found != kOffsetNotFound)
+            return kOffsetNotFound;
+        found = offset;
+    }
+    return found;
+}
+
+} // namespace
+
 ClassOffsets FindClassOffsets(const ObjectFinder &finder, const StructOffsets &structs) {
     ClassOffsets offsets;
     offsets.classDefaultObject = FindClassDefaultObjectOffset(finder, structs);
+    offsets.interfaces = FindInterfacesOffset(finder, structs);
     return offsets;
+}
+
+std::optional<Address> TypeQueries::InterfaceAddress(Address object, Address interfaceClass) const {
+    const Address interfaceBase = finder_->Find("Interface");
+    if (object == kNullAddress || interfaceClass == kNullAddress || classes_.interfaces == kOffsetNotFound ||
+        !IsChildOf(interfaceClass, interfaceBase))
+        return std::nullopt;
+    // UInterface itself: any object, no address (GetInterfaceAddress returns null).
+    if (interfaceClass == interfaceBase)
+        return kNullAddress;
+    // A Blueprint interface lives in a game package; the address is the object's.
+    Address package = interfaceClass;
+    for (std::int32_t depth = 0; depth < kMaxDepth; ++depth) {
+        const Address outer = finder_->OuterOf(package);
+        if (outer == kNullAddress)
+            break;
+        package = outer;
+    }
+    const std::optional<std::string> packageName = finder_->NameOf(package);
+    const bool native = packageName && packageName->rfind("/Script/", 0) == 0;
+    bool implemented = false;
+    for (Address type = finder_->ClassOf(object); type != kNullAddress; type = SuperOf(type)) {
+        const auto interfaces = ReadInterfaces(*finder_, structs_, type, classes_.interfaces, interfaceBase);
+        if (!interfaces)
+            return std::nullopt;
+        for (const ImplementedInterface &entry : *interfaces) {
+            if (!IsChildOf(entry.interfaceClass, interfaceClass))
+                continue;
+            if (!native)
+                return object;
+            if (!entry.byK2)
+                return object + static_cast<Address>(entry.pointerOffset);
+            implemented = true;
+        }
+    }
+    if (implemented)
+        return kNullAddress;
+    return std::nullopt;
 }
 
 Address TypeQueries::SuperOf(Address structObject) const {

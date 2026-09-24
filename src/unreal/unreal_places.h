@@ -3,6 +3,7 @@
 // URK_UnrealPlace: a path to a value, resolved and bounds-checked on each use.
 
 #include "mod_sdk.h"
+#include "unreal_delegate_virtuals.h"
 #include "unreal_enums.h"
 #include "unreal_owned_values.h"
 #include "unreal_sdk_api.h"
@@ -20,6 +21,8 @@ struct PlaceTarget {
     // A set element or map key, or inside one: its hash places it, so it is
     // replaced by removing and adding, never changed where it is.
     bool key = false;
+    // The object the root member belongs to; null for a frame parameter.
+    Address owner = kNullAddress;
 };
 
 // What an object slot may hold: native code and the GC trust it blindly.
@@ -40,12 +43,13 @@ void MergeStructMembers(const UnrealEngine &engine, Address structObject, std::u
 class Places {
   public:
     Places(UnrealEngine &engine, OwnedValues &owned, EnumNames &enums)
-        : engine_(&engine), owned_(&owned), enums_(&enums) {}
+        : engine_(&engine), owned_(&owned), enums_(&enums),
+          delegates_(engine.Finder(), engine.Chain(), engine.Values(), owned) {}
 
     const std::string &Failure() const { return failure_; }
 
     std::optional<PlaceTarget> Walk(std::uint8_t *root, const PropertyInfo &rootInfo, const URK_UnrealStep *steps,
-                                    std::uint32_t count, bool describe);
+                                    std::uint32_t count, bool describe, bool gameThread = false);
 
     // gameThread: whether the caller is on the engine's game thread. Anything
     // needing an engine call fails without it.
@@ -62,7 +66,7 @@ class Places {
     bool ReadBytes(const PlaceTarget &target, void *output, std::size_t size);
     bool WriteBytes(const PlaceTarget &target, const void *value, std::size_t size, bool gameThread);
 
-    std::int32_t Count(const PlaceTarget &target);
+    std::int32_t Count(const PlaceTarget &target, bool gameThread = false);
     std::int32_t Slots(const PlaceTarget &target, std::int32_t *output, std::int32_t capacity);
     bool Insert(const PlaceTarget &target, std::int32_t index, std::int32_t count, bool gameThread);
     bool Remove(const PlaceTarget &target, std::int32_t index, std::int32_t count, bool gameThread);
@@ -81,10 +85,15 @@ class Places {
     bool BuildKey(const PropertyInfo &key, const URK_UnrealKey &input, bool forAdd, std::vector<std::uint8_t> *bytes,
                   std::u16string *text);
     bool SignatureCompatible(Address signature, Address function);
+    // An FScriptDelegate for object's function, checked against signature.
+    bool MakeDelegate(Address signature, Address object, const char *function, std::uint8_t *delegate);
+    // A sparse delegate's bindings list in engine storage; null when unbound.
+    const std::uint8_t *SparseList(const PlaceTarget &target, bool gameThread);
 
     UnrealEngine *engine_;
     OwnedValues *owned_;
     EnumNames *enums_;
+    DelegateVirtuals delegates_;
     // Per thread: reads run off the game thread too.
     inline static thread_local std::string failure_;
 };

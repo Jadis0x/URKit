@@ -347,6 +347,58 @@ bool EngineCalls::MakeEmptyText(std::uint8_t *text) {
 }
 
 // ITextData's Release slot, proven by GetRefCount reading 1, 2, 1.
+namespace {
+
+// TSharedRef's reference controller (UE4): vtable (DestroyObject, deleting
+// destructor), then the shared and weak counts.
+constexpr std::size_t kSharedCount = 8;
+constexpr std::size_t kWeakCount = 12;
+using DestroyObjectFn = void(__fastcall *)(void *controller);
+using DeletingDestructorFn = void *(__fastcall *)(void *controller, unsigned flags);
+
+std::int32_t Count32(const std::uint8_t *at) {
+    std::int32_t value = 0;
+    std::memcpy(&value, at, sizeof(value));
+    return value;
+}
+
+// SharedPointerInternals::ReleaseSharedReference, ThreadSafe mode.
+void ReleaseShared(std::uint8_t *controller) {
+    auto **vtable = *reinterpret_cast<void ***>(controller);
+    if (_InterlockedDecrement(reinterpret_cast<volatile long *>(controller + kSharedCount)) != 0)
+        return;
+    reinterpret_cast<DestroyObjectFn>(vtable[0])(controller);
+    if (_InterlockedDecrement(reinterpret_cast<volatile long *>(controller + kWeakCount)) == 0)
+        reinterpret_cast<DeletingDestructorFn>(vtable[1])(controller, 1);
+}
+
+} // namespace
+
+// A fresh text's controller, both counts at 1: MakeShared holds the data inline at
+// +16, a TSharedRef made from `new` holds a pointer to it there.
+bool EngineCalls::MeasureSharedTextRelease(std::uint8_t *probe) {
+    auto *data = Load<std::uint8_t *>(probe);
+    auto *controller = Load<std::uint8_t *>(probe + sizeof(Address));
+    if (!data || !controller || (data != controller + 16 && Load<std::uint8_t *>(controller + 16) != data))
+        return Fail(textReleaseState_, "a fresh text's reference controller does not hold its data");
+    auto **vtable = *reinterpret_cast<void ***>(controller);
+    if (!ImageCode(vtable[0]) || !ImageCode(vtable[1]))
+        return Fail(textReleaseState_, "the text's reference controller has no engine vtable");
+    if (Count32(controller + kSharedCount) != 1 || Count32(controller + kWeakCount) != 1)
+        return Fail(textReleaseState_, "a fresh text's reference counts are not 1 and 1");
+    // A second reference, as a TSharedRef copy takes it: releasing it keeps the text.
+    _InterlockedIncrement(reinterpret_cast<volatile long *>(controller + kSharedCount));
+    ReleaseShared(controller);
+    if (Count32(controller + kSharedCount) != 1)
+        return Fail(textReleaseState_, "releasing a second reference did not leave one");
+    ReleaseShared(controller);
+    std::memset(probe, 0, 24);
+    releaseFunctions_.push_back(reinterpret_cast<Address>(vtable[1]));
+    textSize_ = 24;
+    textReleaseState_ = State::Ready;
+    return true;
+}
+
 bool EngineCalls::MeasureTextRelease() {
     if (textReleaseState_ != State::Unbound)
         return textReleaseState_ == State::Ready;
@@ -354,10 +406,10 @@ bool EngineCalls::MeasureTextRelease() {
     if (!AssignText(probe, u"URKit text release probe"))
         return Fail(textReleaseState_, "a probe text could not be made (" + failure_ + ")");
     const std::int32_t size = stringToText_.SizeOf("ReturnValue");
+    if (size == 24)
+        return MeasureSharedTextRelease(probe);
     if (size != 16)
-        return Fail(textReleaseState_, "FText is " + std::to_string(size) +
-                                           " bytes here: its data is not a TRefCountPtr, and releasing that layout "
-                                           "is not measured");
+        return Fail(textReleaseState_, "FText is " + std::to_string(size) + " bytes here, a layout not measured");
     auto *data = Load<void *>(probe);
     auto **vtable = *reinterpret_cast<void ***>(data);
     for (int slot = 1; slot <= 3; ++slot) {
@@ -381,6 +433,7 @@ bool EngineCalls::MeasureTextRelease() {
     CallCount(vtable[2], data);
     std::memset(probe, 0, sizeof(probe));
     releaseFunctions_.push_back(reinterpret_cast<Address>(vtable[2]));
+    textSize_ = 16;
     textReleaseState_ = State::Ready;
     return true;
 }
@@ -393,12 +446,19 @@ bool EngineCalls::CanReleaseText(const std::uint8_t *text) {
         return true;
     if (!MeasureTextRelease())
         return false;
-    auto **vtable = *reinterpret_cast<void ***>(data);
-    const Address release = reinterpret_cast<Address>(vtable[2]);
+    // UE4: the controller's deleting destructor is the per-class entry.
+    void *owner = textSize_ == 24 ? Load<void *>(text + sizeof(Address)) : data;
+    if (!owner) {
+        failure_ = "a text has data but no reference controller";
+        return false;
+    }
+    auto **vtable = *reinterpret_cast<void ***>(owner);
+    const std::size_t slot = textSize_ == 24 ? 1 : 2;
+    const Address release = reinterpret_cast<Address>(vtable[slot]);
     // Every text history shares FTextHistory's final Release; another class is
     // still an engine function at the proven slot.
     if (std::find(releaseFunctions_.begin(), releaseFunctions_.end(), release) == releaseFunctions_.end()) {
-        if (!ImageCode(vtable[2])) {
+        if (!ImageCode(vtable[slot]) || (textSize_ == 24 && !ImageCode(vtable[0]))) {
             failure_ = "a text's Release slot is not code of a loaded image";
             return false;
         }
@@ -413,6 +473,11 @@ bool EngineCalls::ReleaseText(std::uint8_t *text) {
         return true;
     if (!CanReleaseText(text))
         return false;
+    if (textSize_ == 24) {
+        ReleaseShared(Load<std::uint8_t *>(text + sizeof(Address)));
+        std::memset(text, 0, 2 * sizeof(Address));
+        return true;
+    }
     auto **vtable = *reinterpret_cast<void ***>(data);
     CallCount(vtable[2], data);
     std::memset(text, 0, 8);
@@ -468,9 +533,22 @@ std::int32_t EngineCalls::SoftPathOffset() {
         Fail(softLayoutState_, "FSoftObjectPath::SubPathString is not a reflected string");
         return kOffsetNotFound;
     }
+    // The path ends the soft pointer; UE4 has an int32 tag between it and the weak part.
+    const Address library = finder_->FindInOuter("KismetSystemLibrary", kLibraryPackage);
+    const Address convert =
+        library != kNullAddress ? finder_->FindInOuter("Conv_ObjectToSoftObjectReference", library) : kNullAddress;
+    const Address returned = convert != kNullAddress ? chain_->FindMemberDeep(convert, "ReturnValue") : kNullAddress;
+    const std::optional<PropertyInfo> soft = returned != kNullAddress ? values_->Describe(returned) : std::nullopt;
+    const std::int32_t pathSize =
+        finder_->Reader().ReadInt32(softPathStruct_ + structs_.propertiesSize).value_or(kOffsetNotFound);
+    const std::int32_t pathAt = soft && pathSize > 0 ? soft->elementSize - pathSize : kOffsetNotFound;
+    if (pathAt != static_cast<std::int32_t>(kWeakSize) && pathAt != static_cast<std::int32_t>(kWeakSize) + 8) {
+        Fail(softLayoutState_, "the soft pointer's path offset is not measurable (" + std::to_string(pathAt) + ")");
+        return kOffsetNotFound;
+    }
     softSubPathOffset_ = subPath->offset;
     softSubPathKind_ = subPath->kind;
-    softPathOffset_ = static_cast<std::int32_t>(kWeakSize);
+    softPathOffset_ = pathAt;
     softLayoutState_ = State::Ready;
     return softPathOffset_;
 }

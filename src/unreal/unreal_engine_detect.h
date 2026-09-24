@@ -79,6 +79,9 @@ EngineVersion ParseEngineVersion(const std::string &text);
 // claimed: `mov dword [x], 5` is too common.
 EngineVersion FindVersionInCode(const MemoryReader &reader, std::span<const ScanRegion> code, InstructionLength length);
 
+// "<Target>-Core/CoreUObject/Engine.dll": the modules a modular build's reflection lives in.
+bool IsEngineCoreModule(const std::string &name);
+
 // The caller supplies the module list: enumerating differs in-process vs out.
 UnrealPresence DetectUnreal(const MemoryReader &reader, std::span<const ModuleCandidate> modules);
 

@@ -17,6 +17,14 @@ static bool ShouldSkipProcess() {
     if (_wcsicmp(name, L"crashpad_handler.exe") == 0)
         return true;
 
+    // Editor installs share one folder with ShaderCompileWorker and other helpers.
+    constexpr wchar_t kEngineBinaries[] = L"\\Engine\\Binaries\\Win64\\";
+    constexpr size_t kFolderLength = sizeof(kEngineBinaries) / sizeof(wchar_t) - 1;
+    const bool engineFolder = static_cast<size_t>(name - path) >= kFolderLength &&
+                              _wcsnicmp(name - kFolderLength, kEngineBinaries, kFolderLength) == 0;
+    if (engineFolder && (_wcsnicmp(name, L"UnrealEditor", 12) != 0 || wcsstr(name, L"-Cmd") != nullptr))
+        return true;
+
     return false;
 }
 

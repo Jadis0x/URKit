@@ -31,7 +31,7 @@ void ObjectFinder::Rebuild(Index &index) const {
         std::optional<std::string> name = NameOf(object);
         if (!name || name->empty())
             continue;
-        index.byName[*name].push_back(object);
+        index.byName[NameKey(*name)].push_back(object);
         ++index.count;
     }
     index.builtAtMs = NowMs();
@@ -107,13 +107,14 @@ std::optional<std::string> ObjectFinder::NameOf(Address object) const {
 // A hit must still be live and still carry the name: GC frees objects and
 // reuses both their slots and their memory.
 template <typename Accept> Address ObjectFinder::Lookup(std::string_view name, Accept accept) const {
-    const std::string key(name);
+    const std::string key = NameKey(name);
     std::lock_guard lock(index_->mutex);
     for (int pass = 0; pass < 2; ++pass) {
         const auto entry = index_->byName.find(key);
         if (entry != index_->byName.end()) {
             for (const Address candidate : entry->second) {
-                if (!IsLiveObject(*this, candidate) || NameOf(candidate) != key)
+                const std::optional<std::string> current = NameOf(candidate);
+                if (!IsLiveObject(*this, candidate) || !current || !SameName(*current, name))
                     continue;
                 if (accept(candidate))
                     return candidate;
@@ -136,7 +137,7 @@ Address ObjectFinder::FindInOuter(std::string_view name, std::string_view outerN
         if (outer == kNullAddress)
             return false;
         const std::optional<std::string> resolved = NameOf(outer);
-        return resolved && *resolved == outerName;
+        return resolved && SameName(*resolved, outerName);
     });
 }
 

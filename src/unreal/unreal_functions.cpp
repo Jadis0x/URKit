@@ -218,7 +218,7 @@ FunctionOffsets FindFunctionOffsets(const ObjectFinder &finder, const StructOffs
 
 const FunctionParameter *FunctionInfo::Parameter(std::string_view name) const {
     const auto found = std::find_if(parameters.begin(), parameters.end(),
-                                    [name](const FunctionParameter &parameter) { return parameter.name == name; });
+                                    [name](const FunctionParameter &parameter) { return SameName(parameter.name, name); });
     return found == parameters.end() ? nullptr : &*found;
 }
 

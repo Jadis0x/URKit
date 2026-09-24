@@ -17,6 +17,8 @@ inline constexpr const char *kDefaultObjectPrefix = "Default__";
 
 struct ClassOffsets {
     std::int32_t classDefaultObject = kOffsetNotFound;
+    // UClass::Interfaces: TArray<FImplementedInterface{UClass*, PointerOffset, bImplementedByK2}>.
+    std::int32_t interfaces = kOffsetNotFound;
 
     bool Resolved() const { return classDefaultObject != kOffsetNotFound; }
 };
@@ -61,6 +63,12 @@ class TypeQueries {
 
     // Every class deriving from this one, itself excluded.
     std::vector<Address> SubclassesOf(Address classObject) const;
+
+    // What an interface reference to object holds, as UObject::GetInterfaceAddress
+    // gives it: object plus the native vtable's offset, the object itself for a
+    // Blueprint interface, null when only a Blueprint implements a native one.
+    // Nothing when the object's class does not implement the interface.
+    std::optional<Address> InterfaceAddress(Address object, Address interfaceClass) const;
 
   private:
     const ObjectFinder *finder_;

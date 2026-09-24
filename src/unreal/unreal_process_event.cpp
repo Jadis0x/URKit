@@ -25,10 +25,18 @@ std::int32_t CountDisplacement(const std::vector<std::uint8_t> &code, std::int32
     for (std::size_t i = 1; i + sizeof(wanted) <= code.size(); ++i) {
         if (std::memcmp(&code[i], wanted, sizeof(wanted)) != 0)
             continue;
-        const bool afterModRM = (code[i - 1] & 0xC0) == 0x80;
-        const bool afterSib = i >= 2 && (code[i - 2] & 0xC0) == 0x80 && (code[i - 2] & 0x07) == 0x04;
-        if (afterModRM || afterSib)
-            ++hits;
+        std::size_t modrm = 0;
+        if ((code[i - 1] & 0xC0) == 0x80 && (code[i - 1] & 0x07) != 0x04)
+            modrm = i - 1;
+        else if (i >= 2 && (code[i - 2] & 0xC0) == 0x80 && (code[i - 2] & 0x07) == 0x04 && (code[i - 1] & 0x07) != 0x04)
+            modrm = i - 2; // SIB, but not rsp-based: a stack slot is no field
+        else
+            continue;
+        // call/jmp through [reg+disp] is a vtable slot, not a field read.
+        const std::uint8_t reg = (code[modrm] >> 3) & 0x07;
+        if (modrm >= 1 && code[modrm - 1] == 0xFF && reg >= 2 && reg <= 5)
+            continue;
+        ++hits;
     }
     return hits;
 }
@@ -142,21 +150,26 @@ std::set<Address> KnownFunctionEntries(const ObjectFinder &finder, const StructO
 std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder, const TypeQueries &types,
                                                      const StructOffsets &structs, const FunctionOffsets &functions,
                                                      std::span<const ScanRegion> codeRegions,
-                                                     const FunctionTable &bounds) {
-    if (functions.parmsSize == kOffsetNotFound || codeRegions.empty())
+                                                     const FunctionTable &bounds, std::string *why) {
+    const auto fail = [why](std::string reason) -> std::optional<ProcessEventLocation> {
+        if (why)
+            *why = std::move(reason);
         return std::nullopt;
+    };
+    if (functions.parmsSize == kOffsetNotFound || codeRegions.empty())
+        return fail("UFunction::ParmsSize is not calibrated");
 
     const Address root = RootClass(finder, types);
     if (root == kNullAddress)
-        return std::nullopt;
+        return fail("no UObject class");
     const Address cdo = types.DefaultObjectOf(root);
     if (cdo == kNullAddress)
-        return std::nullopt;
+        return fail("UObject has no default object");
 
     const MemoryReader &reader = finder.Reader();
     const std::vector<Address> slots = ReadVtable(finder, codeRegions, cdo);
     if (slots.empty())
-        return std::nullopt;
+        return fail("UObject's vtable has no code slots");
 
     // Built only if some slot has no exception-table entry to bound it.
     std::vector<Address> sorted;
@@ -171,8 +184,8 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
         return std::max(span, kMinBodyBytes);
     };
 
-    // ParmsSize alone is not rare enough; only a frame builder needs it
-    // together with ReturnValueOffset.
+    // A frame builder reads ParmsSize and ReturnValueOffset; ProcessEvent also checks
+    // FunctionFlags, which UE4's virtual CallFunction does not.
     std::vector<ProcessEventLocation> candidates;
     std::vector<std::uint8_t> body;
     for (std::size_t slot = 0; slot < slots.size(); ++slot) {
@@ -200,21 +213,28 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
         ProcessEventLocation candidate;
         candidate.parmsSizeReferences = CountDisplacement(body, functions.parmsSize);
         candidate.returnOffsetReferences = CountDisplacement(body, functions.returnValueOffset);
-        if (candidate.parmsSizeReferences == 0 || candidate.returnOffsetReferences == 0)
+        candidate.flagsReferences = CountDisplacement(body, functions.functionFlags);
+        if (candidate.parmsSizeReferences == 0 || candidate.returnOffsetReferences == 0 ||
+            candidate.flagsReferences == 0)
             continue;
 
         candidate.vtableIndex = static_cast<std::int32_t>(slot);
         candidate.baseImplementation = target;
-        candidate.flagsReferences = CountDisplacement(body, functions.functionFlags);
         candidates.push_back(std::move(candidate));
     }
 
     if (candidates.empty())
-        return std::nullopt;
+        return fail("none of UObject's " + std::to_string(slots.size()) + " slots reads ParmsSize, ReturnValueOffset "
+                    "and FunctionFlags");
 
     ProcessEventLocation found = candidates.front();
-    for (std::size_t i = 1; i < candidates.size(); ++i)
+    std::string slotsText = std::to_string(found.vtableIndex);
+    for (std::size_t i = 1; i < candidates.size(); ++i) {
         found.rivalSlots.push_back(candidates[i].vtableIndex);
+        slotsText += ", " + std::to_string(candidates[i].vtableIndex);
+    }
+    if (why && !found.Unique())
+        *why = "slots " + slotsText + " all qualify";
     return found;
 }
 

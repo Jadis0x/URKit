@@ -1,7 +1,7 @@
 #pragma once
 
-// ProcessEvent's vtable index, found by the fields it reads (ParmsSize +
-// ReturnValueOffset). The address is read per object: classes override it.
+// ProcessEvent's vtable index, found by the fields it reads (ParmsSize,
+// ReturnValueOffset, FunctionFlags). The address is read per object: classes override it.
 
 #include "unreal_functions.h"
 #include "unreal_module.h"
@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -40,7 +41,7 @@ struct ProcessEventLocation {
 std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder, const TypeQueries &types,
                                                      const StructOffsets &structs, const FunctionOffsets &functions,
                                                      std::span<const ScanRegion> codeRegions,
-                                                     const FunctionTable &bounds = {});
+                                                     const FunctionTable &bounds = {}, std::string *why = nullptr);
 
 // The implementation this object dispatches to, read from its own vtable.
 Address ProcessEventFor(const MemoryReader &reader, const ProcessEventLocation &location, Address object);

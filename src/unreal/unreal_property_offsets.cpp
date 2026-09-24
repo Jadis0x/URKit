@@ -84,10 +84,8 @@ Address PropertyChain::ClassOf(Address field) const {
 std::optional<std::string> PropertyChain::NameOf(Address field) const {
     if (field == kNullAddress || fields_.fieldName == kOffsetNotFound)
         return std::nullopt;
-    const std::optional<std::uint32_t> comparisonIndex = reader_->ReadUInt32(field + fields_.fieldName);
-    if (!comparisonIndex)
-        return std::nullopt;
-    return names_->Read(*comparisonIndex);
+    // With its number: Blueprint compilers name members Node, Node_1, Node_2...
+    return names_->ReadFName(field + fields_.fieldName);
 }
 
 Address PropertyChain::FindMember(Address structObject, std::string_view name) const {
@@ -98,7 +96,7 @@ Address PropertyChain::FindMember(Address structObject, std::string_view name) c
     Address field = First(structObject);
     for (int step = 0; field != kNullAddress && step < kMaxChainLength; ++step) {
         const std::optional<std::string> fieldName = NameOf(field);
-        if (fieldName && *fieldName == name)
+        if (fieldName && SameName(*fieldName, name))
             return field;
         field = Next(field);
     }

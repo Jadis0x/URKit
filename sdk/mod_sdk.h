@@ -1111,9 +1111,10 @@ typedef struct URK_UnrealApi {
     int (*place_write_floating)(const URK_UnrealPlace *place, double value);
     int (*place_read_bool)(const URK_UnrealPlace *place, int *output);
     int (*place_write_bool)(const URK_UnrealPlace *place, int value);
-    /* Object and class references, and the target of weak, lazy and soft
-     * references (a soft one reads null until its asset is loaded) and of a
-     * delegate. A write must be live and of the declared class. */
+    /* Object and class references, and the target of weak, lazy, soft and
+     * interface references (a soft one reads null until its asset is loaded)
+     * and of a delegate. A write must be live and of the declared class (for
+     * an interface: implement it); a lazy one takes only null. */
     URK_UnrealObject (*place_read_object)(const URK_UnrealPlace *place);
     int (*place_write_object)(const URK_UnrealPlace *place, URK_UnrealObject value);
     /*
@@ -1125,7 +1126,8 @@ typedef struct URK_UnrealApi {
      */
     int (*place_read_text)(const URK_UnrealPlace *place, char *output, size_t output_size, size_t *length);
     int (*place_write_text)(const URK_UnrealPlace *place, const char *utf8);
-    /* A struct's whole value, under write_struct's rules. */
+    /* A struct's whole value, under write_struct's rules; or a lazy pointer's
+     * (weak pointer and GUID), copied from another lazy reference. */
     int (*place_read_bytes)(const URK_UnrealPlace *place, void *output, size_t size);
     int (*place_write_bytes)(const URK_UnrealPlace *place, const void *value, size_t size);
 

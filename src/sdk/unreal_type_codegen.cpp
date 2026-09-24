@@ -24,6 +24,7 @@ constexpr std::uint64_t kOutParm = 0x100;
 constexpr std::uint64_t kReturnParm = 0x400;
 constexpr std::uint32_t kFunctionStatic = 0x2000;
 constexpr std::uint32_t kFunctionDelegate = 0x00100000;
+constexpr std::uint64_t kPropertyBlueprintVisible = 0x4;
 
 constexpr const char *kRuntime = "::URK::unreal::";
 constexpr const char *kTypes = "::URK::unreal::types::";
@@ -73,6 +74,14 @@ struct Type {
 };
 
 using TypeMap = std::map<std::string, Type>;
+
+// Blueprint compiler output: anim graph nodes, the ubergraph frame, exposed-input thunks.
+bool CompilerMember(const Type &owner, const Member &member) {
+    return owner.package.rfind("/Script/", 0) != 0 && !(member.shape.flags & kPropertyBlueprintVisible);
+}
+bool CompilerFunction(const Function &function) {
+    return function.name.rfind("EvaluateGraphExposedInputs_", 0) == 0;
+}
 
 std::string Key(const std::string &package, const std::string &name) { return package + '\t' + name; }
 
@@ -543,7 +552,9 @@ class Generator {
             return std::string(kRuntime) + "WeakMember<" + ObjectTypeNamed(shape, forwards) + ">";
         if (shape.kind == "delegate")
             return std::string(kRuntime) + "DelegateMember";
-        if (shape.kind == "multicast delegate")
+        if (shape.kind == "interface")
+            return std::string(kRuntime) + "InterfaceMember";
+        if (shape.kind == "multicast delegate" || shape.kind == "sparse delegate")
             return std::string(kRuntime) + "MulticastMember";
         if (shape.kind == "array" && shape.elements.size() == 1) {
             const std::optional<std::string> element = PlaceType(shape.elements[0], includes, forwards, 1);
@@ -797,6 +808,7 @@ class Generator {
     Header EmitClass(const Type &entry) {
         ClassContext context;
         std::ostringstream body;
+        std::ostringstream compiler;
         std::set<std::string> taken;
         std::vector<std::string> skipped;
 
@@ -806,18 +818,19 @@ class Generator {
                 skipped.push_back(property.name + " (" + property.shape.kind + ")");
                 continue;
             }
+            std::ostringstream &to = CompilerMember(entry, property) ? compiler : body;
             const std::string ident = Unique(Identifier(property.name), taken, entry.ident);
             if (property.shape.dim > 1)
-                body << "    " << *type << ' ' << ident << "(std::int32_t index) const { return {*this, \""
-                     << Escape(property.name) << "\", index}; }\n";
+                to << "    " << *type << ' ' << ident << "(std::int32_t index) const { return {*this, \""
+                   << Escape(property.name) << "\", index}; }\n";
             else
-                body << "    " << *type << ' ' << ident << "() const { return {*this, \"" << Escape(property.name)
-                     << "\"}; }\n";
+                to << "    " << *type << ' ' << ident << "() const { return {*this, \"" << Escape(property.name)
+                   << "\"}; }\n";
         }
         for (const Function &function : entry.functions) {
             if ((function.flags & kFunctionDelegate) || function.name.rfind("ExecuteUbergraph", 0) == 0)
                 continue;
-            if (!EmitFunction(entry, function, taken, context, body))
+            if (!EmitFunction(entry, function, taken, context, CompilerFunction(function) ? compiler : body))
                 skipped.push_back(function.name + "()");
         }
 
@@ -840,6 +853,8 @@ class Generator {
             << Escape(entry.package) << "\")\n";
         if (!body.str().empty())
             out << '\n' << body.str();
+        if (!compiler.str().empty())
+            out << "\n    // Blueprint compiler output, not authored in the Blueprint.\n" << compiler.str();
         if (!skipped.empty())
             out << Wrapped("No typed form yet: ", skipped);
         out << "};\n} // namespace URK::unreal::types\n";

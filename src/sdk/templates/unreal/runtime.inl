@@ -983,6 +983,9 @@ template <typename T> class WeakMember {
     Place place_;
 };
 
+// An interface reference: the object; the loader fills the interface address.
+using InterfaceMember = WeakMember<Object>;
+
 // A single-cast delegate member. bind() is refused unless the function exists
 // on the object with the delegate's signature.
 class DelegateMember {
@@ -1010,6 +1013,10 @@ class MulticastMember {
     bool add(const Object &object, const char *function) const {
         if (!function || contains(object, function))
             return function != nullptr;
+        // Sparse: bindings live in engine storage; the engine adds them.
+        const auto info = place_.describe();
+        if (info && info->kind == URK_UNREAL_PROPERTY_SPARSE_DELEGATE)
+            return place_.bind(object.handle(), function);
         const std::int32_t count = size();
         if (count < 0 || !place_.insert(count, 1))
             return false;

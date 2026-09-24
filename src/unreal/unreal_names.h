@@ -7,8 +7,30 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace URK::Unreal {
+
+// FName equality: case-insensitive, and a pool keeps the first spelling it saw.
+inline bool SameName(std::string_view a, std::string_view b) {
+    if (a.size() != b.size())
+        return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const char x = a[i] >= 'A' && a[i] <= 'Z' ? static_cast<char>(a[i] + 32) : a[i];
+        const char y = b[i] >= 'A' && b[i] <= 'Z' ? static_cast<char>(b[i] + 32) : b[i];
+        if (x != y)
+            return false;
+    }
+    return true;
+}
+
+// ASCII-lowered, the key two SameName spellings share.
+inline std::string NameKey(std::string_view name) {
+    std::string key(name);
+    for (char &c : key)
+        c = c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c;
+    return key;
+}
 
 // FNamePool: a block table preceded by the current block index and write
 // cursor. A comparison index splits into a block and a stride-scaled offset.

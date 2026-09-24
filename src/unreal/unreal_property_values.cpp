@@ -420,6 +420,7 @@ std::optional<PropertyInfo> PropertyValues::Describe(Address field) const {
     case PropertyKind::WeakObject:
     case PropertyKind::SoftObject:
     case PropertyKind::LazyObject:
+    case PropertyKind::Interface:
     case PropertyKind::Struct:
         info.inner = pointerAt(tail_.firstPointer());
         info.typeObject = info.inner;

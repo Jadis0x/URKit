@@ -6,6 +6,7 @@
 #include "unreal_script_hook.h"
 
 #include <windows.h>
+#include <psapi.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -734,12 +735,15 @@ std::optional<PlaceContext> ResolvePlace(const URK_UnrealPlace *place, bool desc
                static_cast<std::size_t>(place->member_index) * info.elementSize;
     }
     Places &places = Serve().places;
-    std::optional<PlaceTarget> target = places.Walk(root, info, place->steps, place->step_count, describe);
+    std::optional<PlaceTarget> target =
+        places.Walk(root, info, place->steps, place->step_count, describe, OnGameThread());
     if (!target) {
         Report(kNullAddress, std::string("place ") + place->member + ": " + places.Failure());
         return std::nullopt;
     }
     context.target = *target;
+    if (!place->frame)
+        context.target.owner = static_cast<Address>(place->object);
     return context;
 }
 
@@ -855,7 +859,7 @@ int Unreal_PlaceWriteBytes(const URK_UnrealPlace *place, const void *value, std:
 
 std::int32_t Unreal_PlaceCount(const URK_UnrealPlace *place) {
     const std::optional<PlaceContext> context = ResolvePlace(place, false);
-    return context ? Serve().places.Count(context->target) : -1;
+    return context ? Serve().places.Count(context->target, OnGameThread()) : -1;
 }
 
 std::int32_t Unreal_PlaceSlots(const URK_UnrealPlace *place, std::int32_t *output, std::int32_t capacity) {
@@ -1297,9 +1301,17 @@ bool UnrealEngine::EnsureBootstrapped() {
     profile_.offsetsMs = lap();
     functions_ = FindFunctionOffsets(*finder_, structs_, fields_, tail_, codeRegions);
     profile_.functionsMs = lap();
-    processEvent_ = FindProcessEvent(*finder_, *types_, structs_, functions_, codeRegions, functionTable_)
+    processEvent_ = FindProcessEvent(*finder_, *types_, structs_, functions_, codeRegions, functionTable_,
+                                     &processEventFailure_)
                        .value_or(ProcessEventLocation{});
     profile_.processEventMs = lap();
+    if (!processEvent_.Resolved()) {
+        const std::uint64_t checked = GetTickCount64();
+        if (processEventMissingSinceMs_ == 0)
+            processEventMissingSinceMs_ = checked;
+        if (checked - processEventMissingSinceMs_ < kProcessEventGraceMs)
+            return failed("ProcessEvent not found yet");
+    }
 
     available_.store(true, std::memory_order_release);
     return true;
@@ -1334,8 +1346,23 @@ const UnrealPresence &UnrealEngine::Presence() {
     if (slash != std::string::npos)
         name = name.substr(slash + 1);
 
-    const ModuleCandidate self{name, path, MainModuleBase()};
-    presence_ = DetectUnreal(memory_, std::span<const ModuleCandidate>(&self, 1));
+    // The main image first; an editor's engine lives in its Core/CoreUObject DLLs.
+    std::vector<ModuleCandidate> modules{{name, path, MainModuleBase()}};
+    HMODULE loaded[1024]{};
+    DWORD needed = 0;
+    if (K32EnumProcessModules(GetCurrentProcess(), loaded, sizeof(loaded), &needed)) {
+        const DWORD count = std::min<DWORD>(needed / sizeof(HMODULE), static_cast<DWORD>(std::size(loaded)));
+        for (DWORD i = 0; i < count; ++i) {
+            char modulePath[MAX_PATH]{};
+            const DWORD written = GetModuleFileNameA(loaded[i], modulePath, sizeof(modulePath));
+            const std::string full(modulePath, written);
+            const std::size_t cut = full.find_last_of("\\/");
+            const std::string file = cut == std::string::npos ? full : full.substr(cut + 1);
+            if (IsEngineCoreModule(file))
+                modules.push_back({file, full, reinterpret_cast<Address>(loaded[i])});
+        }
+    }
+    presence_ = DetectUnreal(memory_, modules);
     // Neither answer changes while the process lives.
     if (!presence_->WorthScanning() || presence_->runtimeModules.empty()) {
         failure_.store("not a UBT-built process", std::memory_order_release);

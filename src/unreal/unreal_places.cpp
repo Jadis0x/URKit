@@ -87,6 +87,8 @@ bool Assignable(const UnrealEngine &engine, const PropertyInfo &info, Address va
         return false;
     if (info.kind == PropertyKind::Class || (info.kind == PropertyKind::SoftObject && SoftClass(info)))
         return ObjectIs(engine.Finder(), engine.Structs(), value, kCastFlagClass);
+    if (info.kind == PropertyKind::Interface)
+        return engine.Types().InterfaceAddress(value, info.inner).has_value();
     return info.inner != kNullAddress && engine.Types().IsA(value, info.inner);
 }
 
@@ -199,7 +201,7 @@ std::optional<PropertyInfo> Places::ElementOf(const PropertyInfo &container) {
         inner->offset = 0;
         return inner;
     }
-    if (container.kind == PropertyKind::MulticastDelegate) {
+    if (container.kind == PropertyKind::MulticastDelegate || container.kind == PropertyKind::SparseDelegate) {
         PropertyInfo element = owned_->DelegateElement();
         if (element.elementSize <= 0) {
             Fail("no reflected delegate names FScriptDelegate's size");
@@ -213,7 +215,7 @@ std::optional<PropertyInfo> Places::ElementOf(const PropertyInfo &container) {
 }
 
 std::optional<PlaceTarget> Places::Walk(std::uint8_t *root, const PropertyInfo &rootInfo, const URK_UnrealStep *steps,
-                                        std::uint32_t count, bool describe) {
+                                        std::uint32_t count, bool describe, bool gameThread) {
     PlaceTarget target{root, rootInfo};
     if (count > URK_UNREAL_PLACE_MAX_STEPS) {
         Fail("too many steps");
@@ -261,7 +263,16 @@ std::optional<PlaceTarget> Places::Walk(std::uint8_t *root, const PropertyInfo &
                 target.key = true;
                 break;
             }
-            const std::optional<PropertyInfo> element = ElementOf(info);
+            if (info.kind == PropertyKind::SparseDelegate && target.value && !(describe && step.index == -1)) {
+                const std::uint8_t *list = SparseList(target, gameThread);
+                if (!list) {
+                    Fail(failure_.empty() ? "the element index is out of range" : failure_);
+                    return std::nullopt;
+                }
+                target.value = const_cast<std::uint8_t *>(list);
+                target.info.kind = PropertyKind::MulticastDelegate;
+            }
+            const std::optional<PropertyInfo> element = ElementOf(target.info);
             if (!element)
                 return std::nullopt;
             std::uint8_t *at = nullptr;
@@ -472,6 +483,15 @@ bool Places::WriteObject(const PlaceTarget &target, Address value, bool gameThre
     case PropertyKind::Class:
         Store<Address>(target.value, value);
         return true;
+    case PropertyKind::Interface: {
+        // FScriptInterface: the object, then its interface's address.
+        if (info.elementSize != 16)
+            return Fail("interfaces here are not the plain object-and-address layout");
+        const Address address = value ? engine_->Types().InterfaceAddress(value, info.inner).value_or(0) : 0;
+        Store<Address>(target.value, value);
+        Store<Address>(target.value + sizeof(Address), address);
+        return true;
+    }
     case PropertyKind::WeakObject: {
         if (!NeedGameThread(gameThread))
             return false;
@@ -488,7 +508,11 @@ bool Places::WriteObject(const PlaceTarget &target, Address value, bool gameThre
                    ? true
                    : Fail(calls.Failure());
     case PropertyKind::LazyObject:
-        return Fail("a lazy pointer names its object by a GUID only the engine can create");
+        // Reset(): no object, no GUID. An object's GUID is only the engine's to make.
+        if (value != kNullAddress)
+            return Fail("a lazy pointer takes an object's GUID: copy it from another lazy reference with write_bytes");
+        std::memset(target.value, 0, static_cast<std::size_t>(info.elementSize));
+        return true;
     case PropertyKind::Delegate:
         return Fail("a delegate is bound with an object and a function together");
     default:
@@ -601,7 +625,7 @@ bool Places::WriteText(const PlaceTarget &target, const char *utf8, bool gameThr
 // --- structs as bytes ---------------------------------------------------------------------------
 
 bool Places::ReadBytes(const PlaceTarget &target, void *output, std::size_t size) {
-    if (!target.value || target.info.kind != PropertyKind::Struct ||
+    if (!target.value || (target.info.kind != PropertyKind::Struct && target.info.kind != PropertyKind::LazyObject) ||
         size != static_cast<std::size_t>(target.info.elementSize))
         return Fail("not a struct of that size");
     std::memcpy(output, target.value, size);
@@ -609,6 +633,19 @@ bool Places::ReadBytes(const PlaceTarget &target, void *output, std::size_t size
 }
 
 bool Places::WriteBytes(const PlaceTarget &target, const void *value, std::size_t size, bool gameThread) {
+    // A lazy pointer's whole value (weak pointer and GUID), taken from another one.
+    if (target.value && target.info.kind == PropertyKind::LazyObject &&
+        size == static_cast<std::size_t>(target.info.elementSize) && size >= EngineCalls::kWeakSize) {
+        if (!NeedGameThread(gameThread))
+            return false;
+        const auto *bytes = static_cast<const std::uint8_t *>(value);
+        const bool empty = std::all_of(bytes, bytes + EngineCalls::kWeakSize, [](std::uint8_t b) { return b == 0; });
+        EngineCalls &calls = owned_->Engine();
+        if (!empty && calls.WeakTarget(bytes) == kNullAddress)
+            return Fail("the lazy pointer's weak part names no live object");
+        std::memcpy(target.value, value, size);
+        return true;
+    }
     if (!target.value || target.info.kind != PropertyKind::Struct ||
         size != static_cast<std::size_t>(target.info.elementSize))
         return Fail("not a struct of that size");
@@ -624,10 +661,18 @@ bool Places::WriteBytes(const PlaceTarget &target, const void *value, std::size_
 
 // --- containers -------------------------------------------------------------------------------------
 
-std::int32_t Places::Count(const PlaceTarget &target) {
+std::int32_t Places::Count(const PlaceTarget &target, bool gameThread) {
     const PropertyInfo &info = target.info;
     if (!target.value)
         return -1;
+    if (info.kind == PropertyKind::SparseDelegate) {
+        failure_.clear();
+        const std::uint8_t *list = SparseList(target, gameThread);
+        std::int32_t num = 0;
+        if (!list)
+            return failure_.empty() ? 0 : -1;
+        return ArrayHeader(list, owned_->DelegateElement().elementSize, &num) ? num : -1;
+    }
     if (info.kind == PropertyKind::Set || info.kind == PropertyKind::Map) {
         const std::int32_t num = Load<std::int32_t>(target.value + SetFields::kNum);
         const std::int32_t free = Load<std::int32_t>(target.value + SetFields::kNumFree);
@@ -665,6 +710,8 @@ std::int32_t Places::Slots(const PlaceTarget &target, std::int32_t *output, std:
 bool Places::Insert(const PlaceTarget &target, std::int32_t index, std::int32_t count, bool gameThread) {
     if (!target.value || !NeedGameThread(gameThread))
         return false;
+    if (target.info.kind == PropertyKind::SparseDelegate)
+        return Fail("a sparse delegate gains bindings through bind");
     const std::optional<PropertyInfo> element = ElementOf(target.info);
     if (!element)
         return false;
@@ -687,6 +734,22 @@ bool Places::Remove(const PlaceTarget &target, std::int32_t index, std::int32_t 
             return Fail("a set or map slot is removed one at a time");
         return stores.Remove(*layout, target.value, index) ? true : Fail(stores.Failure());
     }
+    if (info.kind == PropertyKind::SparseDelegate) {
+        const std::int32_t size = owned_->DelegateElement().elementSize;
+        const std::uint8_t *list = SparseList(target, gameThread);
+        std::int32_t num = 0;
+        if (!list || !ArrayHeader(list, size, &num) || index < 0 || count < 0 || index + count > num)
+            return Fail("the element index is out of range");
+        // Copied first: each removal may rebuild the list.
+        std::vector<std::uint8_t> removed(Load<const std::uint8_t *>(list) + static_cast<std::size_t>(index) * size,
+                                          Load<const std::uint8_t *>(list) +
+                                              static_cast<std::size_t>(index + count) * size);
+        for (std::int32_t i = 0; i < count; ++i) {
+            if (!delegates_.Remove(info, target.owner, target.value, removed.data() + static_cast<std::size_t>(i) * size))
+                return Fail(delegates_.Failure());
+        }
+        return true;
+    }
     const std::optional<PropertyInfo> element = ElementOf(info);
     if (!element)
         return false;
@@ -705,6 +768,10 @@ bool Places::Clear(const PlaceTarget &target, bool gameThread) {
             return Fail("delegates here are not the plain weak-object-and-name layout");
         std::memset(target.value, 0, 16);
         return true;
+    case PropertyKind::SparseDelegate:
+        if (!delegates_.Ready())
+            return Fail(delegates_.Failure());
+        return delegates_.Clear(info, target.owner, target.value) ? true : Fail("the sparse delegate has no owner");
     case PropertyKind::String:
     case PropertyKind::Utf8String:
     case PropertyKind::AnsiString:
@@ -895,8 +962,28 @@ bool Places::SignatureCompatible(Address signature, Address function) {
     return true;
 }
 
+const std::uint8_t *Places::SparseList(const PlaceTarget &target, bool gameThread) {
+    if (!NeedGameThread(gameThread))
+        return nullptr;
+    if (!delegates_.Ready()) {
+        Fail(delegates_.Failure());
+        return nullptr;
+    }
+    return delegates_.List(target.info, target.value);
+}
+
 bool Places::Bind(const PlaceTarget &target, Address object, const char *function, bool gameThread) {
     const PropertyInfo &info = target.info;
+    if (target.value && info.kind == PropertyKind::SparseDelegate) {
+        std::uint8_t delegate[32]{};
+        if (!NeedGameThread(gameThread) || !MakeDelegate(info.typeObject, object, function, delegate))
+            return false;
+        if (target.owner == kNullAddress)
+            return Fail("a sparse delegate is bound on the object that has it");
+        if (!delegates_.Ready())
+            return Fail(delegates_.Failure());
+        return delegates_.Add(info, target.owner, target.value, delegate) ? true : Fail("the delegate did not bind");
+    }
     if (!target.value || info.kind != PropertyKind::Delegate)
         return Fail("not a delegate");
     if (info.elementSize != 16)
@@ -907,7 +994,15 @@ bool Places::Bind(const PlaceTarget &target, Address object, const char *functio
         std::memset(target.value, 0, 16);
         return true;
     }
-    if (!function || !Live(*engine_, object))
+    std::uint8_t delegate[16]{};
+    if (!MakeDelegate(info.typeObject, object, function, delegate))
+        return false;
+    std::memcpy(target.value, delegate, sizeof(delegate));
+    return true;
+}
+
+bool Places::MakeDelegate(Address signature, Address object, const char *function, std::uint8_t *delegate) {
+    if (object == kNullAddress || !function || !Live(*engine_, object))
         return Fail("the object is not live");
     // The function by name on the object's class or a super: what the engine's
     // FindFunctionChecked will look for when the delegate fires.
@@ -922,21 +1017,16 @@ bool Places::Bind(const PlaceTarget &target, Address object, const char *functio
     }
     if (found == kNullAddress)
         return Fail(std::string("the object has no function ") + function);
-    if (info.typeObject == kNullAddress || !IsStruct(*engine_, info.typeObject) ||
-        !SignatureCompatible(info.typeObject, found))
+    if (signature == kNullAddress || !IsStruct(*engine_, signature) || !SignatureCompatible(signature, found))
         return Fail(std::string(function) + " does not match the delegate's signature");
-    std::uint8_t weak[EngineCalls::kWeakSize];
     EngineCalls &calls = owned_->Engine();
-    if (!calls.MakeWeak(object, weak))
+    if (!calls.MakeWeak(object, delegate))
         return Fail(calls.Failure());
     // The function's own FName: exactly what the engine looks the name up by.
     const std::size_t nameSize = static_cast<std::size_t>(finder.Names().Layout().size);
-    std::uint8_t name[16]{};
-    if (EngineCalls::kWeakSize + nameSize > static_cast<std::size_t>(target.info.elementSize) ||
-        nameSize > sizeof(name) || !engine_->Reader().Read(found + finder.Offsets().name, name, nameSize))
+    if (EngineCalls::kWeakSize + nameSize > 16 ||
+        !engine_->Reader().Read(found + finder.Offsets().name, delegate + EngineCalls::kWeakSize, nameSize))
         return Fail("the function's name is unreadable");
-    std::memcpy(target.value, weak, sizeof(weak));
-    std::memcpy(target.value + EngineCalls::kWeakSize, name, nameSize);
     return true;
 }
 

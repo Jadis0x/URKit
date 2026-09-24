@@ -135,6 +135,7 @@ class EngineCalls {
     // *handedOver: the engine got the buffer, so on failure it may be gone.
     bool FreeThroughLeft(std::uint8_t *header, bool *handedOver);
     bool MeasureTextRelease();
+    bool MeasureSharedTextRelease(std::uint8_t *probe);
     bool MeasureWeak();
     bool TakeString(NativeCall &call, const char *parameter, std::optional<std::string> *out);
 
@@ -159,6 +160,8 @@ class EngineCalls {
     State emptyTextState_ = State::Unbound;
     NativeCall emptyText_;
     State textReleaseState_ = State::Unbound;
+    // 16: TRefCountPtr<ITextData>. 24: TSharedRef<ITextData, ThreadSafe> (UE4).
+    std::int32_t textSize_ = 0;
     State nameState_ = State::Unbound;
     NativeCall name_;
     State softFromObjectState_[2] = {State::Unbound, State::Unbound};

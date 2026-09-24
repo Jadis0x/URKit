@@ -15,8 +15,6 @@
 
 namespace {
 HWND g_window = nullptr;
-HWND g_gameWindow = nullptr;
-bool g_gameWindowMinimizedByIntro = false;
 bool g_closing = false;
 HANDLE g_thread = nullptr;
 HANDLE g_readyEvent = nullptr;
@@ -43,11 +41,6 @@ constexpr int kIntroWindowHeight = 281;
 ULONG_PTR g_gdiplusToken = 0;
 Gdiplus::Image *g_splashImage = nullptr;
 IStream *g_splashStream = nullptr;
-
-struct WindowSearch {
-    DWORD pid = 0;
-    HWND hwnd = nullptr;
-};
 
 int RectWidth(const RECT &rect) {
     return static_cast<int>(rect.right - rect.left);
@@ -209,79 +202,12 @@ bool HasSplashImage() {
            g_splashImage->GetHeight() > 0;
 }
 
-BOOL CALLBACK FindGameWindowProc(HWND hwnd, LPARAM param) {
-    auto *search = reinterpret_cast<WindowSearch *>(param);
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid != search->pid)
-        return TRUE;
-    if (!IsWindowVisible(hwnd))
-        return TRUE;
-    if (GetWindow(hwnd, GW_OWNER))
-        return TRUE;
-    if (hwnd == g_window)
-        return TRUE;
-
-    char className[128]{};
-    GetClassNameA(hwnd, className, sizeof(className));
-    if (std::strcmp(className, "URKIntroWindow") == 0)
-        return TRUE;
-
-    const LONG_PTR exStyle = GetWindowLongPtrA(hwnd, GWL_EXSTYLE);
-    if (exStyle & WS_EX_TOOLWINDOW)
-        return TRUE;
-
-    char title[256]{};
-    GetWindowTextA(hwnd, title, sizeof(title));
-    if (!title[0])
-        return TRUE;
-
-    search->hwnd = hwnd;
-    return FALSE;
-}
-
-HWND FindMainGameWindow() {
-    WindowSearch search{};
-    search.pid = GetCurrentProcessId();
-    EnumWindows(FindGameWindowProc, reinterpret_cast<LPARAM>(&search));
-    return search.hwnd;
-}
-
-void MinimizeGameWindowIfNeeded() {
-    HWND gameWindow = FindMainGameWindow();
-    if (!gameWindow || !IsWindow(gameWindow))
-        return;
-
-    g_gameWindow = gameWindow;
-    if (!IsIconic(gameWindow)) {
-        ShowWindowAsync(gameWindow, SW_MINIMIZE);
-        g_gameWindowMinimizedByIntro = true;
-    }
-}
-
-void KeepIntroAsStartupSurface(HWND window) {
+// Never touches the game's window: minimizing it mid-load can deadlock the engine.
+void KeepIntroOnTop(HWND window) {
     if (!window || g_closing)
         return;
-
-    MinimizeGameWindowIfNeeded();
-
-    SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-    BringWindowToTop(window);
-
-    if (GetForegroundWindow() != window)
-        SetForegroundWindow(window);
-}
-
-void RestoreGameWindow() {
-    const HWND gameWindow = g_gameWindow;
-    const bool shouldRestore = g_gameWindowMinimizedByIntro;
-    g_gameWindow = nullptr;
-    g_gameWindowMinimizedByIntro = false;
-
-    if (shouldRestore && gameWindow && IsWindow(gameWindow)) {
-        ShowWindowAsync(gameWindow, SW_RESTORE);
-        SetForegroundWindow(gameWindow);
-    }
+    SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 void PaintFallbackBackground(HDC dc, const RECT &rect) {
@@ -422,11 +348,11 @@ LRESULT CALLBACK IntroProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     }
     if (message == kRefresh) {
         InvalidateRect(window, nullptr, FALSE);
-        KeepIntroAsStartupSurface(window);
+        KeepIntroOnTop(window);
         return 0;
     }
     if (message == WM_TIMER && wp == kAnimationTimer) {
-        KeepIntroAsStartupSurface(window);
+        KeepIntroOnTop(window);
         InvalidateRect(window, nullptr, FALSE);
         return 0;
     }
@@ -439,7 +365,6 @@ LRESULT CALLBACK IntroProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         g_closing = true;
         KillTimer(window, kAnimationTimer);
         g_window = nullptr;
-        RestoreGameWindow();
         ReleaseSplashImage();
         PostQuitMessage(0);
         return 0;
@@ -456,7 +381,6 @@ DWORD WINAPI IntroThread(void *) {
     RegisterClassA(&wc);
 
     LoadSplashImage();
-    MinimizeGameWindowIfNeeded();
 
     const int width = kIntroWindowWidth;
     const int height = kIntroWindowHeight;
@@ -465,7 +389,6 @@ DWORD WINAPI IntroThread(void *) {
     g_window = CreateWindowExA(WS_EX_TOPMOST | WS_EX_APPWINDOW, wc.lpszClassName, g_title.c_str(), WS_POPUP, x, y,
                                width, height, nullptr, nullptr, wc.hInstance, nullptr);
     if (!g_window) {
-        RestoreGameWindow();
         ReleaseSplashImage();
         if (g_readyEvent)
             SetEvent(g_readyEvent);
@@ -476,11 +399,9 @@ DWORD WINAPI IntroThread(void *) {
     if (region)
         SetWindowRgn(g_window, region, TRUE);
     SetTimer(g_window, kAnimationTimer, kFocusRefreshMs * 5, nullptr);
-    ShowWindow(g_window, SW_SHOW);
+    ShowWindow(g_window, SW_SHOWNOACTIVATE);
     UpdateWindow(g_window);
-    SetWindowPos(g_window, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
-    BringWindowToTop(g_window);
-    SetForegroundWindow(g_window);
+    SetWindowPos(g_window, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
 
     if (g_readyEvent)
         SetEvent(g_readyEvent);
@@ -513,8 +434,6 @@ void Show(const std::string & /*title*/, const std::string & /*subtitle*/, const
                        static_cast<BYTE>(std::clamp(b, 0, 255)));
     }
 
-    g_gameWindow = nullptr;
-    g_gameWindowMinimizedByIntro = false;
     g_closing = false;
 
     if (g_readyEvent) {
