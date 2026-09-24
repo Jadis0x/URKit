@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 namespace URK::Unreal {
@@ -152,22 +153,30 @@ bool EngineCalls::Ensure(State &state, NativeCall &call, const char *library, co
 // FString UKismetStringLibrary::Left(const FString&, int32): for an empty source
 // it returns FString(), which owns nothing. Its move assignment into the return
 // slot frees whatever buffer the slot held, through FMemory.
-bool EngineCalls::FreeThroughLeft(std::uint8_t *header) {
+bool EngineCalls::FreeReady() {
     const bool fresh = leftState_ == State::Unbound;
     if (!Ensure(leftState_, left_, "KismetStringLibrary", "Left",
                 {{"SourceString", PropertyKind::String, kArrayHeaderSize},
                  {"Count", PropertyKind::Int32, 4},
                  {"ReturnValue", PropertyKind::String, kArrayHeaderSize}}))
         return false;
-    std::uint8_t *returned = left_.At("ReturnValue");
     if (fresh) {
         // Measured, not assumed: an empty source must come back as an empty slot.
         left_.Clear();
-        if (!left_.Invoke(processEvent_) || !AllZero(returned, kArrayHeaderSize))
+        if (!left_.Invoke(processEvent_) || !AllZero(left_.At("ReturnValue"), kArrayHeaderSize))
             return Fail(leftState_, "KismetStringLibrary::Left(\"\", 0) did not return an unallocated FString");
     }
+    return true;
+}
+
+bool EngineCalls::FreeThroughLeft(std::uint8_t *header, bool *handedOver) {
+    *handedOver = false;
+    if (!FreeReady())
+        return false;
+    std::uint8_t *returned = left_.At("ReturnValue");
     left_.Clear();
     std::memcpy(returned, header, kArrayHeaderSize);
+    *handedOver = true;
     if (!left_.Invoke(processEvent_) || !AllZero(returned, kArrayHeaderSize)) {
         // The buffer may now be gone or not: stop rather than free twice.
         left_.Clear();
@@ -182,14 +191,21 @@ bool EngineCalls::Free(void *data) {
     std::uint8_t header[kArrayHeaderSize]{};
     Store<void *>(header, data);
     Store<std::int32_t>(header + 12, 1);
-    return FreeThroughLeft(header);
+    bool handedOver = false;
+    return FreeThroughLeft(header, &handedOver);
 }
 
 bool EngineCalls::EmptyArray(std::uint8_t *header) {
     if (AllZero(header, kArrayHeaderSize))
         return true;
-    if (Load<void *>(header) && !FreeThroughLeft(header))
+    bool handedOver = false;
+    if (Load<void *>(header) && !FreeThroughLeft(header, &handedOver)) {
+        // Once the engine had the buffer it may be gone: forget it (a leak at
+        // worst) instead of keeping a pointer that could be freed again.
+        if (handedOver)
+            std::memset(header, 0, kArrayHeaderSize);
         return false;
+    }
     std::memset(header, 0, kArrayHeaderSize);
     return true;
 }
@@ -244,16 +260,31 @@ bool EngineCalls::AssignChars(std::uint8_t *header, const void *chars, std::size
     if (!block)
         return false;
     std::memcpy(block->data, chars, count * charSize);
+    // The new string goes in before the old buffer goes back, so a failed free
+    // can only leak it.
     std::uint8_t old[kArrayHeaderSize];
     std::memcpy(old, header, kArrayHeaderSize);
-    if (!EmptyArray(old)) {
-        Free(block->data);
-        return false;
-    }
     Store<void *>(header, block->data);
     Store<std::int32_t>(header + 8, static_cast<std::int32_t>(count + 1));
     Store<std::int32_t>(header + 12, static_cast<std::int32_t>(block->bytes / charSize));
+    ReleaseOrLeak(Load<void *>(old), "a replaced string's buffer");
     return true;
+}
+
+void EngineCalls::ReleaseOrLeak(void *data, const char *what) {
+    if (data && !Free(data))
+        NoteMemory(std::string(what) + " was leaked: " + failure_);
+}
+
+namespace {
+std::atomic<MemoryNote> memoryNote{nullptr};
+} // namespace
+
+void SetMemoryNote(MemoryNote note) { memoryNote.store(note, std::memory_order_release); }
+
+void NoteMemory(const std::string &message) {
+    if (const MemoryNote note = memoryNote.load(std::memory_order_acquire))
+        note(message);
 }
 
 // Reads a string a call returned into its frame, then frees it.
@@ -324,8 +355,8 @@ bool EngineCalls::MakeEmptyText(std::uint8_t *text) {
 // and flags, 16 bytes. Dropping a reference is ITextData's IRefCountedObject
 // Release - what TRefCountPtr's own destructor calls. The slots are the
 // interface's declaration order (destructor, AddRef, Release, GetRefCount), and
-// are proven on a fresh text before use: its count must read 1, then 2 after
-// AddRef, then 1 and 0 as it is released.
+// are proven on a fresh text before use: GetRefCount must read 1, then 2 after
+// AddRef, then 1 after Release.
 bool EngineCalls::MeasureTextRelease() {
     if (textReleaseState_ != State::Unbound)
         return textReleaseState_ == State::Ready;
@@ -351,15 +382,16 @@ bool EngineCalls::MeasureTextRelease() {
     const std::uint32_t added = CallCount(vtable[3], data);
     if (added != 2)
         return Fail(textReleaseState_, "AddRef left " + std::to_string(added) + " references, not 2");
-    const std::uint32_t released = CallCount(vtable[2], data);
+    // What Release returns is not evidence: UE deprecates reading it (a release
+    // can be deferred), and UE5.4 returned 0 with one reference left. The count
+    // after it is.
+    CallCount(vtable[2], data);
     const std::uint32_t after = CallCount(vtable[3], data);
-    if (released != 1 || after != 1)
-        return Fail(textReleaseState_, "Release left " + std::to_string(after) + " references and returned " +
-                                           std::to_string(released) + ", not 1");
-    const std::uint32_t last = CallCount(vtable[2], data);
+    if (after != 1)
+        return Fail(textReleaseState_, "Release left " + std::to_string(after) + " references, not 1");
+    // The last reference goes the same way; the text is gone after it.
+    CallCount(vtable[2], data);
     std::memset(probe, 0, sizeof(probe));
-    if (last != 0)
-        return Fail(textReleaseState_, "the last Release reported " + std::to_string(last) + ", not 0");
     releaseFunctions_.push_back(reinterpret_cast<Address>(vtable[2]));
     textReleaseState_ = State::Ready;
     return true;
@@ -367,7 +399,7 @@ bool EngineCalls::MeasureTextRelease() {
 
 bool EngineCalls::TextReleaseAvailable() { return MeasureTextRelease(); }
 
-bool EngineCalls::ReleaseText(std::uint8_t *text) {
+bool EngineCalls::CanReleaseText(const std::uint8_t *text) {
     void *data = Load<void *>(text);
     if (!data)
         return true;
@@ -384,6 +416,16 @@ bool EngineCalls::ReleaseText(std::uint8_t *text) {
         }
         releaseFunctions_.push_back(release);
     }
+    return true;
+}
+
+bool EngineCalls::ReleaseText(std::uint8_t *text) {
+    void *data = Load<void *>(text);
+    if (!data)
+        return true;
+    if (!CanReleaseText(text))
+        return false;
+    auto **vtable = *reinterpret_cast<void ***>(data);
     CallCount(vtable[2], data);
     std::memset(text, 0, 8);
     return true;

@@ -2,6 +2,7 @@
 #include "unreal_text.h"
 
 #include <array>
+#include <cstdio>
 #include <vector>
 
 namespace URK::Unreal {
@@ -18,9 +19,11 @@ constexpr std::size_t kSamplesPerKind = 4;
 constexpr std::int32_t kMaxObjectsWalked = 0x4000;
 constexpr std::int32_t kMaxChainLength = 0x200;
 
-// A bool describes itself: one byte wide, and a mask that is either a single
-// bit of a bitfield or the whole byte.
-bool PlausibleBoolTail(const MemoryReader &reader, Address field, std::int32_t offset) {
+// A bool describes itself (FBoolProperty::SetBoolSize, same 4.25-5.8): FieldSize
+// is its ElementSize (1 for bool and uint8 bitfields, 4 for uint32 ones), a
+// native bool has ByteOffset 0, ByteMask 1 and FieldMask 0xFF, and a bitfield
+// one bit in both masks at a ByteOffset inside the field.
+bool PlausibleBoolTail(const MemoryReader &reader, const FieldOffsets &fields, Address field, std::int32_t offset) {
     const std::optional<std::uint8_t> fieldSize = reader.ReadAs<std::uint8_t>(field + offset);
     const std::optional<std::uint8_t> byteOffset = reader.ReadAs<std::uint8_t>(field + offset + 1);
     const std::optional<std::uint8_t> byteMask = reader.ReadAs<std::uint8_t>(field + offset + 2);
@@ -28,12 +31,13 @@ bool PlausibleBoolTail(const MemoryReader &reader, Address field, std::int32_t o
     if (!fieldSize || !byteOffset || !byteMask || !fieldMask)
         return false;
 
-    if (*fieldSize != 1 || *byteOffset > 0x7)
+    const std::optional<std::int32_t> elementSize = reader.ReadAs<std::int32_t>(field + fields.elementSize);
+    if (!elementSize || *fieldSize != *elementSize ||
+        (*fieldSize != 1 && *fieldSize != 2 && *fieldSize != 4 && *fieldSize != 8) || *byteOffset >= *fieldSize)
         return false;
-    if (*byteMask == 0 || *byteMask != *fieldMask)
-        return false;
-    const bool singleBit = (*byteMask & (*byteMask - 1)) == 0;
-    return singleBit || *byteMask == 0xFF;
+    if (*fieldMask == 0xFF)
+        return *byteOffset == 0 && *byteMask == 1;
+    return *byteMask != 0 && *byteMask == *fieldMask && (*byteMask & (*byteMask - 1)) == 0;
 }
 
 // The tail pointer must reach an object of this kind; an FField is never in the
@@ -117,6 +121,12 @@ struct Samples {
                sets.size() >= kSamplesPerKind && maps.size() >= kSamplesPerKind && enums.size() >= kSamplesPerKind;
     }
 };
+
+std::string Hex(std::uint64_t value) {
+    char buffer[24];
+    std::snprintf(buffer, sizeof(buffer), "%llX", static_cast<unsigned long long>(value));
+    return buffer;
+}
 
 void Collect(std::vector<Address> &into, Address field) {
     if (into.size() < kSamplesPerKind)
@@ -305,25 +315,47 @@ PropertyTailOffsets FindPropertyTailOffsets(const ObjectFinder &finder, const St
     const Samples samples = CollectSamples(finder, structs, fields);
     // One kind agreeing with itself is not agreement: padding satisfies a bool
     // mask often enough, and a chain pointer is a property pointer.
-    if (samples.Kinds() < 2)
+    if (samples.Kinds() < 2) {
+        resolved.failure = "fewer than two property kinds to agree (bools " + std::to_string(samples.bools.size()) +
+                           ", objects " + std::to_string(samples.objects.size()) + ", structs " +
+                           std::to_string(samples.structs.size()) + ")";
         return resolved;
+    }
 
     const MemoryReader &reader = finder.Reader();
     const std::int32_t start = ((fields.offsetInternal + kMinTailGap) + 0x7) & ~0x7;
 
+    // The offset refused by the fewest samples, for the failure message.
+    std::size_t fewest = ~std::size_t{0};
     for (std::int32_t offset = start; offset <= fields.offsetInternal + kMaxTailGap;
          offset += static_cast<std::int32_t>(sizeof(Address))) {
-        bool satisfied = true;
-
-        for (const Address field : samples.bools)
-            satisfied = satisfied && PlausibleBoolTail(reader, field, offset);
-        for (const Address field : samples.objects)
-            satisfied = satisfied && PointsToObjectWithFlags(finder, structs, field, offset, kCastFlagClass);
-        for (const Address field : samples.structs)
-            satisfied = satisfied && PointsToObjectWithFlags(finder, structs, field, offset, kCastFlagScriptStruct);
-        if (!satisfied)
+        std::size_t refused = 0;
+        std::string first;
+        const auto check = [&](const std::vector<Address> &kind, const char *name, auto test) {
+            for (const Address field : kind) {
+                if (test(field))
+                    continue;
+                if (refused++ == 0)
+                    first = std::string(name) + " property 0x" + Hex(field);
+            }
+        };
+        check(samples.bools, "bool", [&](Address field) { return PlausibleBoolTail(reader, fields, field, offset); });
+        check(samples.objects, "object", [&](Address field) {
+            return PointsToObjectWithFlags(finder, structs, field, offset, kCastFlagClass);
+        });
+        check(samples.structs, "struct", [&](Address field) {
+            return PointsToObjectWithFlags(finder, structs, field, offset, kCastFlagScriptStruct);
+        });
+        if (refused > 0) {
+            if (refused < fewest) {
+                fewest = refused;
+                resolved.failure = "closest offset 0x" + Hex(static_cast<std::uint64_t>(offset)) + " was refused by " +
+                                   std::to_string(refused) + " sample(s), first a " + first;
+            }
             continue;
+        }
 
+        resolved.failure.clear();
         resolved.tail = offset;
         resolved.arrayInner = FindArrayInnerOffset(reader, fields, samples.arrays, offset);
         const auto property = [&](Address field, std::int32_t at) { return PointsToProperty(reader, fields, field, at); };
@@ -687,9 +719,10 @@ bool PropertyValues::WriteBool(MemoryWriter &writer, Address instance, const Pro
     if (!current)
         return false;
 
-    const auto updated = static_cast<std::uint8_t>(value ? (*current | info.boolLayout.fieldMask)
-                                                         : (*current & static_cast<std::uint8_t>(
-                                                                           ~info.boolLayout.fieldMask)));
+    // FBoolProperty::SetPropertyValue: clear FieldMask, set ByteMask (1 for a
+    // native bool, never 0xFF).
+    const auto cleared = static_cast<std::uint8_t>(*current & ~info.boolLayout.fieldMask);
+    const auto updated = static_cast<std::uint8_t>(value ? (cleared | info.boolLayout.byteMask) : cleared);
     return writer.WriteAs<std::uint8_t>(byteAddress, updated);
 }
 

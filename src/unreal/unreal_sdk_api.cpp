@@ -431,7 +431,7 @@ void Report(Address subject, const std::string &message);
 // Only after UnrealEngine::Available(): it holds the ladder's objects.
 Services &Serve() {
     static Services services = [] {
-        Containers::SetNote([](const std::string &message) { Report(kNullAddress, message); });
+        SetMemoryNote([](const std::string &message) { Report(kNullAddress, message); });
         return Services(UnrealEngine::Instance());
     }();
     return services;

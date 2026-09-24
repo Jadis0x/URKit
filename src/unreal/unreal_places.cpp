@@ -374,7 +374,8 @@ bool Places::WriteBool(const PlaceTarget &target, bool value) {
     if (!target.value || target.info.kind != PropertyKind::Bool || layout.fieldMask == 0)
         return Fail("not a bool");
     std::uint8_t &byte = target.value[layout.byteOffset];
-    byte = static_cast<std::uint8_t>(value ? (byte | layout.fieldMask) : (byte & ~layout.fieldMask));
+    // FBoolProperty::SetPropertyValue: clear FieldMask, set ByteMask.
+    byte = static_cast<std::uint8_t>((byte & ~layout.fieldMask) | (value ? layout.byteMask : 0));
     return true;
 }
 
@@ -674,7 +675,7 @@ bool Places::BuildKey(const PropertyInfo &key, const URK_UnrealKey &input, bool 
     EngineCalls &calls = owned_->Engine();
     switch (key.kind) {
     case PropertyKind::Bool:
-        at[key.boolLayout.byteOffset] = input.integer ? key.boolLayout.fieldMask : 0;
+        at[key.boolLayout.byteOffset] = input.integer ? key.boolLayout.byteMask : 0;
         return true;
     case PropertyKind::Enum:
     case PropertyKind::Byte:
@@ -733,8 +734,12 @@ bool Places::BuildKey(const PropertyInfo &key, const URK_UnrealKey &input, bool 
                                  bytes->size(), 0, &CheckName, &calls))
             return Fail("a struct key may carry numbers, objects and names, not engine-owned values");
         std::memcpy(at, input.bytes, bytes->size());
-        if (forAdd && !owned_->Initialize(key, at))
-            return Fail(owned_->Failure());
+        if (forAdd && !owned_->Initialize(key, at)) {
+            // Texts made before the failure go back with the rest.
+            const std::string why = owned_->Failure();
+            owned_->Destroy(key, at);
+            return Fail(why);
+        }
         return true;
     }
     default:

@@ -99,6 +99,8 @@ struct PropertyTailOffsets {
     std::int32_t mapKey = kOffsetNotFound;
     std::int32_t mapValue = kOffsetNotFound;
     std::int32_t enumPropertyEnum = kOffsetNotFound;
+    // Why the tail did not resolve: the closest offset and what refused it.
+    std::string failure;
 
     bool Resolved() const { return tail != kOffsetNotFound; }
 

@@ -221,29 +221,69 @@ PropertyInfo OwnedValues::DelegateElement() {
 }
 
 bool OwnedValues::Destroy(const PropertyInfo &info, std::uint8_t *value, int depth) {
+    if (!Release(info, value, depth, false))
+        return false;
+    leaks_ = 0;
+    Release(info, value, depth, true);
+    if (leaks_ > 0)
+        NoteMemory(std::to_string(leaks_) + " part(s) of a " + PropertyKindName(info.kind) +
+                   " value were leaked, not freed: " + leakReason_);
+    return true;
+}
+
+bool OwnedValues::Releasable(const PropertyInfo &info, const std::uint8_t *value) {
+    return Release(info, const_cast<std::uint8_t *>(value), 0, false);
+}
+
+void OwnedValues::Leaked(const std::string &why) {
+    if (leaks_++ == 0)
+        leakReason_ = why;
+}
+
+// One walk for both passes, so the check covers exactly what the release does.
+// Checking (apply false) touches nothing and refuses on anything that could
+// fail. Releasing (apply true) runs only after the check passed; an engine call
+// failing then is leaked and counted, the walk goes on, and the value ends zeroed.
+bool OwnedValues::Release(const PropertyInfo &info, std::uint8_t *value, int depth, bool apply) {
     if (depth > kMaxDepth)
         return Fail("a value is nested too deeply");
     const Ownership ownership = Classify(info, depth);
     if (ownership == Ownership::Unreleasable)
         return Fail(std::string("a ") + PropertyKindName(info.kind) + " value cannot be released here");
+    // An engine step: refused when checking, leaked when releasing.
+    const auto step = [&](bool done, const std::string &why) {
+        if (done)
+            return true;
+        if (!apply)
+            return Fail(why);
+        Leaked(why);
+        return true;
+    };
+    const auto freeable = [&](const std::uint8_t *header) {
+        return apply ? engine_->EmptyArray(const_cast<std::uint8_t *>(header))
+                     : (!Load<void *>(header) || engine_->FreeReady());
+    };
+    const auto nested = [&](const PropertyInfo &inner, std::uint8_t *at) {
+        return Release(inner, at, depth + 1, apply) || step(false, failure_);
+    };
     if (ownership == Ownership::Owned) {
         switch (info.kind) {
         case PropertyKind::String:
         case PropertyKind::Utf8String:
         case PropertyKind::AnsiString:
-            if (!engine_->EmptyArray(value))
-                return Fail(engine_->Failure());
+            if (!step(freeable(value), engine_->Failure()))
+                return false;
             break;
         case PropertyKind::MulticastDelegate:
             // Its bindings own nothing; only the list's buffer goes back.
             if (DelegateSize() != kPlainDelegateSize)
                 return Fail("delegates here are not the plain weak-object-and-name layout");
-            if (!engine_->EmptyArray(value))
-                return Fail(engine_->Failure());
+            if (!step(freeable(value), engine_->Failure()))
+                return false;
             break;
         case PropertyKind::Text:
-            if (!engine_->ReleaseText(value))
-                return Fail(engine_->Failure());
+            if (!step(apply ? engine_->ReleaseText(value) : engine_->CanReleaseText(value), engine_->Failure()))
+                return false;
             break;
         case PropertyKind::SoftObject: {
             const std::int32_t at = engine_->SoftPathOffset();
@@ -254,7 +294,7 @@ bool OwnedValues::Destroy(const PropertyInfo &info, std::uint8_t *value, int dep
             pathInfo.kind = PropertyKind::Struct;
             pathInfo.inner = path;
             pathInfo.elementSize = info.elementSize - at;
-            if (!Destroy(pathInfo, value + at, depth + 1))
+            if (!nested(pathInfo, value + at))
                 return false;
             break;
         }
@@ -268,12 +308,12 @@ bool OwnedValues::Destroy(const PropertyInfo &info, std::uint8_t *value, int dep
                 return Fail("an array is not in a state it can be released from");
             if (Classify(*inner, depth + 1) == Ownership::Owned) {
                 for (std::int32_t i = 0; i < num; ++i) {
-                    if (!Destroy(*inner, data + static_cast<std::size_t>(i) * inner->elementSize, depth + 1))
+                    if (!nested(*inner, data + static_cast<std::size_t>(i) * inner->elementSize))
                         return false;
                 }
             }
-            if (!engine_->EmptyArray(value))
-                return Fail(engine_->Failure());
+            if (!step(freeable(value), engine_->Failure()))
+                return false;
             break;
         }
         case PropertyKind::Set:
@@ -287,12 +327,14 @@ bool OwnedValues::Destroy(const PropertyInfo &info, std::uint8_t *value, int dep
             const bool values = layout->isMap && Classify(layout->value, depth + 1) == Ownership::Owned;
             for (const std::int32_t slot : Containers::Slots(value)) {
                 std::uint8_t *element = Containers::Element(*layout, value, slot);
-                if ((keys && !Destroy(layout->key, element, depth + 1)) ||
-                    (values && !Destroy(layout->value, element + layout->valueOffset, depth + 1)))
+                if ((keys && !nested(layout->key, element)) ||
+                    (values && !nested(layout->value, element + layout->valueOffset)))
                     return false;
             }
-            if (!containers_.FreeStorage(value))
-                return Fail(containers_.Failure());
+            if (apply)
+                containers_.FreeStorage(value);
+            else if (Containers::HoldsStorage(value) && !engine_->FreeReady())
+                return Fail(engine_->Failure());
             break;
         }
         case PropertyKind::Struct: {
@@ -306,7 +348,7 @@ bool OwnedValues::Destroy(const PropertyInfo &info, std::uint8_t *value, int dep
                                                static_cast<std::size_t>(i) * member.elementSize;
                         if (at + member.elementSize > static_cast<std::size_t>(info.elementSize) && info.elementSize > 0)
                             return Fail("a struct member lies outside its value");
-                        if (!Destroy(member, value + at, depth + 1))
+                        if (!nested(member, value + at))
                             return false;
                     }
                     return true;
@@ -320,7 +362,7 @@ bool OwnedValues::Destroy(const PropertyInfo &info, std::uint8_t *value, int dep
             return Fail(std::string("a ") + PropertyKindName(info.kind) + " value cannot be released here");
         }
     }
-    if (info.elementSize > 0)
+    if (apply && info.elementSize > 0)
         std::memset(value, 0, static_cast<std::size_t>(info.elementSize));
     return true;
 }

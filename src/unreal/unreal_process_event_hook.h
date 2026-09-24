@@ -32,7 +32,8 @@ class ProcessEventHook {
     // Runs on the game thread.
     using Work = void (*)(void *user);
 
-    // Runs on the game thread once per engine frame, after the first reflected
+    // Runs on the game thread once per engine frame: at the frame boundary once
+    // that is proven (see FrameBoundary), until then after the first reflected
     // call of the frame. Without a frame counter, frames are paced by time.
     using FrameTick = void (*)(void *user);
     static constexpr std::uint64_t kUnclockedFrameMs = 16;
@@ -68,6 +69,18 @@ class ProcessEventHook {
     // frameCounter may be null. Set before or after Install; null tick stops it.
     void SetFrameTick(FrameTick tick, void *user, const volatile std::uint64_t *frameCounter);
 
+    // Called by a hook on an instruction that advances GFrameCounter; site
+    // numbers them. Besides FEngineLoop::Tick's end of frame, the counter is
+    // advanced by a loading screen's own loop, a high-resolution screenshot and
+    // tool code. The boundary is the site that alone advanced the counter over
+    // its last kBoundaryEvidence calls, on one thread: a frame loop. A write
+    // that interleaves with another (a screenshot) never qualifies; a loop that
+    // takes over (a loading screen) does. From then on frames tick there, so a
+    // frame with no reflected call (a quiet menu) still ticks.
+    static constexpr std::size_t kMaxBoundarySites = 16;
+    void FrameBoundary(std::size_t site);
+    bool FrameBoundaryProven() const { return boundarySite_.load(std::memory_order_acquire) >= 0; }
+
     // Fails when the queue is full or no game thread is known yet.
     bool Post(Work work, void *user);
 
@@ -86,6 +99,8 @@ class ProcessEventHook {
     static constexpr std::size_t kTrackedThreads = 8;
     // Far less than one frame's worth, but enough to rule out a stray call.
     static constexpr std::uint64_t kThreadEvidence = 64;
+    // Consecutive frames the boundary must follow the counter through.
+    static constexpr std::uint32_t kBoundaryEvidence = 8;
 
     struct Patched {
         Address target = kNullAddress;
@@ -133,6 +148,15 @@ class ProcessEventHook {
     std::atomic<const volatile std::uint64_t *> frameCounter_{nullptr};
     // Game thread only.
     std::uint64_t lastFrame_ = ~std::uint64_t{0};
+
+    struct BoundarySite {
+        std::atomic<std::uint32_t> thread{0};
+        std::atomic<std::uint64_t> frame{0};
+        std::atomic<std::uint32_t> run{0};
+    };
+    BoundarySite sites_[kMaxBoundarySites]{};
+    // The site frames tick at; -1 until one proves itself.
+    std::atomic<std::int32_t> boundarySite_{-1};
 
     std::atomic<std::uint64_t> calls_{0};
     std::atomic<std::uint64_t> dropped_{0};

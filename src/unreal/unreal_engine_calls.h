@@ -25,6 +25,11 @@ inline constexpr std::int32_t kArrayHeaderSize = 16;
 // Far above any real container; a larger count means the header is not one.
 inline constexpr std::int32_t kMaxContainerElements = 1 << 26;
 
+// Where facts worth one log line go: a hash rule proven, a buffer leaked.
+using MemoryNote = void (*)(const std::string &message);
+void SetMemoryNote(MemoryNote note);
+void NoteMemory(const std::string &message);
+
 struct ParameterSpec {
     const char *name;
     PropertyKind kind;
@@ -71,7 +76,13 @@ class EngineCalls {
     std::optional<Block> Allocate(std::size_t bytes, std::size_t alignment);
     // Frees an FMemory block through the engine's move assignment. Null is fine.
     bool Free(void *data);
-    // Frees an array's buffer (never its elements) and zeroes the header.
+    // Whether Free can run: the native call bound and measured, nothing freed.
+    bool FreeReady();
+    // Free for a buffer already detached from engine memory: a failure leaks
+    // it and is noted, never leaves it reachable.
+    void ReleaseOrLeak(void *data, const char *what);
+    // Frees an array's buffer (never its elements) and zeroes the header. If
+    // the engine failed after taking the buffer, the header is zeroed anyway.
     bool EmptyArray(std::uint8_t *header);
     // Replaces a string's characters with count characters of charSize bytes
     // (a terminator is added): the new buffer is the engine's, the old one is
@@ -88,6 +99,8 @@ class EngineCalls {
     // and zeroes it. Whether this build allows it is known after the first try.
     bool ReleaseText(std::uint8_t *text);
     bool TextReleaseAvailable();
+    // Whether ReleaseText would release this text, without releasing it.
+    bool CanReleaseText(const std::uint8_t *text);
 
     // FName from text, through the engine's name table.
     bool MakeName(std::u16string_view text, std::uint8_t *name, std::size_t size);
@@ -121,7 +134,8 @@ class EngineCalls {
     bool Ensure(State &state, NativeCall &call, const char *library, const char *function,
                 std::initializer_list<ParameterSpec> parameters);
     bool Fail(State &state, std::string why);
-    bool FreeThroughLeft(std::uint8_t *header);
+    // *handedOver: the engine got the buffer, so on failure it may be gone.
+    bool FreeThroughLeft(std::uint8_t *header, bool *handedOver);
     bool MeasureTextRelease();
     bool MeasureWeak();
     bool TakeString(NativeCall &call, const char *parameter, std::optional<std::string> *out);

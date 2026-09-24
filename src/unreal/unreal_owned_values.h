@@ -36,8 +36,12 @@ class OwnedValues {
     bool NeedsInitialize(const PropertyInfo &info, int depth = 0) const;
 
     // Game thread. One element (elementSize bytes): releases what it owns and
-    // leaves it zeroed.
+    // leaves it zeroed. Everything that could refuse is checked first, and a
+    // refused value is left unchanged. Past that check only an engine call can
+    // fail; what it held is then leaked (and noted), never left reachable.
     bool Destroy(const PropertyInfo &info, std::uint8_t *value, int depth = 0);
+    // Game thread. Whether Destroy would release the value; changes nothing.
+    bool Releasable(const PropertyInfo &info, const std::uint8_t *value);
     // Game thread. Makes zeroed bytes a valid default value.
     bool Initialize(const PropertyInfo &info, std::uint8_t *value, int depth = 0);
     // Game thread. Gives every text slot still zeroed the engine's empty text,
@@ -63,6 +67,8 @@ class OwnedValues {
   private:
     template <typename Visit> bool ForEachMember(Address structObject, Visit visit, int depth) const;
     bool Fail(std::string why);
+    bool Release(const PropertyInfo &info, std::uint8_t *value, int depth, bool apply);
+    void Leaked(const std::string &why);
 
     const ObjectFinder *finder_;
     const PropertyChain *chain_;
@@ -71,6 +77,8 @@ class OwnedValues {
     EngineCalls *engine_;
     Containers containers_;
     std::string failure_;
+    int leaks_ = 0;
+    std::string leakReason_;
     std::atomic<std::int32_t> delegateSize_{-1};
 };
 

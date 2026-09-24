@@ -6,6 +6,12 @@
 // (FStructBuilder, TScriptSparseSet::GetScriptLayout) and must be found verbatim
 // in the layout the engine stored in the property; a container is checked link
 // by link before it is changed. Game thread only.
+//
+// Every change is a transaction: whatever can fail (allocating, making or
+// checking values) happens before the container changes, and a failure leaves
+// it as it was. Past that point nothing fails; a replaced buffer is detached
+// first and freed last, so an engine failure there leaks it (noted), never
+// leaves it reachable.
 
 #include "unreal_engine_calls.h"
 
@@ -14,6 +20,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace URK::Unreal {
@@ -43,6 +50,9 @@ struct SetLayout {
     bool isMap = false;
     PropertyInfo key;   // the set's element, or the map's key
     PropertyInfo value; // map only
+    // The key as the engine hashes it: an enum by its underlying number
+    // (FEnumProperty::GetValueTypeHashInternal).
+    PropertyInfo hashKey;
     std::int32_t valueOffset = 0;
     // TSetElement: the element (or pair), then HashNextId and HashIndex.
     std::int32_t hashNextIdOffset = 0;
@@ -59,14 +69,11 @@ class Containers {
 
     const std::string &Failure() const { return failure_; }
 
-    // Where facts worth one log line go: a hash rule proven, a set collapsed.
-    using Note = void (*)(const std::string &message);
-    static void SetNote(Note note) { note_ = note; }
-
     // --- TArray (and a multicast delegate's invocation list) ---
-    // count default elements before index.
+    // count default elements before index; all made, or none.
     bool ArrayInsert(const PropertyInfo &inner, std::uint8_t *array, std::int32_t index, std::int32_t count);
-    // count elements from index, released first.
+    // count elements from index, released first; refused whole if any of them
+    // could not be released.
     bool ArrayRemove(const PropertyInfo &inner, std::uint8_t *array, std::int32_t index, std::int32_t count);
 
     // --- TSet / TMap ---
@@ -83,30 +90,42 @@ class Containers {
     // Adds key (a constructed value whose ownership moves in when *consumed is
     // set); an existing equal key returns its slot and consumes nothing.
     std::int32_t Add(const SetLayout &layout, std::uint8_t *set, std::uint8_t *key, bool *consumed);
+    // Refused, with the set unchanged, if the element could not be released.
     bool Remove(const SetLayout &layout, std::uint8_t *set, std::int32_t slot);
-    // Frees the storage of a set whose elements are already released.
-    bool FreeStorage(std::uint8_t *set);
+    // Empties a set whose elements are already released and frees its storage.
+    void FreeStorage(std::uint8_t *set);
+    static bool HoldsStorage(const std::uint8_t *set);
 
   private:
-    struct HashCandidates {
-        // Per rule: 0 unproven, 1 trusted, -1 contradicted.
-        std::vector<int> evidence;
-        bool decided = false;
+    struct HashEvidence {
+        // Per rule: 0 open, 1 trusted, -1 contradicted (for good).
+        std::vector<int> state;
+        bool exhaustedNoted = false;
         bool collapsedNoted = false;
     };
-    // Learns from a container that passed Validate, until the key type's rule
-    // is decided.
+    struct CachedLayout {
+        // What the layout was computed from; a property freed and made again
+        // at the same address must not reuse it.
+        Address inner = kNullAddress;
+        Address valueInner = kNullAddress;
+        std::int32_t elementSize = 0;
+        std::optional<SetLayout> layout;
+        std::string failure;
+    };
+    // Every validated container is evidence, before and after a rule is trusted.
     void Learn(const SetLayout &layout, std::uint8_t *set);
-    inline static Note note_ = nullptr;
+    // The key's hash if a rule is trusted and every rule not contradicted agrees
+    // on it; otherwise no hash is sure, and the caller links into one bucket.
+    std::optional<std::uint32_t> AgreedHash(const SetLayout &layout, const std::uint8_t *key);
     bool Fail(std::string why);
     std::uint8_t *Bits(std::uint8_t *set);
     std::int32_t *Buckets(std::uint8_t *set);
     std::int32_t AllocateSlot(const SetLayout &layout, std::uint8_t *set);
     void FreeSlot(const SetLayout &layout, std::uint8_t *set, std::int32_t slot);
-    bool Collapse(const SetLayout &layout, std::uint8_t *set);
-    bool Rehash(const SetLayout &layout, std::uint8_t *set, int rule, std::int32_t buckets);
-    // The hash rule proven for this key type, or -1.
-    int HashRule(const SetLayout &layout);
+    void LinkInto(const SetLayout &layout, std::uint8_t *set, std::int32_t slot, std::int32_t bucket);
+    void Collapse(const SetLayout &layout, std::uint8_t *set);
+    void Relink(const SetLayout &layout, std::uint8_t *set, std::uint8_t *table, std::int32_t buckets,
+                const std::vector<std::pair<std::int32_t, std::uint32_t>> &hashes);
     std::optional<std::uint32_t> Hash(int rule, const PropertyInfo &key, const std::uint8_t *value) const;
     std::string KeySignature(const PropertyInfo &key) const;
 
@@ -117,9 +136,9 @@ class Containers {
     // Per thread: reads run off the game thread too.
     inline static thread_local std::string failure_;
     std::mutex layoutMutex_;
-    std::map<Address, std::optional<SetLayout>> layouts_;
+    std::map<Address, CachedLayout> layouts_;
     std::mutex hashMutex_;
-    std::map<std::string, HashCandidates> hashes_;
+    std::map<std::string, HashEvidence> hashes_;
 };
 
 } // namespace URK::Unreal

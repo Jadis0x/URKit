@@ -57,13 +57,34 @@ Address RootClass(const ObjectFinder &finder, const TypeQueries &types) {
     return kNullAddress;
 }
 
-std::vector<Address> ReadVtable(const MemoryReader &reader, std::span<const ScanRegion> code, Address object) {
+// How many slots the vtable at vtable can have. With RTTI the next vtable is
+// preceded by its locator, which is not code, and the walk stops there; without
+// it vtables abut. Every live object's first word is its class's vtable, so the
+// nearest one above is a start this one cannot run past.
+std::int32_t VtableBound(const ObjectFinder &finder, Address vtable) {
+    Address nearest = vtable + static_cast<Address>(kMaxVtableSlots) * sizeof(Address);
+    const ObjectArray &objects = finder.Objects();
+    const std::int32_t count = objects.Num();
+    for (std::int32_t i = 0; i < count; ++i) {
+        const Address object = objects.ObjectAt(i);
+        if (object == kNullAddress)
+            continue;
+        const std::optional<Address> other = finder.Reader().ReadPointer(object);
+        if (other && *other > vtable && *other < nearest)
+            nearest = *other;
+    }
+    return static_cast<std::int32_t>((nearest - vtable) / sizeof(Address));
+}
+
+std::vector<Address> ReadVtable(const ObjectFinder &finder, std::span<const ScanRegion> code, Address object) {
+    const MemoryReader &reader = finder.Reader();
     std::vector<Address> slots;
     const std::optional<Address> vtable = reader.ReadPointer(object);
     if (!vtable || *vtable == kNullAddress)
         return slots;
 
-    for (std::int32_t slot = 0; slot < kMaxVtableSlots; ++slot) {
+    const std::int32_t bound = VtableBound(finder, *vtable);
+    for (std::int32_t slot = 0; slot < bound; ++slot) {
         const std::optional<Address> entry = reader.ReadPointer(*vtable + static_cast<Address>(slot) * sizeof(Address));
         if (!entry || !InRegions(code, *entry))
             break;
@@ -136,7 +157,7 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
         return std::nullopt;
 
     const MemoryReader &reader = finder.Reader();
-    const std::vector<Address> slots = ReadVtable(reader, codeRegions, cdo);
+    const std::vector<Address> slots = ReadVtable(finder, codeRegions, cdo);
     if (slots.empty())
         return std::nullopt;
 
@@ -159,7 +180,8 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
     std::vector<std::uint8_t> body;
     for (std::size_t slot = 0; slot < slots.size(); ++slot) {
         const Address target = slots[slot];
-        // Without RTTI vtables abut, so a subclass's copy of the same function follows.
+        // The same function again is an inherited copy, should the bound above
+        // not have ended the walk at the next vtable.
         if (std::any_of(candidates.begin(), candidates.end(),
                         [target](const ProcessEventLocation &c) { return c.baseImplementation == target; }))
             continue;

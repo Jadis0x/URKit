@@ -12,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace URK::Unreal {
 
@@ -32,6 +33,19 @@ class GameLoop {
     // function or the load in it is not found.
     static Address FindFrameCounter(const ObjectFinder &finder, const FunctionOffsets &functions,
                                     const FunctionTable &bounds, std::span<const ScanRegion> writable);
+
+    // The host's decoder: the length of the instruction code starts with, 0 if
+    // it does not decode.
+    using InstructionLength = std::size_t (*)(const std::uint8_t *code, std::size_t available);
+
+    // The instructions that write GFrameCounter: FEngineLoop::Tick's one
+    // `GFrameCounter++` per frame, on the game thread (UE4.25-5.8). Found by
+    // their rip-relative displacement, then kept only where decoding the
+    // containing function from its .pdata start lands on them exactly, so a
+    // hook placed there is on an instruction boundary.
+    static std::vector<Address> FindFrameCounterWrites(const MemoryReader &reader, std::span<const ScanRegion> code,
+                                                       const FunctionTable &bounds, Address counter,
+                                                       InstructionLength length);
 
     // Game thread only: members are resolved lazily and cached per class.
     WorldState CurrentWorld();

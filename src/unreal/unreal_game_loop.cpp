@@ -1,6 +1,7 @@
 #include "unreal_game_loop.h"
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 namespace URK::Unreal {
@@ -19,6 +20,42 @@ FunctionRange BodyAt(const FunctionTable &bounds, Address entry) {
     const Address end = next != kNullAddress && next > entry ? std::min(next, entry + kMaxThunkBytes)
                                                              : entry + kMaxThunkBytes;
     return FunctionRange{.begin = entry, .end = end};
+}
+
+// The target of a write to [rip + disp32] by the forms a compiler emits for
+// `++global`: mov r/m,r (89), add r/m,r (01), xadd (0F C1), mov r/m,imm32
+// (C7 /0), add r/m,imm (81 /0, 83 /0), inc r/m (FF /0). Anything else: none.
+std::optional<Address> RipWriteTarget(const std::uint8_t *code, std::size_t length, Address at) {
+    std::size_t i = 0;
+    while (i < length && (code[i] == 0xF0 || code[i] == 0xF2 || code[i] == 0xF3 || code[i] == 0x2E ||
+                          code[i] == 0x36 || code[i] == 0x3E || code[i] == 0x26 || code[i] == 0x64 ||
+                          code[i] == 0x65 || code[i] == 0x66 || code[i] == 0x67))
+        ++i;
+    if (i < length && (code[i] & 0xF0) == 0x40)
+        ++i;
+    if (i + 2 > length)
+        return std::nullopt;
+    bool anyReg = false;
+    if (code[i] == 0x0F) {
+        if (code[i + 1] != 0xC1)
+            return std::nullopt;
+        anyReg = true;
+        i += 2;
+    } else {
+        const std::uint8_t opcode = code[i++];
+        if (opcode == 0x89 || opcode == 0x01)
+            anyReg = true;
+        else if (opcode != 0xC7 && opcode != 0x81 && opcode != 0x83 && opcode != 0xFF)
+            return std::nullopt;
+    }
+    if (i + 5 > length)
+        return std::nullopt;
+    const std::uint8_t modrm = code[i];
+    if ((modrm & 0xC7) != 0x05 || (!anyReg && (modrm & 0x38) != 0))
+        return std::nullopt;
+    std::int32_t displacement = 0;
+    std::memcpy(&displacement, code + i + 1, sizeof(displacement));
+    return at + length + static_cast<std::int64_t>(displacement);
 }
 
 } // namespace
@@ -50,6 +87,65 @@ Address GameLoop::FindFrameCounter(const ObjectFinder &finder, const FunctionOff
         entry = FirstBranchTarget(finder.Reader(), body).value_or(kNullAddress);
     }
     return kNullAddress;
+}
+
+std::vector<Address> GameLoop::FindFrameCounterWrites(const MemoryReader &reader, std::span<const ScanRegion> code,
+                                                      const FunctionTable &bounds, Address counter,
+                                                      InstructionLength length) {
+    std::vector<Address> writes;
+    if (counter == kNullAddress || !length || bounds.Empty())
+        return writes;
+
+    // Every disp32 that reaches the counter from the end of an instruction
+    // ending right after it, or after an imm8/imm32.
+    constexpr std::size_t kChunk = 0x10000;
+    constexpr std::size_t kOverlap = sizeof(std::int32_t) - 1;
+    std::vector<Address> displacements;
+    std::vector<std::uint8_t> buffer(kChunk + kOverlap);
+    for (const ScanRegion &region : code) {
+        for (std::uint64_t offset = 0; offset < region.size; offset += kChunk) {
+            const std::size_t want =
+                static_cast<std::size_t>(std::min<std::uint64_t>(kChunk + kOverlap, region.size - offset));
+            if (want < sizeof(std::int32_t) || !reader.Read(region.start + offset, buffer.data(), want))
+                continue;
+            const Address base = region.start + offset;
+            for (std::size_t i = 0; i + sizeof(std::int32_t) <= want; ++i) {
+                std::int32_t displacement = 0;
+                std::memcpy(&displacement, &buffer[i], sizeof(displacement));
+                const Address after = base + i + sizeof(displacement) + static_cast<std::int64_t>(displacement);
+                const Address gap = counter - after;
+                if (gap == 0 || gap == 1 || gap == 4)
+                    displacements.push_back(base + i);
+            }
+        }
+    }
+
+    // Decode each function holding one from its first instruction; a jump
+    // table or padding that breaks the sweep only loses a candidate.
+    constexpr std::size_t kMaxInstruction = 15;
+    std::vector<FunctionRange> decoded;
+    std::vector<std::uint8_t> body;
+    for (const Address at : displacements) {
+        const std::optional<FunctionRange> range = bounds.Containing(at);
+        if (!range || range->end <= range->begin)
+            continue;
+        if (std::any_of(decoded.begin(), decoded.end(), [&](const FunctionRange &r) { return r.begin == range->begin; }))
+            continue;
+        decoded.push_back(*range);
+        body.assign(static_cast<std::size_t>(range->end - range->begin) + kMaxInstruction, 0);
+        if (!reader.Read(range->begin, body.data(), body.size() - kMaxInstruction))
+            continue;
+        for (std::size_t i = 0; i < body.size() - kMaxInstruction;) {
+            const std::size_t size = length(&body[i], kMaxInstruction);
+            if (size == 0)
+                break;
+            const Address instruction = range->begin + i;
+            if (RipWriteTarget(&body[i], size, instruction) == counter)
+                writes.push_back(instruction);
+            i += size;
+        }
+    }
+    return writes;
 }
 
 Address GameLoop::Engine() {

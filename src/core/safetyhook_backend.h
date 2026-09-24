@@ -2,6 +2,9 @@
 
 #include "mod_sdk.h"
 
+#include <cstddef>
+#include <cstdint>
+
 // Isolates every SafetyHook header from the rest of the runtime: those headers
 // pull in std::expected and therefore require C++23 from their translation unit.
 
@@ -26,3 +29,7 @@ void *SafetyHookBackend_CreateMid(void *target, unsigned slot);
 bool SafetyHookBackend_DestroyMid(void *handle);
 
 bool SafetyHookBackend_SetMidEnabled(void *handle, bool enabled);
+
+// The length of the x64 instruction at the start of code (Zydis), or 0 when
+// it does not decode or no decoder is built in.
+std::size_t SafetyHookBackend_InstructionLength(const std::uint8_t *code, std::size_t available);

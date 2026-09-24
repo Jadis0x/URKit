@@ -210,7 +210,9 @@ void ProcessEventHook::Tally(std::uint32_t thread) {
                 best = threads_[j].thread.load(std::memory_order_relaxed);
             }
         }
-        gameThread_.store(best, std::memory_order_release);
+        // The boundary names the game thread outright once proven.
+        if (boundarySite_.load(std::memory_order_acquire) < 0)
+            gameThread_.store(best, std::memory_order_release);
         return;
     }
 }
@@ -264,9 +266,42 @@ void ProcessEventHook::Dispatch(ProcessEventFn original, void *object, void *fun
     }
 
     if (thread == gameThread_.load(std::memory_order_acquire)) {
-        TickFrame();
+        if (boundarySite_.load(std::memory_order_acquire) < 0)
+            TickFrame();
         Drain();
     }
+}
+
+void ProcessEventHook::FrameBoundary(std::size_t site) {
+    const volatile std::uint64_t *counter = frameCounter_.load(std::memory_order_acquire);
+    if (!counter || site >= kMaxBoundarySites || !installed_.load(std::memory_order_acquire))
+        return;
+    // Before the write: the counter still holds this frame's number.
+    const std::uint64_t frame = *counter;
+    const std::uint32_t thread = CurrentThread();
+    BoundarySite &state = sites_[site];
+    const std::uint32_t run = state.run.load(std::memory_order_relaxed);
+    const bool follows = run > 0 && state.thread.load(std::memory_order_relaxed) == thread &&
+                         state.frame.load(std::memory_order_relaxed) + 1 == frame;
+    state.run.store(follows ? run + 1 : 1, std::memory_order_relaxed);
+    state.thread.store(thread, std::memory_order_relaxed);
+    state.frame.store(frame, std::memory_order_relaxed);
+
+    if (boundarySite_.load(std::memory_order_acquire) != static_cast<std::int32_t>(site)) {
+        if (!follows || run + 1 < kBoundaryEvidence)
+            return;
+        gameThread_.store(thread, std::memory_order_release);
+        boundarySite_.store(static_cast<std::int32_t>(site), std::memory_order_release);
+    }
+    if (thread != gameThread_.load(std::memory_order_acquire))
+        return;
+    // Mod code run here calls ProcessEvent; those calls must pass straight
+    // through, as calls nested in a detour do.
+    const DepthGuard depth;
+    if (!depth.Outermost())
+        return;
+    TickFrame();
+    Drain();
 }
 
 void ProcessEventHook::Enter(std::size_t slot, void *object, void *function, void *parms) {

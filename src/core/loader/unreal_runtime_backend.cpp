@@ -2,6 +2,7 @@
 
 #include "intro.h"
 #include "cursor_guard.h"
+#include "hooks.h"
 #include "loader_lifecycle.h"
 #include "logger.h"
 #include "main_thread_dispatcher.h"
@@ -52,6 +53,7 @@ struct GameLoopState {
     bool announced = false;
     DWORD thread = 0;
     bool dumpTypes = false;
+    bool boundaryNoted = false;
 };
 GameLoopState g_gameLoop;
 
@@ -92,6 +94,10 @@ void OnGameFrame(void *) {
         g_gameLoop.thread = thread;
         RuntimeEvents_SetMainThread(thread);
     }
+    if (!g_gameLoop.boundaryNoted && ProcessEventHook::Instance().FrameBoundaryProven()) {
+        g_gameLoop.boundaryNoted = true;
+        Log("[Unreal] frames now tick at the engine's frame boundary (GFrameCounter), game thread %lu.", thread);
+    }
 
     const WorldState world = g_gameLoop.loop->CurrentWorld();
     if (world.world != g_gameLoop.world) {
@@ -129,6 +135,37 @@ bool UnrealMenuCursor(bool open) {
     return CursorGuard::Engage();
 }
 
+void OnFrameBoundary(URK_HookRegisters *, void *site) {
+    URK::Unreal::ProcessEventHook::Instance().FrameBoundary(reinterpret_cast<std::uintptr_t>(site));
+}
+
+// Hooks every instruction that advances GFrameCounter, so the game loop ticks
+// once per engine frame even when nothing makes a reflected call.
+// ProcessEventHook picks the one that is the frame loop by watching them.
+std::size_t HookFrameBoundary(URK::Unreal::UnrealEngine &engine, URK::Unreal::Address counter, std::size_t *found) {
+    using namespace URK::Unreal;
+    *found = 0;
+    if (counter == kNullAddress || !Hook_MidAvailable())
+        return 0;
+    std::vector<ScanRegion> code;
+    for (const Address module : engine.Presence().runtimeModules) {
+        const std::vector<ScanRegion> regions = ModuleCodeRegions(engine.Reader(), module);
+        code.insert(code.end(), regions.begin(), regions.end());
+    }
+    const std::vector<Address> writes = GameLoop::FindFrameCounterWrites(engine.Reader(), code, engine.Bounds(),
+                                                                         counter, &SafetyHookBackend_InstructionLength);
+    *found = writes.size();
+    std::size_t hooked = 0;
+    for (std::size_t i = 0; i < writes.size() && i < ProcessEventHook::kMaxBoundarySites; ++i) {
+        URK_MidHookOptions options{};
+        options.size = sizeof(options);
+        options.userData = reinterpret_cast<void *>(static_cast<std::uintptr_t>(i));
+        if (Hook_MidAttach(reinterpret_cast<void *>(writes[i]), &OnFrameBoundary, &options))
+            ++hooked;
+    }
+    return hooked;
+}
+
 // Holds the ProcessEvent hook for the loader. The tick itself starts only once
 // mods are loaded, so none misses the first scene.
 bool PrepareGameLoop(URK::Unreal::UnrealEngine &engine, const volatile std::uint64_t **frameCounter) {
@@ -146,7 +183,10 @@ bool PrepareGameLoop(URK::Unreal::UnrealEngine &engine, const volatile std::uint
     const Address counter = GameLoop::FindFrameCounter(engine.Finder(), engine.Functions(), engine.Bounds(), writable);
     *frameCounter = reinterpret_cast<const volatile std::uint64_t *>(counter);
     g_gameLoop.loop = std::make_unique<GameLoop>(engine.Finder(), engine.Types(), engine.Chain(), engine.Values());
-    Log("[Unreal] game loop ready: frames=%s.", counter != kNullAddress ? "GFrameCounter" : "paced by time");
+    std::size_t writes = 0;
+    const std::size_t boundaries = HookFrameBoundary(engine, counter, &writes);
+    Log("[Unreal] game loop ready: frames=%s, frame boundary hooks=%zu (counter writes found=%zu).",
+        counter != kNullAddress ? "GFrameCounter" : "paced by time", boundaries, writes);
 
     RuntimeCursorProvider cursor{};
     cursor.read = &CursorGuard::GameState;
@@ -219,6 +259,12 @@ bool RunUnreal(Config &config) {
     const ProcessEventLocation &processEvent = engine.ProcessEvent();
     Log("[Unreal] engine=%d.%d.%d branch='%s' processEventSlot=%d.", version.major, version.minor, version.patch,
         version.branch.c_str(), processEvent.Resolved() ? processEvent.vtableIndex : -1);
+    const PropertyTailOffsets &tail = engine.Values().Tail();
+    Log("[Unreal] property tail=0x%X arrayInner=0x%X setElement=0x%X mapKey=0x%X mapValue=0x%X enum=0x%X.", tail.tail,
+        tail.arrayInner, tail.setElement, tail.mapKey, tail.mapValue, tail.enumPropertyEnum);
+    if (!tail.Resolved())
+        Log("[Unreal][WARNING] property tail unresolved: %s; containers, structs and object classes are unavailable.",
+            tail.failure.c_str());
     IntroStage(kIntroRuntimeReady, "Unreal reflection ready");
 
     if (config.safeMode) {

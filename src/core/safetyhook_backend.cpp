@@ -8,6 +8,7 @@
 #include <cstring>
 #include <utility>
 
+#include <Zydis/Zydis.h>
 #include <safetyhook.hpp>
 
 namespace {
@@ -172,6 +173,16 @@ bool SafetyHookBackend_SetMidEnabled(void *handle, bool enabled) {
     return enabled ? hook->enable().has_value() : hook->disable().has_value();
 }
 
+std::size_t SafetyHookBackend_InstructionLength(const std::uint8_t *code, std::size_t available) {
+    ZydisDecoder decoder;
+    if (!code || !ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64)))
+        return 0;
+    ZydisDecodedInstruction instruction;
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(&decoder, nullptr, code, available, &instruction)))
+        return 0;
+    return instruction.length;
+}
+
 #else // URK_WITH_SAFETYHOOK
 
 bool SafetyHookBackend_Available() {
@@ -198,6 +209,10 @@ bool SafetyHookBackend_DestroyMid(void *) {
 
 bool SafetyHookBackend_SetMidEnabled(void *, bool) {
     return false;
+}
+
+std::size_t SafetyHookBackend_InstructionLength(const std::uint8_t *, std::size_t) {
+    return 0;
 }
 
 #endif // URK_WITH_SAFETYHOOK
