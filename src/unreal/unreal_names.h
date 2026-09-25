@@ -55,8 +55,8 @@ struct NameLayout {
 
 class NameTable {
   public:
-    // Probes the pool's header and entry layout at address.
-    static std::optional<NameTable> Resolve(const MemoryReader &reader, Address address);
+    // Probes the pool's header and entry layout at address; why says which step failed.
+    static std::optional<NameTable> Resolve(const MemoryReader &reader, Address address, std::string *why = nullptr);
 
     const NameLayout &Layout() const { return layout_; }
     Address BaseAddress() const { return address_; }

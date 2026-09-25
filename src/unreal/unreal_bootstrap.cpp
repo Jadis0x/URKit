@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -268,6 +269,87 @@ std::optional<Runtime> PairCandidates(const MemoryReader &reader, std::span<cons
     }
 
     return best;
+}
+
+std::vector<std::string> ExplainNoPair(const MemoryReader &reader, std::span<const Address> arrays,
+                                       std::span<const Address> tables) {
+    constexpr std::size_t kShown = 3;
+    constexpr std::int32_t kShownNames = 4;
+    std::vector<std::string> lines;
+    const auto hex = [](Address address) {
+        char text[24];
+        std::snprintf(text, sizeof(text), "0x%llX", static_cast<unsigned long long>(address));
+        return std::string(text);
+    };
+
+    std::vector<std::pair<Address, ObjectArrayLayout>> resolvedArrays;
+    std::vector<std::string> arrayReasons;
+    for (const Address address : arrays) {
+        std::string why;
+        if (const std::optional<ObjectArrayLayout> layout = ResolveObjectArrayLayout(reader, address, &why))
+            resolvedArrays.emplace_back(address, *layout);
+        else if (arrayReasons.size() < kShown)
+            arrayReasons.push_back("object array candidate " + hex(address) + ": " + why);
+    }
+    std::vector<Address> resolvedTables;
+    std::vector<std::string> tableReasons;
+    for (const Address address : tables) {
+        std::string why;
+        if (NameTable::Resolve(reader, address, &why))
+            resolvedTables.push_back(address);
+        else if (tableReasons.size() < kShown)
+            tableReasons.push_back("name pool candidate " + hex(address) + ": " + why);
+    }
+    lines.push_back(std::to_string(resolvedArrays.size()) + " of " + std::to_string(arrays.size()) +
+                    " object array candidates and " + std::to_string(resolvedTables.size()) + " of " +
+                    std::to_string(tables.size()) + " name pool candidates resolve");
+    if (resolvedArrays.empty())
+        lines.insert(lines.end(), arrayReasons.begin(), arrayReasons.end());
+    if (resolvedTables.empty())
+        lines.insert(lines.end(), tableReasons.begin(), tableReasons.end());
+    if (resolvedArrays.empty() || resolvedTables.empty())
+        return lines;
+
+    // Both sides resolve, so the pairing is what fails: say what the names read as.
+    for (std::size_t a = 0; a < resolvedArrays.size() && a < kShown; ++a) {
+        const ObjectArray objects(reader, resolvedArrays[a].first, resolvedArrays[a].second);
+        const ObjectOffsets header = FindObjectOffsets(objects);
+        const std::string array = "object array " + hex(resolvedArrays[a].first) + " (" +
+                                  std::to_string(objects.Num()) + " objects)";
+        if (!header.Resolved()) {
+            char offsets[128];
+            std::snprintf(offsets, sizeof(offsets), "flags=%d index=%d class=%d outer=%d name=%d", header.flags,
+                          header.index, header.classPointer, header.outer, header.name);
+            lines.push_back(array + ": the UObject header did not resolve (" + offsets + ")");
+            continue;
+        }
+        for (std::size_t t = 0; t < resolvedTables.size() && t < kShown; ++t) {
+            std::optional<NameTable> names = NameTable::Resolve(reader, resolvedTables[t]);
+            names->CalibrateBlockOffsetBits(objects, header.name);
+            names->CalibrateNameLayout(objects, header.name, header.outer);
+            std::int32_t sampled = 0;
+            std::int32_t plausible = 0;
+            bool anchored = false;
+            std::string first;
+            const std::int32_t count = std::min(objects.Num(), kNameSampleCount);
+            for (std::int32_t index = 0; index < count; ++index) {
+                if (objects.ObjectAt(index) == kNullAddress)
+                    continue;
+                ++sampled;
+                const std::optional<std::string> name = names->ObjectName(objects, header.name, index);
+                if (sampled <= kShownNames)
+                    first += (first.empty() ? "'" : ", '") + name.value_or("?").substr(0, 40) + "'";
+                if (!name || !PlausibleName(*name))
+                    continue;
+                ++plausible;
+                anchored = anchored || IsAnchorName(*name);
+            }
+            lines.push_back(array + " with name pool " + hex(resolvedTables[t]) + ": " + std::to_string(plausible) +
+                            " of " + std::to_string(sampled) + " sampled names plausible, core names " +
+                            (anchored ? "seen" : "not seen") + "; first: " + first);
+        }
+    }
+    return lines;
 }
 
 std::optional<Runtime> BootstrapModule(const MemoryReader &reader, Address moduleBase) {

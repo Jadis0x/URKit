@@ -64,6 +64,10 @@ class UnrealEngine {
 
     // Why the last bootstrap attempt failed; empty until one has.
     const char *LastFailure() const { return failure_.load(std::memory_order_acquire); }
+    // The failed step in detail, one finding per line. Costs a data scan: call once, on give-up.
+    std::vector<std::string> ExplainFailure();
+    // Why the code anchors made no pair; cheap, for a bootstrap the data scan rescued.
+    std::vector<std::string> ExplainAnchors();
 
     bool Available() const;
     const EngineVersion &Version() const { return version_; }
@@ -92,6 +96,7 @@ class UnrealEngine {
 
   private:
     UnrealEngine() = default;
+    std::vector<std::string> ExplainAnchorsLocked();
 
     std::atomic<bool> available_{false};
     // Only for a process that can never be Unreal, not for "not ready yet".
@@ -108,6 +113,7 @@ class UnrealEngine {
     EngineVersion version_;
     // Found once: they depend only on the image.
     std::optional<GlobalCandidates> anchors_;
+    std::vector<std::pair<Address, GlobalCandidates>> anchorModules_;
     FunctionTable functionTable_;
     std::uint64_t scanAllowedAtMs_ = 0;
     std::optional<Runtime> runtime_;

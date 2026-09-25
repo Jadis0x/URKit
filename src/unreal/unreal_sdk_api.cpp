@@ -1254,6 +1254,7 @@ bool UnrealEngine::EnsureBootstrapped() {
         anchors_.emplace();
         for (const Address module : presence.runtimeModules) {
             GlobalCandidates found = FindGlobalCandidates(memory_, module);
+            anchorModules_.emplace_back(module, found);
             anchors_->objectArrays.insert(anchors_->objectArrays.end(), found.objectArrays.begin(),
                                           found.objectArrays.end());
             anchors_->namePools.insert(anchors_->namePools.end(), found.namePools.begin(), found.namePools.end());
@@ -1315,6 +1316,88 @@ bool UnrealEngine::EnsureBootstrapped() {
 
     available_.store(true, std::memory_order_release);
     return true;
+}
+
+namespace {
+
+std::string ModuleFileName(Address base) {
+    char path[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameA(reinterpret_cast<HMODULE>(base), path, MAX_PATH);
+    const std::string full(path, length);
+    const std::size_t slash = full.find_last_of("\\/");
+    return slash == std::string::npos ? full : full.substr(slash + 1);
+}
+
+} // namespace
+
+std::vector<std::string> UnrealEngine::ExplainFailure() {
+    std::lock_guard<std::mutex> lock(bootstrapMutex_);
+    std::vector<std::string> lines;
+    if (available_.load(std::memory_order_acquire))
+        return lines;
+
+    const UnrealPresence &presence = Presence();
+    std::string modules = "engine modules searched:";
+    for (const Address module : presence.runtimeModules)
+        modules += " " + ModuleFileName(module);
+    lines.push_back(modules + " (" + presence.reason + ")");
+
+    if (!runtime_) {
+        const std::vector<std::string> anchors = ExplainAnchorsLocked();
+        lines.insert(lines.end(), anchors.begin(), anchors.end());
+        std::vector<ScanRegion> dataRegions;
+        for (const Address module : presence.runtimeModules) {
+            const std::vector<ScanRegion> regions = ModuleDataRegions(memory_, module);
+            dataRegions.insert(dataRegions.end(), regions.begin(), regions.end());
+        }
+        const std::vector<Address> arrays = FindObjectArrayCandidates(memory_, dataRegions);
+        const std::vector<Address> tables = FindNameTableCandidates(memory_, dataRegions);
+        for (const std::string &line : ExplainNoPair(memory_, arrays, tables))
+            lines.push_back("data scan: " + line);
+        return lines;
+    }
+    if (!fields_.Resolved()) {
+        const std::pair<const char *, std::int32_t> fields[] = {
+            {"UStruct::ChildProperties", fields_.childProperties}, {"FField::ClassPrivate", fields_.fieldClass},
+            {"FField::Next", fields_.fieldNext},                   {"FField::NamePrivate", fields_.fieldName},
+            {"FFieldClass::CastFlags", fields_.fieldClassCastFlags}, {"FProperty::ArrayDim", fields_.arrayDim},
+            {"FProperty::ElementSize", fields_.elementSize},       {"FProperty::PropertyFlags", fields_.propertyFlags},
+            {"FProperty::Offset_Internal", fields_.offsetInternal}};
+        std::string missing = "FField layout: not measured:";
+        for (const auto &[name, offset] : fields)
+            missing += offset == kOffsetNotFound ? std::string(" ") + name : std::string();
+        lines.push_back(missing);
+    }
+    if (!processEvent_.Resolved() && !processEventFailure_.empty())
+        lines.push_back("ProcessEvent: " + processEventFailure_);
+    return lines;
+}
+
+std::vector<std::string> UnrealEngine::ExplainAnchors() {
+    std::lock_guard<std::mutex> lock(bootstrapMutex_);
+    return ExplainAnchorsLocked();
+}
+
+std::vector<std::string> UnrealEngine::ExplainAnchorsLocked() {
+    std::vector<std::string> lines;
+    for (const auto &[module, found] : anchorModules_) {
+        if (found.unsearched) {
+            lines.push_back(ModuleFileName(module) + ": not searched for anchors, " + found.unsearched);
+            continue;
+        }
+        lines.push_back(ModuleFileName(module) + ": " + std::to_string(found.gcKeyLiterals) +
+                        " gc.MaxObjectsInGame and " + std::to_string(found.engineNameLiterals) +
+                        " ByteProperty literals, " + std::to_string(found.literalReferences) + " code references, " +
+                        std::to_string(found.poolConstructors) + " pool constructors, GUObjectArray export " +
+                        (found.exportedArrays ? "found" : "absent") + " -> " +
+                        std::to_string(found.objectArrays.size()) + " array and " +
+                        std::to_string(found.namePools.size()) + " pool candidates");
+    }
+    if (anchors_) {
+        for (const std::string &line : ExplainNoPair(memory_, anchors_->objectArrays, anchors_->namePools))
+            lines.push_back("anchors: " + line);
+    }
+    return lines;
 }
 
 void UnrealEngine::ResolveVersionFromCode(InstructionLength length) {

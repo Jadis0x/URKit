@@ -13,6 +13,14 @@ namespace URK::Unreal {
 struct GlobalCandidates {
     std::vector<Address> objectArrays;
     std::vector<Address> namePools;
+    // What the votes came from, for a report when nothing validates.
+    std::size_t gcKeyLiterals = 0;
+    std::size_t engineNameLiterals = 0;
+    std::size_t literalReferences = 0;
+    std::size_t poolConstructors = 0;
+    std::size_t exportedArrays = 0;
+    // Set when the module could not be searched at all.
+    const char *unsearched = nullptr;
 
     bool Empty() const { return objectArrays.empty() && namePools.empty(); }
 };

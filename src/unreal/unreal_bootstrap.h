@@ -11,6 +11,7 @@
 
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace URK::Unreal {
@@ -41,6 +42,11 @@ std::optional<Runtime> BootstrapRuntime(const MemoryReader &reader, std::span<co
 
 // Pairs candidates found from code; cheap enough to poll until the engine is up.
 std::optional<Runtime> BootstrapAnchored(const MemoryReader &reader, const GlobalCandidates &candidates);
+
+// Why these candidates make no pair: which ones fail to resolve and why, or
+// what the names read as. One finding per line, for a bootstrap that gave up.
+std::vector<std::string> ExplainNoPair(const MemoryReader &reader, std::span<const Address> arrays,
+                                       std::span<const Address> tables);
 
 // As above, over the data sections of one loaded module.
 std::optional<Runtime> BootstrapModule(const MemoryReader &reader, Address moduleBase);

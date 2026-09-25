@@ -1,6 +1,7 @@
 #include "unreal_object_array.h"
 
 #include <array>
+#include <cstdio>
 #include <cstring>
 
 namespace URK::Unreal {
@@ -209,7 +210,13 @@ std::optional<ObjectItemLayout> ProbeObjectItemLayout(const MemoryReader &reader
     return layout;
 }
 
-std::optional<ObjectArrayLayout> ResolveObjectArrayLayout(const MemoryReader &reader, Address address) {
+std::optional<ObjectArrayLayout> ResolveObjectArrayLayout(const MemoryReader &reader, Address address,
+                                                          std::string *why) {
+    const auto fail = [why](std::string reason) -> std::optional<ObjectArrayLayout> {
+        if (why)
+            *why = std::move(reason);
+        return std::nullopt;
+    };
     ObjectArrayLayout resolved;
     Address firstItem = kNullAddress;
 
@@ -220,10 +227,10 @@ std::optional<ObjectArrayLayout> ResolveObjectArrayLayout(const MemoryReader &re
         const std::optional<std::int32_t> maxElements = reader.ReadInt32(address + candidate.maxElementsOffset);
         const std::optional<std::int32_t> maxChunks = reader.ReadInt32(address + candidate.maxChunksOffset);
         if (!chunkTable || !maxElements || !maxChunks)
-            return std::nullopt;
+            return fail("its header became unreadable");
         const std::optional<Address> firstChunk = reader.ReadPointer(*chunkTable);
         if (!firstChunk)
-            return std::nullopt;
+            return fail("the chunk table is unreadable");
         resolved.chunks = candidate;
         resolved.elementsPerChunk = *maxElements / *maxChunks;
         firstItem = *firstChunk;
@@ -236,12 +243,26 @@ std::optional<ObjectArrayLayout> ResolveObjectArrayLayout(const MemoryReader &re
         firstItem = reader.ReadPointer(address + kFixedLayout.objectsOffset).value_or(kNullAddress);
     }
 
-    if (firstItem == kNullAddress)
-        return std::nullopt;
+    if (firstItem == kNullAddress) {
+        std::string words = "no known layout fits its header (int32s:";
+        for (Address at = 0; at < kObjectArrayHeaderBytes; at += 4) {
+            char word[16];
+            const std::optional<std::int32_t> value = reader.ReadInt32(address + at);
+            std::snprintf(word, sizeof(word), value ? " %X" : " ?", value ? static_cast<unsigned>(*value) : 0u);
+            words += word;
+        }
+        return fail(words + ")");
+    }
 
     const std::optional<ObjectItemLayout> item = ProbeObjectItemLayout(reader, firstItem);
-    if (!item)
-        return std::nullopt;
+    if (!item) {
+        bool pointer = false;
+        for (std::int32_t offset = 0; offset < 0x20 && !pointer; offset += 4)
+            pointer = reader.PointsToObject(firstItem + offset);
+        return fail(std::string(resolved.chunked ? "a chunked" : "a flat") + " layout fits, but " +
+                    (pointer ? "no item spacing up to 0x38 puts objects in the next two items"
+                             : "the first item holds no object pointer in its first 0x20 bytes"));
+    }
 
     resolved.item = *item;
     return resolved;

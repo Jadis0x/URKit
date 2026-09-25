@@ -244,7 +244,7 @@ std::optional<FunctionTable::Entry> FunctionTable::EntryAt(const Module &module,
 }
 
 // The table is sorted by begin address, as the unwinder requires.
-std::optional<FunctionTable::Entry> FunctionTable::Lookup(const Module &module, Address address) const {
+std::optional<std::uint32_t> FunctionTable::LookupIndex(const Module &module, Address address) const {
     const std::uint64_t rva = address - module.base;
     std::uint32_t low = 0;
     std::uint32_t high = module.count;
@@ -258,9 +258,14 @@ std::optional<FunctionTable::Entry> FunctionTable::Lookup(const Module &module, 
         else if (rva >= entry->end)
             low = middle + 1;
         else
-            return entry;
+            return middle;
     }
     return std::nullopt;
+}
+
+std::optional<FunctionTable::Entry> FunctionTable::Lookup(const Module &module, Address address) const {
+    const std::optional<std::uint32_t> index = LookupIndex(module, address);
+    return index ? EntryAt(module, *index) : std::nullopt;
 }
 
 std::optional<FunctionRange> FunctionTable::Containing(Address address) const {
@@ -296,28 +301,52 @@ Address FunctionTable::NextBegin(Address address) const {
     return next ? module->base + next->begin : kNullAddress;
 }
 
+std::optional<std::uint32_t> FunctionTable::PrimaryRva(const Module &module, std::optional<Entry> entry) const {
+    for (int depth = 0; entry && depth < kMaxChainDepth; ++depth) {
+        // An odd unwind address points straight at the parent entry.
+        if (entry->unwind & 1) {
+            entry = reader_->ReadAs<Entry>(module.base + (entry->unwind & ~1u));
+            continue;
+        }
+        const Address info = module.base + entry->unwind;
+        const std::optional<std::uint8_t> flags = reader_->ReadAs<std::uint8_t>(info);
+        const std::optional<std::uint8_t> codes = reader_->ReadAs<std::uint8_t>(info + 2);
+        if (!flags || !codes)
+            return std::nullopt;
+        if (((*flags >> 3) & kUnwindChainInfo) == 0)
+            return entry->begin;
+        const Address parent = info + 4 + static_cast<Address>((*codes + 1) & ~1) * 2;
+        entry = reader_->ReadAs<Entry>(parent);
+    }
+    return std::nullopt;
+}
+
 Address FunctionTable::PrimaryBegin(Address address) const {
     const Module *module = ModuleOf(address);
     if (!module)
         return kNullAddress;
-    std::optional<Entry> entry = Lookup(*module, address);
-    for (int depth = 0; entry && depth < kMaxChainDepth; ++depth) {
-        // An odd unwind address points straight at the parent entry.
-        if (entry->unwind & 1) {
-            entry = reader_->ReadAs<Entry>(module->base + (entry->unwind & ~1u));
-            continue;
-        }
-        const Address info = module->base + entry->unwind;
-        const std::optional<std::uint8_t> flags = reader_->ReadAs<std::uint8_t>(info);
-        const std::optional<std::uint8_t> codes = reader_->ReadAs<std::uint8_t>(info + 2);
-        if (!flags || !codes)
-            return kNullAddress;
-        if (((*flags >> 3) & kUnwindChainInfo) == 0)
-            return module->base + entry->begin;
-        const Address parent = info + 4 + static_cast<Address>((*codes + 1) & ~1) * 2;
-        entry = reader_->ReadAs<Entry>(parent);
+    const std::optional<std::uint32_t> primary = PrimaryRva(*module, Lookup(*module, address));
+    return primary ? module->base + *primary : kNullAddress;
+}
+
+std::vector<FunctionRange> FunctionTable::Pieces(Address address) const {
+    // Far-off cold pieces are not searched for: that would walk the whole table.
+    constexpr std::uint32_t kMaxPieces = 16;
+    std::vector<FunctionRange> pieces;
+    const Module *module = ModuleOf(address);
+    if (!module)
+        return pieces;
+    const std::optional<std::uint32_t> primary = PrimaryRva(*module, Lookup(*module, address));
+    const std::optional<std::uint32_t> first = primary ? LookupIndex(*module, module->base + *primary) : std::nullopt;
+    if (!first)
+        return pieces;
+    for (std::uint32_t index = *first; index < module->count && index - *first < kMaxPieces; ++index) {
+        const std::optional<Entry> entry = EntryAt(*module, index);
+        if (!entry || (index != *first && PrimaryRva(*module, entry) != primary))
+            break;
+        pieces.push_back(FunctionRange{.begin = module->base + entry->begin, .end = module->base + entry->end});
     }
-    return kNullAddress;
+    return pieces;
 }
 
 } // namespace URK::Unreal

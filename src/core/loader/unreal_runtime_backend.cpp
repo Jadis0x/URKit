@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -351,6 +352,8 @@ bool WaitForEngine(URK::Unreal::UnrealEngine &engine) {
             return false;
         if (GetTickCount64() >= deadline) {
             Log("[Unreal][ERROR] Bootstrap gave up after %lums: %s.", kBootstrapTimeoutMs, engine.LastFailure());
+            for (const std::string &line : engine.ExplainFailure())
+                Log("[Unreal][ERROR]   %s", line.c_str());
             return false;
         }
 
@@ -396,6 +399,10 @@ bool RunUnreal(Config &config) {
         GetTickCount64() - bootstrapStarted, profile.locatedBy, profile.attempts, profile.scans, profile.failedMs,
         profile.anchorMs, profile.anchoredArrays, profile.anchoredPools, profile.locateMs, profile.indexMs,
         profile.offsetsMs, profile.functionsMs, profile.processEventMs, engine.Reader().Queries());
+    if (std::string_view(profile.locatedBy) == "data scan") {
+        for (const std::string &line : engine.ExplainAnchors())
+            Log("[Unreal][WARNING] slow start, code anchors made no pair: %s", line.c_str());
+    }
 
     const ULONGLONG versionStarted = GetTickCount64();
     engine.ResolveVersionFromCode(&SafetyHookBackend_InstructionLength);

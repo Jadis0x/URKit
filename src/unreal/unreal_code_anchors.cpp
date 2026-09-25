@@ -208,13 +208,17 @@ GlobalCandidates FindGlobalCandidates(const MemoryReader &reader, Address module
     const std::vector<ScanRegion> code = ModuleCodeRegions(reader, moduleBase);
     const std::vector<ScanRegion> constants = ModuleConstantRegions(reader, moduleBase);
     const std::vector<ScanRegion> writable = ModuleWritableRegions(reader, moduleBase);
-    if (code.empty() || constants.empty() || writable.empty())
+    if (code.empty() || constants.empty() || writable.empty()) {
+        candidates.unsearched = "it lacks a code, read-only or writable data section";
         return candidates;
+    }
 
     const Address modules[] = {moduleBase};
     const FunctionTable functions = FunctionTable::Read(reader, modules);
-    if (functions.Empty())
+    if (functions.Empty()) {
+        candidates.unsearched = "it has no exception table to bound functions";
         return candidates;
+    }
 
     std::vector<std::uint8_t> gcKey(kGcKey.size() * 2);
     std::memcpy(gcKey.data(), kGcKey.data(), gcKey.size());
@@ -231,11 +235,17 @@ GlobalCandidates FindGlobalCandidates(const MemoryReader &reader, Address module
     std::map<Address, int> poolVotes;
     std::vector<Address> constructors;
     for (const auto &[site, which] : sites) {
-        const std::optional<FunctionRange> range = functions.Containing(site);
-        if (!range)
+        // A split function keeps the inlined pool setup in a later piece.
+        const std::vector<FunctionRange> pieces = functions.Pieces(site);
+        if (pieces.empty())
             continue;
+        std::vector<Address> targets;
+        for (const FunctionRange &piece : pieces) {
+            const std::vector<Address> found = DataReferences(reader, piece, writable);
+            targets.insert(targets.end(), found.begin(), found.end());
+        }
         if (which < gcKeys.size()) {
-            for (const Address target : DataReferences(reader, *range, writable))
+            for (const Address target : targets)
                 VoteAround(arrayVotes, writable, target, kObjectArrayBefore, kObjectArrayAfter);
             continue;
         }
@@ -244,7 +254,7 @@ GlobalCandidates FindGlobalCandidates(const MemoryReader &reader, Address module
             std::find(constructors.begin(), constructors.end(), constructor) == constructors.end())
             constructors.push_back(constructor);
         // Inlined into its caller, the constructor writes the pool's fields directly.
-        for (const Address target : DataReferences(reader, *range, writable))
+        for (const Address target : targets)
             VoteAround(poolVotes, writable, target, kNamePoolBefore, 0);
     }
 
@@ -261,6 +271,11 @@ GlobalCandidates FindGlobalCandidates(const MemoryReader &reader, Address module
     // Modular builds export GUObjectArray; ObjObjects is at +0x10 before UE5.8, +0 since.
     constexpr int kExportWeight = 64;
     const Address exported = FindModuleExport(reader, moduleBase, kObjectArrayExport);
+    candidates.gcKeyLiterals = gcKeys.size();
+    candidates.engineNameLiterals = engineNames.size();
+    candidates.literalReferences = sites.size();
+    candidates.poolConstructors = constructors.size();
+    candidates.exportedArrays = exported != kNullAddress ? 1 : 0;
     for (Address at = exported; exported != kNullAddress && at <= exported + kObjectArrayBefore; at += 8) {
         if (InRegions(writable, at))
             arrayVotes[at] += kExportWeight;

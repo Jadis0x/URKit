@@ -77,6 +77,9 @@ class FunctionTable {
     // Start of the function address belongs to, following chained entries.
     Address PrimaryBegin(Address address) const;
 
+    // That function's primary entry and the chained ones laid out right after it.
+    std::vector<FunctionRange> Pieces(Address address) const;
+
     // First entry starting after address. A leaf function has no entry of its
     // own, so this is where it ends at the latest.
     Address NextBegin(Address address) const;
@@ -98,6 +101,8 @@ class FunctionTable {
     const Module *ModuleOf(Address address) const;
     std::optional<Entry> EntryAt(const Module &module, std::uint32_t index) const;
     std::optional<Entry> Lookup(const Module &module, Address address) const;
+    std::optional<std::uint32_t> LookupIndex(const Module &module, Address address) const;
+    std::optional<std::uint32_t> PrimaryRva(const Module &module, std::optional<Entry> entry) const;
 
     const MemoryReader *reader_ = nullptr;
     std::vector<Module> modules_;

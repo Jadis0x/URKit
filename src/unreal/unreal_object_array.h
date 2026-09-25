@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 
 namespace URK::Unreal {
 
@@ -62,8 +63,9 @@ bool ValidateLayout(const MemoryReader &reader, Address address, const FixedObje
 
 std::optional<ObjectItemLayout> ProbeObjectItemLayout(const MemoryReader &reader, Address firstItem);
 
-// Picks the matching array layout, then probes the item layout behind it.
-std::optional<ObjectArrayLayout> ResolveObjectArrayLayout(const MemoryReader &reader, Address address);
+// Picks the matching array layout, then probes the item layout behind it; why says what failed.
+std::optional<ObjectArrayLayout> ResolveObjectArrayLayout(const MemoryReader &reader, Address address,
+                                                          std::string *why = nullptr);
 
 // Reads objects out of a resolved array. The reader must outlive it.
 class ObjectArray {

@@ -147,31 +147,36 @@ bool ResolveSecondEntry(const MemoryReader &reader, Address firstBlock, NamePool
     return true;
 }
 
-std::optional<NamePoolLayout> ResolvePool(const MemoryReader &reader, Address pool) {
+std::optional<NamePoolLayout> ResolvePool(const MemoryReader &reader, Address pool, std::string *why) {
+    const auto fail = [why](const char *reason) -> std::optional<NamePoolLayout> {
+        if (why)
+            *why = reason;
+        return std::nullopt;
+    };
     NamePoolLayout layout;
     if (!ResolvePoolHeader(reader, pool, layout))
-        return std::nullopt;
+        return fail("no block count followed by that many block pointers");
 
     const std::optional<Address> firstBlock = reader.ReadPointer(pool + layout.blocksOffset);
     if (!firstBlock || *firstBlock == kNullAddress)
-        return std::nullopt;
+        return fail("the first block pointer is unreadable");
 
     if (!ResolveEntryStringOffset(reader, *firstBlock, layout.entryStringOffset))
-        return std::nullopt;
+        return fail("the first block holds no \"None\" entry followed by \"CoreUObject\"");
 
     // A six-byte header carries an extra field ahead of the length word.
     layout.entryHeaderOffset = layout.entryStringOffset == 6 ? 4 : 0;
 
     if (!ResolveSecondEntry(reader, *firstBlock, layout))
-        return std::nullopt;
+        return fail("\"ByteProperty\" and \"IntProperty\" do not follow \"None\" at a 2, 4 or 8 byte alignment");
 
     return layout;
 }
 
 } // namespace
 
-std::optional<NameTable> NameTable::Resolve(const MemoryReader &reader, Address address) {
-    const std::optional<NamePoolLayout> pool = ResolvePool(reader, address);
+std::optional<NameTable> NameTable::Resolve(const MemoryReader &reader, Address address, std::string *why) {
+    const std::optional<NamePoolLayout> pool = ResolvePool(reader, address, why);
     if (!pool)
         return std::nullopt;
     return NameTable(reader, address, NameLayout{*pool});
