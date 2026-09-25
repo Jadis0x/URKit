@@ -11,6 +11,7 @@ constexpr std::uint64_t kCoreUObjectBytes = 0x6A624F5565726F43;
 // "Byte", the start of the entry that follows "None". Its known length is what
 // calibrates the shift that separates length from the flag bits below it.
 constexpr std::uint32_t kByteBytes = 0x65747942;
+constexpr std::uint32_t kIntPBytes = 0x50746E49;
 constexpr std::uint16_t kBytePropertyLength = 0xC;
 constexpr std::int32_t kNoneLength = 4;
 
@@ -108,21 +109,24 @@ bool ResolveEntryStringOffset(const MemoryReader &reader, Address firstBlock, st
     return false;
 }
 
-// "ByteProperty" follows "None". Shifting its header down until it equals the
-// known length gives the width of the flag bits underneath.
-bool ResolveLengthShift(const MemoryReader &reader, Address firstBlock, const NamePoolLayout &layout,
-                        std::int32_t &lengthShift) {
-    Address entry = firstBlock + static_cast<Address>(layout.entryStringOffset) + kNoneLength;
-    bool located = false;
-    for (int padding = 0; padding < 4; ++padding) {
-        const std::optional<std::uint32_t> word = reader.ReadUInt32(entry + layout.entryStringOffset);
-        if (word && *word == kByteBytes) {
-            located = true;
+// "None", "ByteProperty", "IntProperty" open every pool: where the next two start gives
+// the entry alignment (8 in the UE5.8 editor), and ByteProperty's header the length shift.
+bool ResolveSecondEntry(const MemoryReader &reader, Address firstBlock, NamePoolLayout &layout) {
+    const auto aligned = [](std::int32_t at, std::int32_t stride) { return (at + stride - 1) / stride * stride; };
+    const auto holds = [&](std::int32_t start, std::uint32_t text) {
+        return reader.ReadUInt32(firstBlock + start + layout.entryStringOffset).value_or(0) == text;
+    };
+    Address entry = kNullAddress;
+    for (const std::int32_t stride : {2, 4, 8}) {
+        const std::int32_t second = aligned(layout.entryStringOffset + kNoneLength, stride);
+        const std::int32_t third = aligned(second + layout.entryStringOffset + kBytePropertyLength, stride);
+        if (holds(second, kByteBytes) && holds(third, kIntPBytes)) {
+            layout.entryStride = stride;
+            entry = firstBlock + static_cast<Address>(second);
             break;
         }
-        entry += 1;
     }
-    if (!located)
+    if (entry == kNullAddress)
         return false;
 
     std::optional<std::uint16_t> header = reader.ReadAs<std::uint16_t>(entry + layout.entryHeaderOffset);
@@ -139,7 +143,7 @@ bool ResolveLengthShift(const MemoryReader &reader, Address firstBlock, const Na
     if (shift >= kMaxShift)
         return false;
 
-    lengthShift = shift;
+    layout.lengthShift = shift;
     return true;
 }
 
@@ -157,9 +161,8 @@ std::optional<NamePoolLayout> ResolvePool(const MemoryReader &reader, Address po
 
     // A six-byte header carries an extra field ahead of the length word.
     layout.entryHeaderOffset = layout.entryStringOffset == 6 ? 4 : 0;
-    layout.entryStride = layout.entryStringOffset == 2 ? 2 : 4;
 
-    if (!ResolveLengthShift(reader, *firstBlock, layout, layout.lengthShift))
+    if (!ResolveSecondEntry(reader, *firstBlock, layout))
         return std::nullopt;
 
     return layout;

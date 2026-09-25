@@ -179,6 +179,35 @@ std::vector<ScanRegion> ModuleWritableRegions(const MemoryReader &reader, Addres
     });
 }
 
+Address FindModuleExport(const MemoryReader &reader, Address moduleBase, std::string_view name) {
+    constexpr Address kExportDirectoryOffset = 0x70;
+    constexpr std::uint32_t kMaxExports = 0x100000;
+    const std::optional<Address> nt = NtHeaders(reader, moduleBase);
+    if (!nt)
+        return kNullAddress;
+    const std::uint32_t directory = reader.ReadUInt32(*nt + kOptionalHeaderOffset + kExportDirectoryOffset).value_or(0);
+    if (directory == 0)
+        return kNullAddress;
+    const Address table = moduleBase + directory;
+    const std::uint32_t count = reader.ReadUInt32(table + 0x18).value_or(0);
+    const Address functions = moduleBase + reader.ReadUInt32(table + 0x1C).value_or(0);
+    const Address names = moduleBase + reader.ReadUInt32(table + 0x20).value_or(0);
+    const Address ordinals = moduleBase + reader.ReadUInt32(table + 0x24).value_or(0);
+    if (count == 0 || count > kMaxExports)
+        return kNullAddress;
+    std::vector<char> text(name.size() + 1);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const std::uint32_t at = reader.ReadUInt32(names + i * 4ull).value_or(0);
+        if (at == 0 || !reader.Read(moduleBase + at, text.data(), text.size()) || text.back() != '\0' ||
+            name != std::string_view(text.data(), name.size()))
+            continue;
+        const std::optional<std::uint16_t> ordinal = reader.ReadAs<std::uint16_t>(ordinals + i * 2ull);
+        const std::uint32_t rva = ordinal ? reader.ReadUInt32(functions + *ordinal * 4ull).value_or(0) : 0;
+        return rva != 0 ? moduleBase + rva : kNullAddress;
+    }
+    return kNullAddress;
+}
+
 FunctionTable FunctionTable::Read(const MemoryReader &reader, std::span<const Address> modules) {
     FunctionTable table;
     table.reader_ = &reader;

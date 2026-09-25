@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace URK::Unreal {
@@ -53,6 +54,9 @@ std::vector<ScanRegion> ModuleConstantRegions(const MemoryReader &reader, Addres
 
 // Writable data: where engine globals live.
 std::vector<ScanRegion> ModuleWritableRegions(const MemoryReader &reader, Address moduleBase);
+
+// A named export's address, or kNullAddress. Modular (editor) builds export their globals.
+Address FindModuleExport(const MemoryReader &reader, Address moduleBase, std::string_view name);
 
 struct FunctionRange {
     Address begin = kNullAddress;

@@ -23,6 +23,7 @@ constexpr std::int64_t kNamePoolBefore = 0x18;
 
 constexpr std::u16string_view kGcKey = u"gc.MaxObjectsInGame";
 constexpr std::string_view kFirstEngineName = "ByteProperty";
+constexpr std::string_view kObjectArrayExport = "?GUObjectArray@@3VFUObjectArray@@A";
 
 bool InRegions(std::span<const ScanRegion> regions, Address address) {
     for (const ScanRegion &region : regions) {
@@ -255,6 +256,14 @@ GlobalCandidates FindGlobalCandidates(const MemoryReader &reader, Address module
             if (pool && InRegions(writable, *pool))
                 poolVotes[*pool] += kCallSiteWeight;
         }
+    }
+
+    // Modular builds export GUObjectArray; ObjObjects is at +0x10 before UE5.8, +0 since.
+    constexpr int kExportWeight = 64;
+    const Address exported = FindModuleExport(reader, moduleBase, kObjectArrayExport);
+    for (Address at = exported; exported != kNullAddress && at <= exported + kObjectArrayBefore; at += 8) {
+        if (InRegions(writable, at))
+            arrayVotes[at] += kExportWeight;
     }
 
     candidates.objectArrays = Ranked(arrayVotes);
