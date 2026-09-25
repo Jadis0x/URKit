@@ -639,7 +639,9 @@ bool Places::WriteBytes(const PlaceTarget &target, const void *value, std::size_
         if (!NeedGameThread(gameThread))
             return false;
         const auto *bytes = static_cast<const std::uint8_t *>(value);
-        const bool empty = std::all_of(bytes, bytes + EngineCalls::kWeakSize, [](std::uint8_t b) { return b == 0; });
+        // A null weak part: index 0 in UE5, INDEX_NONE in UE4, serial 0 in both.
+        const std::int32_t weakIndex = Load<std::int32_t>(bytes);
+        const bool empty = Load<std::int32_t>(bytes + 4) == 0 && (weakIndex == 0 || weakIndex == -1);
         EngineCalls &calls = owned_->Engine();
         if (!empty && calls.WeakTarget(bytes) == kNullAddress)
             return Fail("the lazy pointer's weak part names no live object");

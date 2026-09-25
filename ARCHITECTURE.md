@@ -10,7 +10,7 @@ and export definition differ.
 | Path | Responsibility |
 |---|---|
 | `sdk/mod_sdk.h` | Public ABI, versions, capabilities, contexts, and API tables. |
-| `src/proxy/` | `version.dll`, `winhttp.dll`, and `winmm.dll` forwarding entry points. |
+| `src/proxy/` | `version.dll`, `winhttp.dll`, `winmm.dll`, and `dwmapi.dll` forwarding entry points. |
 | `src/platform/dllmain.cpp` | Minimal process attach/detach entry point. |
 | `src/core/loader.cpp` | Startup flow and backend selection. |
 | `src/core/loader/` | Runtime backends, mod loading, events, paths, and Steam identity. |

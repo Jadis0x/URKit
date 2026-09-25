@@ -54,7 +54,7 @@ The build copies the DLL straight into the game's `Mods` folder.
 Launch the game. Then open `URKit_logs.log`, next to the game executable, and
 look for a line saying the mod initialized. If the file isn't there at all,
 the game isn't importing the proxy DLL you installed. Double check you put
-the right one (`version.dll`, `winmm.dll`, or `winhttp.dll`) next to the
+the right one (`version.dll`, `winmm.dll`, `winhttp.dll`, or `dwmapi.dll`) next to the
 executable, and that there's only one.
 
 Keep this log open in a text editor while you work. Every step below writes

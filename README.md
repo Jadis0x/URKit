@@ -23,9 +23,10 @@ Unreal Engine support is on the way, but it isn't ready yet. See
 - `urk-sdk.exe` makes a new mod project for a game.
 - `urk-updater.exe` brings an existing project up to date without touching
   the files you wrote.
-- `version.dll`, `winhttp.dll` and `winmm.dll` are the loaders. You only need
-  one of them: the one the game actually loads. `version.dll` is a good first
-  try.
+- `version.dll`, `winhttp.dll`, `winmm.dll` and `dwmapi.dll` are the loaders.
+  You only need one of them: the one the game actually loads. `version.dll` is
+  a good first try. If Windows loads its own copy first (some games get a
+  compatibility shim that does), try `dwmapi.dll`.
 - `URKitInjector.dll` is a loader for when you'd rather inject it yourself
   than drop a proxy next to the game.
 - `urk-dev-mcp.exe` and `URKitDevBridge.dll` are optional. They let AI coding

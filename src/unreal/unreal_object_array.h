@@ -13,7 +13,14 @@ namespace URK::Unreal {
 
 inline constexpr std::int32_t kOffsetNotFound = -1;
 
-// A table of chunk pointers, the only form since UE4.21. The per-chunk count is
+// One flat FUObjectItem allocation: UE4.20 and older, and later titles that kept it (Grounded).
+struct FixedObjectArrayLayout {
+    std::int32_t objectsOffset = 0;
+    std::int32_t maxObjectsOffset = 0;
+    std::int32_t numObjectsOffset = 0;
+};
+
+// A table of chunk pointers, the default since UE4.21. The per-chunk count is
 // not stored and is derived as maxElements / maxChunks.
 struct ChunkedObjectArrayLayout {
     std::int32_t objectsOffset = 0;
@@ -42,6 +49,8 @@ struct ObjectItemLayout {
 };
 
 struct ObjectArrayLayout {
+    bool chunked = true;
+    FixedObjectArrayLayout fixed{};
     ChunkedObjectArrayLayout chunks{};
     ObjectItemLayout item{};
     std::int32_t elementsPerChunk = 0;
@@ -49,6 +58,7 @@ struct ObjectArrayLayout {
 
 // Whether the candidate address holds an object array in the given layout.
 bool ValidateLayout(const MemoryReader &reader, Address address, const ChunkedObjectArrayLayout &layout);
+bool ValidateLayout(const MemoryReader &reader, Address address, const FixedObjectArrayLayout &layout);
 
 std::optional<ObjectItemLayout> ProbeObjectItemLayout(const MemoryReader &reader, Address firstItem);
 
