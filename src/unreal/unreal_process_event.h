@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -59,12 +60,24 @@ class CallFrame {
     // Owns its FunctionInfo: a frame handed out through the ABI outlives the
     // caller's copy, and holding a pointer to it crashed the game.
     explicit CallFrame(FunctionInfo info)
-        : info_(std::move(info)), bytes_(static_cast<std::size_t>(info_.parmsSize), 0) {}
+        : info_(std::make_shared<const FunctionInfo>(std::move(info))),
+          bytes_(static_cast<std::size_t>(info_->parmsSize), 0) {}
 
-    const FunctionInfo &Function() const { return info_; }
-    void *Data() { return bytes_.empty() ? nullptr : bytes_.data(); }
-    const void *Data() const { return bytes_.empty() ? nullptr : bytes_.data(); }
-    std::size_t Size() const { return bytes_.size(); }
+    // A view of a call in progress: the engine's block, the return value at
+    // returned when the caller keeps it elsewhere (a script call's result).
+    CallFrame(std::shared_ptr<const FunctionInfo> info, void *data, void *returned)
+        : info_(std::move(info)), view_(static_cast<std::uint8_t *>(data)),
+          returned_(static_cast<std::uint8_t *>(returned)) {}
+
+    const FunctionInfo &Function() const { return *info_; }
+    bool View() const { return view_ != nullptr; }
+    void *Data() { return view_ ? view_ : bytes_.empty() ? nullptr : bytes_.data(); }
+    const void *Data() const { return view_ ? view_ : bytes_.empty() ? nullptr : bytes_.data(); }
+    std::size_t Size() const { return view_ ? static_cast<std::size_t>(info_->parmsSize) : bytes_.size(); }
+
+    // Where a parameter's value lives; null when it does not fit the block.
+    std::uint8_t *Slot(const FunctionParameter &parameter);
+    const std::uint8_t *Slot(const FunctionParameter &parameter) const;
 
     void Clear() { std::fill(bytes_.begin(), bytes_.end(), std::uint8_t{0}); }
 
@@ -85,7 +98,7 @@ class CallFrame {
     }
 
     template <typename T> std::optional<T> Returned() const {
-        const FunctionParameter *parameter = info_.Returned();
+        const FunctionParameter *parameter = info_->Returned();
         return parameter ? Get<T>(parameter->name) : std::nullopt;
     }
 
@@ -93,8 +106,10 @@ class CallFrame {
     const FunctionParameter *Find(std::string_view name) const;
 
     // Declared before bytes_, which is sized from it.
-    FunctionInfo info_;
+    std::shared_ptr<const FunctionInfo> info_;
     std::vector<std::uint8_t> bytes_;
+    std::uint8_t *view_ = nullptr;
+    std::uint8_t *returned_ = nullptr;
 };
 
 // In-process only: the frame must live where the game can read it, and the call

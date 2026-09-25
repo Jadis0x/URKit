@@ -3,6 +3,7 @@
 // Blueprint calls via UObject::ProcessInternal and ProcessLocalScriptFunction
 // (self calls, ubergraphs). FFrame offsets are measured before reporting.
 
+#include "unreal_function_hooks.h"
 #include "unreal_functions.h"
 #include "unreal_module.h"
 #include "unreal_process_event_hook.h"
@@ -50,6 +51,9 @@ class ScriptCallHook {
     static void __fastcall LocalDetour(void *context, void *stack, void *result);
     void Measure(void *context, const std::uint8_t *stack);
     void Report(const std::uint8_t *stack, void *result, bool after);
+    // Function hooks for a call ProcessEvent did not already report; internal
+    // marks ProcessInternal, the one way in from ProcessEvent.
+    bool HooksBefore(FunctionHooks::Pending &pending, const std::uint8_t *stack, void *result, bool internal);
 
     std::atomic<bool> installed_{false};
     bool attempted_ = false;

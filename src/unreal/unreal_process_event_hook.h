@@ -3,6 +3,7 @@
 // ProcessEvent hook: every reflected call, plus a foothold on the game thread.
 // The host passes attach/detach in, so nothing here depends on SafetyHook.
 
+#include "unreal_function_hooks.h"
 #include "unreal_process_event.h"
 
 #include <atomic>
@@ -43,6 +44,9 @@ class ProcessEventHook {
         ~PassThrough();
         PassThrough(const PassThrough &) = delete;
         PassThrough &operator=(const PassThrough &) = delete;
+
+      private:
+        FunctionHooks::Quiet quiet_;
     };
 
     static constexpr std::uint32_t kDefaultDrainTimeoutMs = 5000;
@@ -78,8 +82,14 @@ class ProcessEventHook {
         Address object = kNullAddress;
         Address function = kNullAddress;
         void *parms = nullptr;
+        // Its entry into script (ProcessInternal) was already claimed.
+        bool scriptClaimed = false;
     };
     static const Call *CurrentCall();
+
+    // True once per call: script entered for this thread's current call, which
+    // ProcessEvent already reported (its locals are a copy of parms, not parms).
+    static bool ClaimScriptEntry(Address object, Address function);
 
     // Fails when the queue is full or no game thread is known yet.
     bool Post(Work work, void *user);

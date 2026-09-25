@@ -1,5 +1,6 @@
 #include "unreal_process_event.h"
 
+#include <algorithm>
 #include <cstring>
 #include <set>
 #include <vector>
@@ -282,43 +283,44 @@ std::vector<Address> ProcessEventImplementations(const ObjectFinder &finder, con
     return implementations;
 }
 
-const FunctionParameter *CallFrame::Find(std::string_view name) const { return info_.Parameter(name); }
+const FunctionParameter *CallFrame::Find(std::string_view name) const { return info_->Parameter(name); }
+
+const std::uint8_t *CallFrame::Slot(const FunctionParameter &parameter) const {
+    const PropertyInfo &info = parameter.info;
+    if (info.offset == kOffsetNotFound || info.offset < 0 || info.elementSize <= 0)
+        return nullptr;
+    if (parameter.returned && returned_)
+        return returned_;
+    const std::size_t end = static_cast<std::size_t>(info.offset) +
+                            static_cast<std::size_t>(info.elementSize) * static_cast<std::size_t>(std::max(info.arrayDim, 1));
+    if (end > Size() || !Data())
+        return nullptr;
+    return static_cast<const std::uint8_t *>(Data()) + info.offset;
+}
+
+std::uint8_t *CallFrame::Slot(const FunctionParameter &parameter) {
+    return const_cast<std::uint8_t *>(static_cast<const CallFrame *>(this)->Slot(parameter));
+}
 
 bool CallFrame::Set(std::string_view name, const void *value, std::size_t size) {
     const FunctionParameter *parameter = Find(name);
-    if (!parameter || !value)
+    if (!parameter || !value || size != static_cast<std::size_t>(parameter->info.elementSize))
         return false;
-
-    const PropertyInfo &info = parameter->info;
-    if (info.offset == kOffsetNotFound || info.elementSize <= 0)
+    std::uint8_t *slot = Slot(*parameter);
+    if (!slot)
         return false;
-    if (size != static_cast<std::size_t>(info.elementSize))
-        return false;
-
-    const std::size_t at = static_cast<std::size_t>(info.offset);
-    if (at + size > bytes_.size())
-        return false;
-
-    std::memcpy(bytes_.data() + at, value, size);
+    std::memcpy(slot, value, size);
     return true;
 }
 
 bool CallFrame::Get(std::string_view name, void *out, std::size_t size) const {
     const FunctionParameter *parameter = Find(name);
-    if (!parameter || !out)
+    if (!parameter || !out || size != static_cast<std::size_t>(parameter->info.elementSize))
         return false;
-
-    const PropertyInfo &info = parameter->info;
-    if (info.offset == kOffsetNotFound || info.elementSize <= 0)
+    const std::uint8_t *slot = Slot(*parameter);
+    if (!slot)
         return false;
-    if (size != static_cast<std::size_t>(info.elementSize))
-        return false;
-
-    const std::size_t at = static_cast<std::size_t>(info.offset);
-    if (at + size > bytes_.size())
-        return false;
-
-    std::memcpy(out, bytes_.data() + at, size);
+    std::memcpy(out, slot, size);
     return true;
 }
 

@@ -260,6 +260,19 @@ void ScriptCallHook::Report(const std::uint8_t *stack, void *result, bool after)
     g_inObserver = false;
 }
 
+bool ScriptCallHook::HooksBefore(FunctionHooks::Pending &pending, const std::uint8_t *stack, void *result,
+                                 bool internal) {
+    const std::int32_t node = nodeOffset_.load(std::memory_order_acquire);
+    if (node < 0)
+        return true;
+    const Address function = Load(stack + node);
+    const Address object = Load(stack + objectOffset_.load(std::memory_order_acquire));
+    if (internal && ProcessEventHook::ClaimScriptEntry(object, function))
+        return true;
+    void *locals = reinterpret_cast<void *>(Load(stack + localsOffset_.load(std::memory_order_acquire)));
+    return FunctionHooks::Instance().Before(pending, object, function, locals, result);
+}
+
 void __fastcall ScriptCallHook::InternalDetour(void *context, void *stack, void *result) {
     ScriptCallHook &hook = Instance();
     hook.internalCalls_.fetch_add(1, std::memory_order_relaxed);
@@ -267,11 +280,15 @@ void __fastcall ScriptCallHook::InternalDetour(void *context, void *stack, void 
     if (hook.nodeOffset_.load(std::memory_order_acquire) < 0)
         hook.Measure(context, frame);
     hook.Report(frame, result, false);
-    const ScriptFn original = Original(hook.internalOriginal_);
-    const void *outer = g_internalFrame;
-    g_internalFrame = stack;
-    original(context, stack, result);
-    g_internalFrame = outer;
+    FunctionHooks::Pending pending;
+    if (hook.HooksBefore(pending, frame, result, true)) {
+        const ScriptFn original = Original(hook.internalOriginal_);
+        const void *outer = g_internalFrame;
+        g_internalFrame = stack;
+        original(context, stack, result);
+        g_internalFrame = outer;
+    }
+    FunctionHooks::Instance().After(pending);
     hook.Report(frame, result, true);
 }
 
@@ -279,15 +296,19 @@ void __fastcall ScriptCallHook::LocalDetour(void *context, void *stack, void *re
     ScriptCallHook &hook = Instance();
     hook.localCalls_.fetch_add(1, std::memory_order_relaxed);
     const auto *frame = static_cast<const std::uint8_t *>(stack);
-    // ProcessInternal's own call: already reported there.
+    // ProcessInternal's own call: already reported and hooked there.
     const bool reported = g_internalFrame == stack;
-    if (reported)
+    if (reported) {
         g_internalFrame = nullptr;
-    else
-        hook.Report(frame, result, false);
-    Original(hook.localOriginal_)(context, stack, result);
-    if (!reported)
-        hook.Report(frame, result, true);
+        Original(hook.localOriginal_)(context, stack, result);
+        return;
+    }
+    hook.Report(frame, result, false);
+    FunctionHooks::Pending pending;
+    if (hook.HooksBefore(pending, frame, result, false))
+        Original(hook.localOriginal_)(context, stack, result);
+    FunctionHooks::Instance().After(pending);
+    hook.Report(frame, result, true);
 }
 
 } // namespace URK::Unreal

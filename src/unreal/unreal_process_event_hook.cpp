@@ -27,7 +27,7 @@ thread_local bool g_inCall = false;
 // The call in progress on this thread, the outer one back when it returns.
 struct CurrentScope {
     CurrentScope(void *object, void *function, void *parms) : saved(g_current), savedIn(g_inCall) {
-        g_current = {reinterpret_cast<Address>(object), reinterpret_cast<Address>(function), parms};
+        g_current = {reinterpret_cast<Address>(object), reinterpret_cast<Address>(function), parms, false};
         g_inCall = true;
     }
     ~CurrentScope() {
@@ -41,6 +41,13 @@ struct CurrentScope {
 } // namespace
 
 const ProcessEventHook::Call *ProcessEventHook::CurrentCall() { return g_inCall ? &g_current : nullptr; }
+
+bool ProcessEventHook::ClaimScriptEntry(Address object, Address function) {
+    if (!g_inCall || g_current.scriptClaimed || g_current.object != object || g_current.function != function)
+        return false;
+    g_current.scriptClaimed = true;
+    return true;
+}
 
 ProcessEventHook &ProcessEventHook::Instance() {
     static ProcessEventHook hook;
@@ -262,11 +269,19 @@ void ProcessEventHook::Dispatch(ProcessEventFn original, void *object, void *fun
     calls_.fetch_add(1, std::memory_order_relaxed);
 
     const DepthGuard depth;
+    FunctionHooks &hooks = FunctionHooks::Instance();
+    FunctionHooks::Pending pending;
     if (!depth.Outermost()) {
+        // An override's Super::ProcessEvent: the same call, hooked once already.
+        const bool continuing = g_inCall && g_current.object == reinterpret_cast<Address>(object) &&
+                                g_current.function == reinterpret_cast<Address>(function) && g_current.parms == parms;
         // Reentrant: pass through rather than run posted work mid-call.
         const CurrentScope current(object, function, parms);
-        if (original)
+        if ((continuing || hooks.Before(pending, reinterpret_cast<Address>(object),
+                                        reinterpret_cast<Address>(function), parms, nullptr)) &&
+            original)
             original(object, function, parms);
+        hooks.After(pending);
         return;
     }
 
@@ -280,8 +295,11 @@ void ProcessEventHook::Dispatch(ProcessEventFn original, void *object, void *fun
 
     if (proceed) {
         const CurrentScope current(object, function, parms);
-        if (original)
+        if (hooks.Before(pending, reinterpret_cast<Address>(object), reinterpret_cast<Address>(function), parms,
+                         nullptr) &&
+            original)
             original(object, function, parms);
+        hooks.After(pending);
     } else {
         dropped_.fetch_add(1, std::memory_order_relaxed);
     }

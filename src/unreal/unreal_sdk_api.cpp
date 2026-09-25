@@ -472,6 +472,9 @@ bool OnGameThread() {
 struct LoaderFrame {
     explicit LoaderFrame(FunctionInfo info)
         : frame(std::move(info)), engineOwned(frame.Function().parameters.size(), 0) {}
+    // A hooked call's own block: the engine made it and gives it back.
+    LoaderFrame(std::shared_ptr<const FunctionInfo> info, void *data, void *returned)
+        : frame(std::move(info), data, returned), engineOwned(frame.Function().parameters.size(), 0) {}
     CallFrame frame;
     // Made through a place, or written by a call.
     std::vector<char> engineOwned;
@@ -572,6 +575,11 @@ URK_UnrealCallFrame *Unreal_CallFrameCreate(URK_UnrealObject function) {
 }
 
 void Unreal_CallFrameDestroy(URK_UnrealCallFrame *frame) {
+    // A hooked call's frame lives on the loader's stack.
+    if (frame && FrameOf(frame)->frame.View()) {
+        Report(FrameOf(frame)->frame.Function().function, "a hooked call's frame is not destroyed by the mod");
+        return;
+    }
     std::unique_ptr<LoaderFrame> loaderFrame(FrameOf(frame));
     if (!loaderFrame ||
         std::find(loaderFrame->engineOwned.begin(), loaderFrame->engineOwned.end(), 1) == loaderFrame->engineOwned.end())
@@ -602,6 +610,9 @@ int Unreal_CallFrameSet(URK_UnrealCallFrame *frame, const char *parameterName, c
     // place_clear gives it back first.
     if (ownership != Ownership::None && loaderFrame->engineOwned[index])
         return 0;
+    // A hooked call's strings and containers are the engine's; places replace them.
+    if (ownership != Ownership::None && callFrame->View())
+        return 0;
     // The engine assigns over what it writes, freeing the old value: that value
     // must be its own (or empty), never a buffer the mod made.
     if (Written(*parameter) && kind != PropertyKind::Struct && ownership != Ownership::None) {
@@ -620,11 +631,9 @@ int Unreal_CallFrameSet(URK_UnrealCallFrame *frame, const char *parameterName, c
             return 0;
     }
     if (kind == PropertyKind::Struct) {
-        const std::size_t at = static_cast<std::size_t>(parameter->info.offset);
-        if (parameter->info.offset < 0 || size != static_cast<std::size_t>(parameter->info.elementSize) ||
-            at + size > callFrame->Size())
+        const std::uint8_t *current = callFrame->Slot(*parameter);
+        if (!current || size != static_cast<std::size_t>(parameter->info.elementSize))
             return 0;
-        const auto *current = static_cast<const std::uint8_t *>(callFrame->Data()) + at;
         if (!StructChangeAllowed(UnrealEngine::Instance(), parameter->info.inner, current,
                                  static_cast<const std::uint8_t *>(value), size))
             return 0;
@@ -652,6 +661,10 @@ int Unreal_Call(URK_UnrealObject object, URK_UnrealCallFrame *frame) {
 
     LoaderFrame *loaderFrame = FrameOf(frame);
     const FunctionInfo &function = loaderFrame->frame.Function();
+    if (loaderFrame->frame.View()) {
+        Report(function.function, "call refused: a hooked call's frame belongs to that call");
+        return 0;
+    }
     if (!loaderFrame->unreleasable.empty()) {
         Report(function.function, "call refused: it returns or writes " + loaderFrame->unreleasable +
                                       ", memory of a kind the loader cannot release");
@@ -716,14 +729,11 @@ std::optional<PlaceContext> ResolvePlace(const URK_UnrealPlace *place, bool desc
         LoaderFrame *frame = FrameOf(place->frame);
         const FunctionInfo &function = frame->frame.Function();
         const FunctionParameter *parameter = function.Parameter(place->member);
-        if (!parameter || parameter->info.offset < 0 || place->member_index < 0 ||
-            place->member_index >= parameter->info.arrayDim ||
-            static_cast<std::size_t>(parameter->info.offset + parameter->info.elementSize * parameter->info.arrayDim) >
-                frame->frame.Size())
+        std::uint8_t *slot = parameter ? frame->frame.Slot(*parameter) : nullptr;
+        if (!slot || place->member_index < 0 || place->member_index >= parameter->info.arrayDim)
             return std::nullopt;
         info = parameter->info;
-        root = static_cast<std::uint8_t *>(frame->frame.Data()) + info.offset +
-               static_cast<std::size_t>(place->member_index) * info.elementSize;
+        root = slot + static_cast<std::size_t>(place->member_index) * info.elementSize;
         context.frame = frame;
         context.parameter = static_cast<std::size_t>(parameter - function.parameters.data());
     } else {
@@ -1032,28 +1042,38 @@ void ScriptObserverTrampoline(void *, Address object, Address function, void *lo
         fn(g_scriptObserverUser.load(std::memory_order_acquire), object, function, locals, result, after ? 1 : 0);
 }
 
-int Unreal_ScriptCallObserve(URK_UnrealScriptCallObserverFn observer, void *userData) {
+// Blueprint-to-Blueprint calls reach neither observers nor hooks without it.
+bool EnsureScriptHook() {
     UnrealEngine &engine = UnrealEngine::Instance();
     ScriptCallHook &hook = ScriptCallHook::Instance();
-    if (observer && !hook.Installed()) {
-        std::lock_guard lock(g_scriptHookMutex);
-        if (!engine.EnsureBootstrapped() || !g_installer.Valid())
-            return 0;
-        std::vector<ScanRegion> code;
-        for (const Address module : engine.Presence().runtimeModules) {
-            const std::vector<ScanRegion> regions = ModuleCodeRegions(engine.Reader(), module);
-            code.insert(code.end(), regions.begin(), regions.end());
-        }
-        if (!hook.Install(engine.Finder(), engine.Types(), engine.Functions(), engine.Bounds(), code, g_installer)) {
-            Report(kNullAddress, "Blueprint calls cannot be observed: " + hook.Failure());
-            return 0;
-        }
-        char where[128];
-        std::snprintf(where, sizeof(where), "Blueprint call hooks at ProcessInternal %p and ProcessLocalScriptFunction %p",
-                      reinterpret_cast<void *>(hook.ProcessInternal()),
-                      reinterpret_cast<void *>(hook.ProcessLocalScriptFunction()));
-        Report(kNullAddress, where);
+    if (hook.Installed())
+        return true;
+    std::lock_guard lock(g_scriptHookMutex);
+    if (hook.Installed())
+        return true;
+    if (!engine.EnsureBootstrapped() || !g_installer.Valid())
+        return false;
+    std::vector<ScanRegion> code;
+    for (const Address module : engine.Presence().runtimeModules) {
+        const std::vector<ScanRegion> regions = ModuleCodeRegions(engine.Reader(), module);
+        code.insert(code.end(), regions.begin(), regions.end());
     }
+    if (!hook.Install(engine.Finder(), engine.Types(), engine.Functions(), engine.Bounds(), code, g_installer)) {
+        Report(kNullAddress, "Blueprint calls cannot be observed: " + hook.Failure());
+        return false;
+    }
+    char where[128];
+    std::snprintf(where, sizeof(where), "Blueprint call hooks at ProcessInternal %p and ProcessLocalScriptFunction %p",
+                  reinterpret_cast<void *>(hook.ProcessInternal()),
+                  reinterpret_cast<void *>(hook.ProcessLocalScriptFunction()));
+    Report(kNullAddress, where);
+    return true;
+}
+
+int Unreal_ScriptCallObserve(URK_UnrealScriptCallObserverFn observer, void *userData) {
+    ScriptCallHook &hook = ScriptCallHook::Instance();
+    if (observer && !EnsureScriptHook())
+        return 0;
     if (!observer && hook.Installed())
         Report(kNullAddress, "Blueprint call observer cleared: " + std::to_string(hook.InternalCalls()) +
                                  " calls through ProcessInternal, " + std::to_string(hook.LocalCalls()) +
@@ -1094,6 +1114,115 @@ int Unreal_ObjectLifeObserve(URK_UnrealObjectLifeObserverFn observer, void *user
     g_lifeObserverFn.store(observer, std::memory_order_release);
     hook.Observe(observer ? &LifeObserverTrampoline : nullptr, nullptr);
     return hook.Installed() ? 1 : 0;
+}
+
+// --- function hooks -----------------------------------------------------------
+
+struct ModFunctionHook {
+    URK_UnrealFunctionHookFn before = nullptr;
+    URK_UnrealFunctionHookFn after = nullptr;
+    void *user = nullptr;
+    Address function = kNullAddress;
+    std::shared_ptr<const FunctionInfo> info;
+    // Blueprint overrides, described on their first call.
+    struct Override {
+        std::uint64_t stamp = 0;
+        std::shared_ptr<const FunctionInfo> info;
+    };
+    std::mutex overridesMutex;
+    std::unordered_map<Address, Override> overrides;
+};
+
+// Name and ParmsSize: a function freed and another made at its address differs.
+std::uint64_t FunctionStamp(const UnrealEngine &engine, Address function) {
+    std::uint32_t name = 0;
+    std::uint16_t parmsSize = 0;
+    std::memcpy(&name, reinterpret_cast<const void *>(function + engine.Finder().Offsets().name), sizeof(name));
+    std::memcpy(&parmsSize, reinterpret_cast<const void *>(function + engine.Functions().parmsSize), sizeof(parmsSize));
+    return static_cast<std::uint64_t>(name) << 16 | parmsSize;
+}
+
+std::shared_ptr<const FunctionInfo> InfoFor(ModFunctionHook &hook, Address called) {
+    if (called == hook.function)
+        return hook.info;
+    UnrealEngine &engine = UnrealEngine::Instance();
+    const std::uint64_t stamp = FunctionStamp(engine, called);
+    const std::lock_guard lock(hook.overridesMutex);
+    ModFunctionHook::Override &known = hook.overrides[called];
+    if (!known.info || known.stamp != stamp) {
+        std::optional<FunctionInfo> info = DescribeFunction(engine.Chain(), engine.Values(), engine.Functions(), called);
+        if (!info)
+            return nullptr;
+        known = {stamp, std::make_shared<const FunctionInfo>(std::move(*info))};
+    }
+    return known.info;
+}
+
+bool ModHookCallback(void *user, const HookedCall &call) {
+    auto *hook = static_cast<ModFunctionHook *>(user);
+    const URK_UnrealFunctionHookFn fn = call.after ? hook->after : hook->before;
+    if (!fn)
+        return true;
+    std::shared_ptr<const FunctionInfo> info = InfoFor(*hook, call.function);
+    if (!info)
+        return true;
+    LoaderFrame view(std::move(info), call.parms, call.result);
+    const URK_UnrealHookedCall raw{call.object, call.function, reinterpret_cast<URK_UnrealCallFrame *>(&view),
+                                   call.after ? 1 : 0, call.skipped ? 1 : 0};
+    return fn(hook->user, &raw) != 0;
+}
+
+std::mutex g_modHooksMutex;
+std::unordered_map<std::uint64_t, std::unique_ptr<ModFunctionHook>> g_modHooks;
+
+std::uint64_t Unreal_FunctionHookAdd(URK_UnrealObject function, URK_UnrealFunctionHookFn before,
+                                     URK_UnrealFunctionHookFn after, void *userData) {
+    UnrealEngine &engine = UnrealEngine::Instance();
+    if ((!before && !after) || !Live(engine, function) ||
+        !ObjectIs(engine.Finder(), engine.Structs(), function, kCastFlagFunction))
+        return 0;
+    if (!ProcessEventHook::Instance().Installed()) {
+        Report(function, "hook refused: ProcessEvent is not hooked");
+        return 0;
+    }
+    std::optional<FunctionInfo> info = DescribeFunction(engine.Chain(), engine.Values(), engine.Functions(), function);
+    if (!info)
+        return 0;
+    // Script functions also run straight from other Blueprints.
+    if (!info->Native() && !EnsureScriptHook())
+        Report(function, "hooked, but only its calls through ProcessEvent: Blueprint-to-Blueprint calls are not seen");
+    auto hook = std::make_unique<ModFunctionHook>();
+    hook->before = before;
+    hook->after = after;
+    hook->user = userData;
+    hook->function = function;
+    hook->info = std::make_shared<const FunctionInfo>(std::move(*info));
+    FunctionHooks::Instance().SetSuperOffset(engine.Structs().superStruct);
+    const std::lock_guard lock(g_modHooksMutex);
+    const std::uint64_t id = FunctionHooks::Instance().Add(function, before ? &ModHookCallback : nullptr,
+                                                           after ? &ModHookCallback : nullptr, hook.get());
+    if (id != 0)
+        g_modHooks.emplace(id, std::move(hook));
+    return id;
+}
+
+int Unreal_FunctionHookRemove(std::uint64_t id) {
+    std::unique_ptr<ModFunctionHook> hook;
+    {
+        const std::lock_guard lock(g_modHooksMutex);
+        const auto found = g_modHooks.find(id);
+        if (found == g_modHooks.end())
+            return 0;
+        hook = std::move(found->second);
+        g_modHooks.erase(found);
+    }
+    if (!FunctionHooks::Instance().Remove(id)) {
+        // Still running elsewhere: its record must outlive that call.
+        Report(kNullAddress, "a function hook's callback did not finish in time; the mod must stay loaded");
+        hook.release();
+        return 0;
+    }
+    return 1;
 }
 
 std::uint32_t Unreal_GameThreadId() { return ProcessEventHook::Instance().GameThreadId(); }
@@ -1182,6 +1311,8 @@ URK_UnrealApi BuildTable() {
     api.enum_name = &Unreal_EnumName;
     api.script_call_observe = &Unreal_ScriptCallObserve;
     api.object_life_observe = &Unreal_ObjectLifeObserve;
+    api.function_hook_add = &Unreal_FunctionHookAdd;
+    api.function_hook_remove = &Unreal_FunctionHookRemove;
 
     return api;
 }

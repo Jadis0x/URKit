@@ -92,6 +92,7 @@ set(URK_UNREAL_SRC
     ${URK_SRC_DIR}/unreal/unreal_object_finder.cpp
     ${URK_SRC_DIR}/unreal/unreal_offsets.cpp
     ${URK_SRC_DIR}/unreal/unreal_process_event.cpp
+    ${URK_SRC_DIR}/unreal/unreal_function_hooks.cpp
     ${URK_SRC_DIR}/unreal/unreal_process_event_hook.cpp
     ${URK_SRC_DIR}/unreal/unreal_process_memory.cpp
     ${URK_SRC_DIR}/unreal/unreal_property_offsets.cpp
@@ -310,6 +311,7 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/unreal/unreal_object_finder.h
     ${URK_SRC_DIR}/unreal/unreal_offsets.h
     ${URK_SRC_DIR}/unreal/unreal_process_event.h
+    ${URK_SRC_DIR}/unreal/unreal_function_hooks.h
     ${URK_SRC_DIR}/unreal/unreal_process_event_hook.h
     ${URK_SRC_DIR}/unreal/unreal_process_memory.h
     ${URK_SRC_DIR}/unreal/unreal_property_offsets.h

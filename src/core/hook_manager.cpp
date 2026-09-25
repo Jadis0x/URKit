@@ -97,6 +97,25 @@ void ConfigureDetoursAddressPolicy() {
 #endif
 }
 
+// Detours suspends threads one by one and allocates between suspensions; a
+// thread suspended inside the process heap's lock would block those forever.
+// Owning the lock first means no suspended thread can hold it, and ours is
+// recursive. No logging while held: the logger's lock is another such trap.
+class ProcessHeapHold {
+  public:
+    ProcessHeapHold() : heap_(GetProcessHeap()), held_(heap_ && HeapLock(heap_)) {}
+    ~ProcessHeapHold() {
+        if (held_)
+            HeapUnlock(heap_);
+    }
+    ProcessHeapHold(const ProcessHeapHold &) = delete;
+    ProcessHeapHold &operator=(const ProcessHeapHold &) = delete;
+
+  private:
+    HANDLE heap_;
+    bool held_;
+};
+
 DetoursResult UpdateTransactionThreads(std::vector<HANDLE> *opened_threads) {
     if (!opened_threads)
         return {ERROR_INVALID_PARAMETER, "thread handle storage", 0};
@@ -194,11 +213,12 @@ DetoursResult RunDetoursTransactionOnce(void **original, void *detour, bool atta
 
     ConfigureDetoursAddressPolicy();
 
+    std::vector<HANDLE> opened_threads;
+    const ProcessHeapHold heap;
     const LONG begin_result = DetourTransactionBegin();
     if (begin_result != NO_ERROR)
         return {begin_result, "DetourTransactionBegin"};
 
-    std::vector<HANDLE> opened_threads;
     DetoursResult update_result = UpdateTransactionThreads(&opened_threads);
     if (update_result.error != NO_ERROR) {
         DetourTransactionAbort();
@@ -239,11 +259,12 @@ DetoursResult RunDetoursBatchOnce(const std::vector<HookRecord *> &records, bool
         return {};
 
     ConfigureDetoursAddressPolicy();
+    std::vector<HANDLE> opened_threads;
+    const ProcessHeapHold heap;
     const LONG begin_result = DetourTransactionBegin();
     if (begin_result != NO_ERROR)
         return {begin_result, "DetourTransactionBegin"};
 
-    std::vector<HANDLE> opened_threads;
     DetoursResult update_result = UpdateTransactionThreads(&opened_threads);
     if (update_result.error != NO_ERROR) {
         DetourTransactionAbort();

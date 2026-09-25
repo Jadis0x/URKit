@@ -7,8 +7,12 @@ std::string UnrealRuntimeModule() {
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -610,18 +614,9 @@ template <typename K, typename V> struct Traits<std::vector<std::pair<K, V>>> {
 };
 
 // Parameters of one UFunction call, copied in and out by name.
-class CallFrame {
+class FrameView {
   public:
-    explicit CallFrame(Object function) {
-        if (const auto *a = api(); a && function)
-            frame_ = a->call_frame_create(function.handle());
-    }
-    ~CallFrame() {
-        if (const auto *a = api(); a && frame_)
-            a->call_frame_destroy(frame_);
-    }
-    CallFrame(const CallFrame &) = delete;
-    CallFrame &operator=(const CallFrame &) = delete;
+    explicit FrameView(URK_UnrealCallFrame *frame = nullptr) : frame_(frame) {}
 
     bool valid() const { return frame_ != nullptr; }
     URK_UnrealCallFrame *raw() const { return frame_; }
@@ -663,8 +658,23 @@ class CallFrame {
         return Traits<T>::get(Place(frame_, parameter));
     }
 
-  private:
+  protected:
     URK_UnrealCallFrame *frame_ = nullptr;
+};
+
+// A frame of its own, for call().
+class CallFrame : public FrameView {
+  public:
+    explicit CallFrame(Object function) {
+        if (const auto *a = api(); a && function)
+            frame_ = a->call_frame_create(function.handle());
+    }
+    ~CallFrame() {
+        if (const auto *a = api(); a && frame_)
+            a->call_frame_destroy(frame_);
+    }
+    CallFrame(const CallFrame &) = delete;
+    CallFrame &operator=(const CallFrame &) = delete;
 };
 
 // Runs on the game thread; needs install_process_event_hook() first.
@@ -690,6 +700,190 @@ inline bool remove_process_event_hook() {
 inline void observe_process_event(URK_UnrealProcessEventObserverFn observer, void *user = nullptr) {
     if (const auto *a = api())
         a->process_event_observe(observer, user);
+}
+
+// One call of a hooked function: its parameters and return value by name,
+// readable and writable until the callback returns.
+class HookedCall : public FrameView {
+  public:
+    explicit HookedCall(const URK_UnrealHookedCall &call) : FrameView(call.frame), call_(call) {}
+    Object object() const { return Object(call_.object); }
+    Object function() const { return Object(call_.function); }
+    bool after() const { return call_.after != 0; }
+    // After only: a before callback skipped the body.
+    bool skipped() const { return call_.skipped != 0; }
+
+  private:
+    URK_UnrealHookedCall call_;
+};
+
+// Callbacks around one function's calls; removed when this goes away. before
+// returns false to skip the body. Calls made inside a callback are not hooked.
+class FunctionHook {
+  public:
+    using Before = std::function<bool(HookedCall &)>;
+    using After = std::function<void(HookedCall &)>;
+
+    FunctionHook() = default;
+    FunctionHook(Object function, Before before, After after = {}) {
+        const auto *a = api();
+        if (!a || !function || (!before && !after))
+            return;
+        state_ = std::make_unique<State>();
+        state_->before = std::move(before);
+        state_->after = std::move(after);
+        id_ = a->function_hook_add(function.handle(), state_->before ? &RunBefore : nullptr,
+                                   state_->after ? &RunAfter : nullptr, state_.get());
+        if (id_ == 0)
+            state_.reset();
+    }
+    ~FunctionHook() { remove(); }
+    FunctionHook(FunctionHook &&other) noexcept
+        : state_(std::move(other.state_)), id_(std::exchange(other.id_, 0)) {}
+    FunctionHook &operator=(FunctionHook &&other) noexcept {
+        if (this != &other) {
+            remove();
+            state_ = std::move(other.state_);
+            id_ = std::exchange(other.id_, 0);
+        }
+        return *this;
+    }
+    FunctionHook(const FunctionHook &) = delete;
+    FunctionHook &operator=(const FunctionHook &) = delete;
+
+    bool active() const { return id_ != 0; }
+    // False when a callback still running elsewhere kept the hook alive.
+    bool remove() {
+        if (id_ == 0)
+            return true;
+        const auto *a = api();
+        const bool removed = a && a->function_hook_remove(id_) != 0;
+        id_ = 0;
+        // Removed from inside its own callback: that call frees it on return.
+        if (removed && state_->running.load(std::memory_order_acquire) > 0)
+            state_->orphaned = true;
+        if (removed && !state_->orphaned)
+            state_.reset();
+        else
+            state_.release();
+        return removed;
+    }
+
+  private:
+    struct State {
+        Before before;
+        After after;
+        std::atomic<int> running{0};
+        bool orphaned = false;
+    };
+
+    template <typename Body> static int Run(State *state, Body body) {
+        state->running.fetch_add(1, std::memory_order_acq_rel);
+        int answer = 1;
+        try {
+            answer = body() ? 1 : 0;
+        } catch (const std::exception &error) {
+            URK::log((std::string("[unreal] hook threw: ") + error.what()).c_str());
+        } catch (...) {
+            URK::log("[unreal] hook threw");
+        }
+        if (state->running.fetch_sub(1, std::memory_order_acq_rel) == 1 && state->orphaned)
+            delete state;
+        return answer;
+    }
+    static int RunBefore(void *user, const URK_UnrealHookedCall *raw) {
+        auto *state = static_cast<State *>(user);
+        return Run(state, [&] {
+            HookedCall call(*raw);
+            return state->before(call);
+        });
+    }
+    static int RunAfter(void *user, const URK_UnrealHookedCall *raw) {
+        auto *state = static_cast<State *>(user);
+        return Run(state, [&] {
+            HookedCall call(*raw);
+            state->after(call);
+            return true;
+        });
+    }
+
+    std::unique_ptr<State> state_;
+    std::uint64_t id_ = 0;
+};
+
+// By the function's name on a class or an instance's class.
+inline FunctionHook hook(Object owner, const char *function, FunctionHook::Before before,
+                         FunctionHook::After after = {}) {
+    return FunctionHook(owner.function(function), std::move(before), std::move(after));
+}
+
+// --- Spawning -------------------------------------------------------------------
+
+struct Location {
+    double x = 0, y = 0, z = 0;
+};
+// Degrees, as the editor shows them.
+struct Rotation {
+    double pitch = 0, yaw = 0, roll = 0;
+};
+
+namespace detail {
+// FTransform by member name: float in UE4, double in UE5, the loader converts.
+inline bool SetTransform(const Place &transform, const Location &at, const Rotation &facing) {
+    // FRotator::Quaternion.
+    constexpr double kHalfRadians = 3.14159265358979323846 / 360.0;
+    const double sp = std::sin(facing.pitch * kHalfRadians), cp = std::cos(facing.pitch * kHalfRadians);
+    const double sy = std::sin(facing.yaw * kHalfRadians), cy = std::cos(facing.yaw * kHalfRadians);
+    const double sr = std::sin(facing.roll * kHalfRadians), cr = std::cos(facing.roll * kHalfRadians);
+    const Place translation = transform.member("Translation");
+    const Place rotation = transform.member("Rotation");
+    const Place scale = transform.member("Scale3D");
+    return translation.member("X").set_float(at.x) && translation.member("Y").set_float(at.y) &&
+           translation.member("Z").set_float(at.z) && rotation.member("X").set_float(cr * sp * sy - sr * cp * cy) &&
+           rotation.member("Y").set_float(-cr * sp * cy - sr * cp * sy) &&
+           rotation.member("Z").set_float(cr * cp * sy - sr * sp * cy) &&
+           rotation.member("W").set_float(cr * cp * cy + sr * sp * sy) && scale.member("X").set_float(1) &&
+           scale.member("Y").set_float(1) && scale.member("Z").set_float(1);
+}
+
+// UE5's scale choice, absent before: keep the class's own root scale.
+inline bool SetScaleMethod(const FrameView &frame) {
+    const Place method = frame.parameter("TransformScaleMethod");
+    return !method.describe() || method.set_text("MultiplyWithRoot");
+}
+} // namespace detail
+
+// An actor of klass in world_context's world, as Blueprint's SpawnActor node
+// makes one: construction scripts and BeginPlay run. Game thread; null on failure.
+inline Object spawn_actor(Object world_context, Object klass, Location at = {}, Rotation facing = {},
+                          Object owner = {}) {
+    const Object statics = find("GameplayStatics");
+    if (!statics || !world_context || !klass)
+        return Object();
+    Object actor;
+    {
+        CallFrame begin(statics.function("BeginDeferredActorSpawnFromClass"));
+        if (!begin.set<Handle>("WorldContextObject", world_context.handle()) ||
+            !begin.set<Handle>("ActorClass", klass.handle()) || !begin.set<Handle>("Owner", owner.handle()) ||
+            !detail::SetTransform(begin.parameter("SpawnTransform"), at, facing) || !detail::SetScaleMethod(begin) ||
+            !call(statics.default_object(), begin))
+            return Object();
+        actor = Object(begin.get<Handle>("ReturnValue").value_or(null_handle));
+    }
+    if (!actor)
+        return Object();
+    CallFrame finish(statics.function("FinishSpawningActor"));
+    if (!finish.set<Handle>("Actor", actor.handle()) ||
+        !detail::SetTransform(finish.parameter("SpawnTransform"), at, facing) || !detail::SetScaleMethod(finish) ||
+        !call(statics.default_object(), finish))
+        return Object();
+    return Object(finish.get<Handle>("ReturnValue").value_or(null_handle));
+}
+
+// Game thread. The engine frees it once nothing refers to it any more.
+inline bool destroy_actor(Object actor) {
+    CallFrame frame(actor.function("K2_DestroyActor"));
+    return actor && frame.valid() && call(actor, frame);
 }
 
 // Zero until the hook has seen enough calls to tell which thread is the game's.

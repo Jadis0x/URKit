@@ -12,7 +12,7 @@ extern "C" {
 #define URK_IL2CPP_API_VERSION 7
 #define URK_NETWORK_API_VERSION 1
 #define URK_HOOK_API_VERSION 1
-#define URK_UNREAL_API_VERSION 4
+#define URK_UNREAL_API_VERSION 5
 
 #define URK_SCENE_NAME_MAX 128
 #define URK_OBJECT_NAME_MAX 128
@@ -850,6 +850,22 @@ typedef int (*URK_UnrealProcessEventObserverFn)(void *user_data, URK_UnrealObjec
  */
 typedef void (*URK_UnrealPostedWorkFn)(void *user_data);
 
+/* One call of a hooked function. frame reads and writes its parameters and
+ * return value by name (call_frame_get/set, places) until the callback
+ * returns; it is never destroyed or called. */
+typedef struct URK_UnrealHookedCall {
+    URK_UnrealObject object;
+    URK_UnrealObject function;
+    URK_UnrealCallFrame *frame;
+    int32_t after;
+    /* After only: a before callback skipped the body. */
+    int32_t skipped;
+} URK_UnrealHookedCall;
+
+/* Before: zero skips the body, the frame's return value standing in for it.
+ * After: the answer is ignored. Calls made inside a callback are not hooked. */
+typedef int (*URK_UnrealFunctionHookFn)(void *user_data, const URK_UnrealHookedCall *call);
+
 /*
  * Version 3. Where a value lives: a live object's member, or a call frame's
  * parameter, then steps into it. A place is resolved again on every use -
@@ -1168,6 +1184,16 @@ typedef struct URK_UnrealApi {
     int (*script_call_observe)(URK_UnrealScriptCallObserverFn observer, void *user_data);
     /* One observer; NULL clears. Nonzero when the object array hooks are in. */
     int (*object_life_observe)(URK_UnrealObjectLifeObserverFn observer, void *user_data);
+
+    /* Version 5 */
+    /* Callbacks around one function's calls (its Blueprint overrides too)
+     * through ProcessEvent and between Blueprints, in the order added. Native
+     * functions called straight from Blueprint bytecode are not seen. */
+    uint64_t (*function_hook_add)(URK_UnrealObject function, URK_UnrealFunctionHookFn before,
+                                  URK_UnrealFunctionHookFn after, void *user_data);
+    /* Nonzero: no callback of it runs again (other threads' calls get their
+     * after first). Zero when those did not finish in time: stay loaded. */
+    int (*function_hook_remove)(uint64_t id);
 } URK_UnrealApi;
 
 #ifdef __cplusplus
@@ -1180,6 +1206,8 @@ static_assert(offsetof(URK_UnrealApi, post_to_game_thread) > offsetof(URK_Unreal
 static_assert(offsetof(URK_UnrealApi, struct_size) > offsetof(URK_UnrealApi, post_to_game_thread),
               "URK_UnrealApi new fields must be appended.");
 static_assert(offsetof(URK_UnrealApi, place_describe) > offsetof(URK_UnrealApi, write_struct),
+              "URK_UnrealApi new fields must be appended.");
+static_assert(offsetof(URK_UnrealApi, function_hook_add) > offsetof(URK_UnrealApi, object_life_observe),
               "URK_UnrealApi new fields must be appended.");
 static_assert(offsetof(URK_UnrealPropertyInfo, type_object) > offsetof(URK_UnrealPropertyInfo, reserved),
               "URK_UnrealPropertyInfo new fields must be appended.");
