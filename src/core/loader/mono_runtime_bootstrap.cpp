@@ -90,9 +90,7 @@ MonoRuntimeBootstrapResult MonoRuntimeBootstrap_Attach(MonoApi &mono, RuntimeSta
                                                             reinterpret_cast<void *>(&JitInitVersionDetour));
         Log("[runtime][Mono] mono_jit_init_version hook installed=%s.", versionHooked ? "yes" : "no");
 
-        // Close the interval between the initial root-domain probe and hook
-        // commits. If Mono initialized in that interval, no init call remains for
-        // either detour to observe.
+        // Mono may have initialized between the first probe and hook commit; recheck.
         root = mono.get_root_domain ? mono.get_root_domain() : nullptr;
         if (root && !g_monoDomain.load(std::memory_order_acquire))
             PublishMonoDomain(root, "mono_get_root_domain post-hook probe");

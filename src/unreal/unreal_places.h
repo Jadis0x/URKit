@@ -18,8 +18,7 @@ struct PlaceTarget {
     // Null when only the element type was asked for (an index of -1).
     std::uint8_t *value = nullptr;
     PropertyInfo info;
-    // A set element or map key, or inside one: its hash places it, so it is
-    // replaced by removing and adding, never changed where it is.
+    // Inside a set element or map key: replaced by remove + add, never in place.
     bool key = false;
     // The object the root member belongs to; null for a frame parameter.
     Address owner = kNullAddress;
@@ -51,8 +50,7 @@ class Places {
     std::optional<PlaceTarget> Walk(std::uint8_t *root, const PropertyInfo &rootInfo, const URK_UnrealStep *steps,
                                     std::uint32_t count, bool describe, bool gameThread = false);
 
-    // gameThread: whether the caller is on the engine's game thread. Anything
-    // needing an engine call fails without it.
+    // gameThread: engine calls fail without it.
     bool ReadInteger(const PlaceTarget &target, std::int64_t *output);
     bool WriteInteger(const PlaceTarget &target, std::int64_t value);
     bool ReadFloating(const PlaceTarget &target, double *output);

@@ -5,14 +5,14 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <thread>
 
 namespace URK::Unreal {
 namespace {
 
 constexpr std::int32_t kMaxFields = 4096;
 
-// Names are FNames; a tab or line break would split a record, a bar an
-// element shape.
+// Tabs and line breaks split records, a bar splits element shapes.
 std::string Clean(std::string text) {
     for (char &ch : text) {
         if (ch == '\t' || ch == '\n' || ch == '\r' || ch == '|')
@@ -45,8 +45,7 @@ Named TypeOf(const ObjectFinder &finder, const PropertyInfo &info) {
     return NameAndPackage(finder, info.typeObject);
 }
 
-// kind, element size, array dim, flags, then the object the type is named by.
-// The line is left open for a struct member's layout columns.
+// kind, element size, array dim, flags, type object; left open for layout columns.
 void WriteShapeOpen(std::ostringstream &out, const ObjectFinder &finder, const PropertyInfo &info) {
     out << '\t' << PropertyKindName(info.kind) << '\t' << info.elementSize << '\t' << info.arrayDim << '\t'
         << Hex(info.propertyFlags);
@@ -148,8 +147,7 @@ std::string DumpStruct(const ObjectFinder &finder, const StructOffsets &structs,
     return out.str();
 }
 
-// An enum's names as the running game defines them; values are informational,
-// generated code resolves names at runtime.
+// Enum names from the running game; values are informational.
 std::string DumpEnum(const EnumNames &enums, Address enumObject, const Named &self) {
     std::ostringstream out;
     out << "E\t" << self.name << '\t' << self.package << '\n';
@@ -173,7 +171,8 @@ std::string KeyOf(const std::string &recordLine) {
 std::string Header(const TypeDumpImage &image) {
     std::ostringstream out;
     out << kTypeDumpMagic << '\t' << kTypeDumpVersion << '\n'
-        << "IMAGE\t" << Hex(image.timeDateStamp) << '\t' << Hex(image.sizeOfImage) << '\n'
+        << "IMAGE\t" << Hex(image.timeDateStamp) << '\t' << Hex(image.sizeOfImage) << '\t' << Hex(image.loaderStamp)
+        << '\n'
         << "ENGINE\t" << Clean(image.engine) << '\n';
     return out.str();
 }
@@ -202,62 +201,181 @@ TypeDumpBlocks ReadExisting(const std::string &path, const TypeDumpImage &image)
     return blocks;
 }
 
-} // namespace
-
-TypeDumpBlocks DumpClasses(const ObjectFinder &finder, const StructOffsets &structs, const PropertyChain &chain,
-                           const PropertyValues &values, const FunctionOffsets &functions, const TypeQueries &types,
-                           const EnumNames *enums) {
-    TypeDumpBlocks blocks;
-    if (structs.children == kOffsetNotFound || structs.fieldNext == kOffsetNotFound)
-        return blocks;
-
-    const ObjectArray &objects = finder.Objects();
-    const std::int32_t total = objects.Num();
-    for (std::int32_t slot = 0; slot < total; ++slot) {
-        const Address object = objects.ObjectAt(slot);
-        if (object == kNullAddress)
-            continue;
-        const bool isClass = ObjectIs(finder, structs, object, kCastFlagClass);
-        if (enums && !isClass && ObjectIs(finder, structs, object, kCastFlagEnum)) {
-            const Named self = NameAndPackage(finder, object);
-            if (!self.name.empty() && !self.package.empty())
-                blocks.emplace(self.package + '\t' + self.name, DumpEnum(*enums, object, self));
-            continue;
-        }
-        if (!isClass && !ObjectIs(finder, structs, object, kCastFlagScriptStruct))
-            continue;
-        const Named self = NameAndPackage(finder, object);
-        if (self.name.empty() || self.package.empty())
-            continue;
-        blocks.emplace(self.package + '\t' + self.name,
-                       isClass ? DumpClass(finder, structs, chain, values, functions, types, object, self)
-                               : DumpStruct(finder, structs, chain, values, types, object, self));
-    }
-    return blocks;
-}
-
-int WriteTypeDump(const std::string &path, const TypeDumpImage &image, const TypeDumpBlocks &blocks) {
-    TypeDumpBlocks merged = ReadExisting(path, image);
-    int added = 0;
-    for (const auto &[key, block] : blocks) {
-        const auto [at, inserted] = merged.insert_or_assign(key, block);
-        added += inserted ? 1 : 0;
-    }
-
+bool WriteAll(const std::string &path, const TypeDumpImage &image, const TypeDumpBlocks &blocks) {
     const std::string temporary = path + ".tmp";
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out << Header(image);
-        for (const auto &[key, block] : merged)
+        for (const auto &[key, block] : blocks)
             out << block;
         if (!out)
-            return -1;
+            return false;
     }
     if (!MoveFileExA(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         DeleteFileA(temporary.c_str());
-        return -1;
+        return false;
     }
-    return added;
+    return true;
+}
+
+constexpr std::uint8_t kKindClass = 1;
+constexpr std::uint8_t kKindStruct = 2;
+constexpr std::uint8_t kKindEnum = 3;
+
+double MillisecondsSince(const LARGE_INTEGER &start) {
+    LARGE_INTEGER now{}, frequency{};
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&frequency);
+    return 1000.0 * static_cast<double>(now.QuadPart - start.QuadPart) / static_cast<double>(frequency.QuadPart);
+}
+
+} // namespace
+
+TypeDumper::TypeDumper(const TypeDumpSources &sources, std::string path, const TypeDumpImage &image, Report report)
+    : sources_(sources), path_(std::move(path)), image_(image), report_(std::move(report)) {
+    *file_ = ReadExisting(path_, image_);
+    for (const auto &entry : *file_)
+        known_.insert(entry.first);
+}
+
+// The writer is detached and owns what it uses, so nothing waits here at exit.
+TypeDumper::~TypeDumper() = default;
+
+std::uint64_t TypeDumper::NameValue(Address object) const {
+    std::uint64_t name = 0;
+    const std::int32_t offset = sources_.finder.Offsets().name;
+    if (offset != kOffsetNotFound)
+        sources_.finder.Reader().ReadTrusted(object + offset, &name, sizeof(name));
+    return name;
+}
+
+// What an object is, judged by its class's cast flags; each class is asked once.
+std::uint8_t TypeDumper::KindOf(Address object) {
+    const std::int32_t offset = sources_.finder.Offsets().classPointer;
+    Address meta = kNullAddress;
+    if (offset == kOffsetNotFound || !sources_.finder.Reader().ReadTrusted(object + offset, &meta, sizeof(meta)) ||
+        meta == kNullAddress)
+        return 0;
+    const auto [entry, added] = metaclasses_.try_emplace(meta, std::uint8_t{0});
+    if (added) {
+        const std::uint64_t flags =
+            sources_.finder.Reader().ReadAs<std::uint64_t>(meta + sources_.structs.castFlags).value_or(0);
+        if ((flags & kCastFlagClass) == kCastFlagClass)
+            entry->second = kKindClass;
+        else if (sources_.enums && (flags & kCastFlagEnum) == kCastFlagEnum)
+            entry->second = kKindEnum;
+        else if ((flags & kCastFlagScriptStruct) == kCastFlagScriptStruct)
+            entry->second = kKindStruct;
+    }
+    return entry->second;
+}
+
+std::size_t TypeDumper::Scan(const std::string &label, const EnumNames *enums) {
+    if (enums && !sources_.enums) {
+        sources_.enums = enums;
+        metaclasses_.clear();
+    }
+    const StructOffsets &structs = sources_.structs;
+    if (structs.children == kOffsetNotFound || structs.fieldNext == kOffsetNotFound ||
+        structs.castFlags == kOffsetNotFound)
+        return 0;
+    LARGE_INTEGER started{};
+    QueryPerformanceCounter(&started);
+    const bool wasIdle = queue_.empty();
+    std::size_t queued = 0;
+    sources_.finder.Objects().ForEach([&](std::int32_t, Address object) {
+        const std::uint8_t kind = object == kNullAddress ? std::uint8_t{0} : KindOf(object);
+        if (kind == 0)
+            return true;
+        const std::uint64_t name = NameValue(object);
+        const auto [entry, added] = seen_.try_emplace(object);
+        Seen &seen = entry->second;
+        // An address freed and reused by another type carries another name.
+        if (added || seen.name != name || seen.kind != kind) {
+            const Named self = NameAndPackage(sources_.finder, object);
+            seen = {name, kind, self.name.empty() || self.package.empty() ? "" : self.package + '\t' + self.name};
+        }
+        if (seen.key.empty() || !known_.insert(seen.key).second)
+            return true;
+        queue_.push_back({object, name, kind, seen.key});
+        ++queued;
+        return true;
+    });
+    const double scanMs = MillisecondsSince(started);
+    if (queued == 0) {
+        if (wasIdle && ready_.empty()) {
+            char line[512];
+            std::snprintf(line, sizeof(line), "[Unreal] types of %s dumped: 0 new (scan %.1fms), %zu known, in %s.",
+                          label.c_str(), scanMs, known_.size(), path_.c_str());
+            report_(line);
+        }
+        return 0;
+    }
+    if (wasIdle) {
+        started_ = GetTickCount64();
+        spentMs_ = 0;
+        frames_ = 0;
+    }
+    spentMs_ += scanMs;
+    label_ = label;
+    return queued;
+}
+
+void TypeDumper::Step(double budgetMs) {
+    if (queue_.empty()) {
+        if (!ready_.empty())
+            Flush();
+        return;
+    }
+    LARGE_INTEGER started{};
+    QueryPerformanceCounter(&started);
+    ++frames_;
+    double elapsed = 0;
+    do {
+        const Queued item = std::move(queue_.front());
+        queue_.pop_front();
+        // Unloaded before its turn: forget it, a later scan may queue it again.
+        if (!IsLiveObject(sources_.finder, item.object) || NameValue(item.object) != item.name) {
+            known_.erase(item.key);
+        } else {
+            const std::size_t tab = item.key.find('\t');
+            const Named self{item.key.substr(tab + 1), item.key.substr(0, tab)};
+            const TypeDumpSources &s = sources_;
+            if (item.kind == kKindClass)
+                ready_[item.key] = DumpClass(s.finder, s.structs, s.chain, s.values, s.functions, s.types,
+                                             item.object, self);
+            else if (item.kind == kKindStruct)
+                ready_[item.key] = DumpStruct(s.finder, s.structs, s.chain, s.values, s.types, item.object, self);
+            else
+                ready_[item.key] = DumpEnum(*s.enums, item.object, self);
+        }
+        elapsed = MillisecondsSince(started);
+    } while (!queue_.empty() && elapsed < budgetMs);
+    spentMs_ += elapsed;
+    if (queue_.empty())
+        Flush();
+}
+
+// Merging and writing a file of megabytes happens off the game thread.
+void TypeDumper::Flush() {
+    if (busy_->load(std::memory_order_acquire))
+        return;
+    busy_->store(true, std::memory_order_release);
+    char summary[512];
+    std::snprintf(summary, sizeof(summary),
+                  "[Unreal] types of %s dumped: %zu new over %d frames, %.0fms on the game thread, %llums in all",
+                  label_.c_str(), ready_.size(), frames_, spentMs_, GetTickCount64() - started_);
+    std::thread([file = file_, busy = busy_, blocks = std::move(ready_), path = path_, image = image_,
+                 report = report_, summary = std::string(summary)]() mutable {
+        for (auto &[key, block] : blocks)
+            file->insert_or_assign(key, std::move(block));
+        if (WriteAll(path, image, *file))
+            report(summary + "; " + std::to_string(file->size()) + " types in " + path + ".");
+        else
+            report("[Unreal][ERROR] Could not write " + path + ".");
+        busy->store(false, std::memory_order_release);
+    }).detach();
+    ready_.clear();
 }
 
 } // namespace URK::Unreal

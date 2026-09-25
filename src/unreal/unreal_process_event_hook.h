@@ -1,7 +1,7 @@
 #pragma once
 
-// ProcessEvent hook: every reflected call, plus a foothold on the game thread.
-// The host passes attach/detach in, so nothing here depends on SafetyHook.
+// ProcessEvent hook: every reflected call plus a game-thread foothold.
+// attach/detach come from the host, so no SafetyHook dependency here.
 
 #include "unreal_function_hooks.h"
 #include "unreal_process_event.h"
@@ -58,8 +58,7 @@ class ProcessEventHook {
     bool Install(const HookInstaller &installer, std::span<const Address> implementations,
                  const ProcessEventLocation &location);
 
-    // Drains in-flight calls first; on timeout the hook stays in place, since
-    // leaking beats freeing a trampoline a thread is still inside.
+    // Waits for in-flight calls; on timeout the patch stays (leak over use-after-free).
     bool Remove(std::uint32_t timeoutMs = kDefaultDrainTimeoutMs);
 
     bool Installed() const;
@@ -69,8 +68,7 @@ class ProcessEventHook {
     // frameCounter may be null. Set before or after Install; null tick stops it.
     void SetFrameTick(FrameTick tick, void *user, const volatile std::uint64_t *frameCounter);
 
-    // GFrameCounter write hooks; the site that alone advances it becomes the
-    // frame boundary (loading screens may take over, screenshots never).
+    // GFrameCounter write hooks; the site that alone advances it is the frame boundary.
     static constexpr std::size_t kMaxBoundarySites = 16;
     void FrameBoundary(std::size_t site);
     bool FrameBoundaryProven() const { return boundarySite_.load(std::memory_order_acquire) >= 0; }
@@ -87,8 +85,7 @@ class ProcessEventHook {
     };
     static const Call *CurrentCall();
 
-    // True once per call: script entered for this thread's current call, which
-    // ProcessEvent already reported (its locals are a copy of parms, not parms).
+    // True once per call when script is entered for a call ProcessEvent already reported.
     static bool ClaimScriptEntry(Address object, Address function);
 
     // Fails when the queue is full or no game thread is known yet.
@@ -129,8 +126,7 @@ class ProcessEventHook {
         void *user = nullptr;
     };
 
-    // One detour per patch: an override calling Super::ProcessEvent enters the
-    // base's patch and must continue into the base, whatever the object is.
+    // One detour per patch; Super::ProcessEvent must continue into the base.
     template <std::size_t Slot> static void __fastcall DetourAt(void *object, void *function, void *parms);
     static ProcessEventFn DetourFor(std::size_t slot);
     void Enter(std::size_t slot, void *object, void *function, void *parms);

@@ -9,8 +9,7 @@
 namespace URK::Unreal {
 namespace {
 
-// The detour can reach ProcessEvent again through an observer or posted work,
-// so reentrancy is tracked rather than recursed into forever.
+// Observers and posted work can re-enter ProcessEvent; track depth.
 thread_local std::int32_t g_depth = 0;
 
 struct DepthGuard {
@@ -60,8 +59,7 @@ bool ProcessEventHook::Install(const HookInstaller &installer, std::span<const A
         return false;
     if (implementations.empty() || implementations.size() > kMaxImplementations)
         return false;
-    // A timed-out Remove() left the patch in place; patching again would hook
-    // the detour to itself.
+    // A timed-out Remove() left the patch; don't hook the detour to itself.
     if (patchedCount_ != 0)
         return false;
 
@@ -104,8 +102,7 @@ bool ProcessEventHook::Remove(std::uint32_t timeoutMs) {
     if (!installed_.exchange(false, std::memory_order_acq_rel))
         return true;
 
-    // Stop observing first: a call on its way out must not reach a mod that is
-    // being taken down.
+    // Stop observing first so exiting calls don't reach a mod being unloaded.
     observer_.store(nullptr, std::memory_order_release);
     frameTick_.store(nullptr, std::memory_order_release);
     for (Queued &slot : queue_)
@@ -244,8 +241,7 @@ void ProcessEventHook::Tally(std::uint32_t thread) {
 }
 
 void ProcessEventHook::Drain() {
-    // Single consumer. The count is read once, so work posted mid-drain waits
-    // for the next call instead of extending this one.
+    // Single consumer; the count is read once so new posts wait for the next call.
     const std::uint64_t upTo = posted_.load(std::memory_order_acquire);
     std::uint64_t at = drained_.load(std::memory_order_relaxed);
 
@@ -334,8 +330,7 @@ void ProcessEventHook::FrameBoundary(std::size_t site) {
     }
     if (thread != gameThread_.load(std::memory_order_acquire))
         return;
-    // Mod code run here calls ProcessEvent; those calls must pass straight
-    // through, as calls nested in a detour do.
+    // Nested ProcessEvent calls from mod code pass straight through.
     const DepthGuard depth;
     if (!depth.Outermost())
         return;

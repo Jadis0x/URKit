@@ -681,8 +681,7 @@ enum class KeyCode : int {
 using DiagnosticSink = void (*)(const char *);
 
 namespace detail {
-// Unity diagnostics follow a last-error contract: each calling thread owns
-// its error text so main/render activity cannot race or overwrite it.
+// Per-thread last error, so main and render threads don't clobber each other.
 inline std::string &error_slot() {
     thread_local std::string value;
     return value;
@@ -712,10 +711,7 @@ inline void clear_error() noexcept {
 }
 inline void set_error(std::string_view text) {
     error_slot().assign(text.data(), text.size());
-    // last_error() is a pull-based contract: a caller that ignores the return
-    // value and never polls it would otherwise see a failed Call/Invoke/Find
-    // as a plain default result with no trace anywhere. Logging here makes
-    // the failure visible even then.
+    // Log too, so failures are visible even if last_error() is never polled.
     URK::log(("[Unity][ERROR] " + error_slot()).c_str());
 }
 inline const char *fallback_error() noexcept {
@@ -820,9 +816,7 @@ struct Backend {
     static const char* backend_last_error() { return URK::)URKUNITY"
         << backendNs << R"URKUNITY(::last_error(); }
     static const char* last_error() noexcept {
-        // Backend diagnostics are copied into the local slot at the failure
-        // site. Returning that slot prevents a stale backend error from
-        // turning a successful false/null Unity result into a failure.
+        // Return the local slot so a stale backend error isn't reported.
         const std::string &value = error_slot();
         return value.empty() ? nullptr : value.c_str();
     }
@@ -935,9 +929,7 @@ struct Backend {
 }
 ;
 
-// Keeps a managed reference array alive while callers iterate over the SDK's
-// lightweight object wrappers. The wrappers themselves intentionally remain
-// non-owning; the array's strong GC handle owns their lifetime as a group.
+// Holds a GC handle on the array; element wrappers stay non-owning.
 template <class T> class RootedObjectArray {
   public:
     RootedObjectArray() = default;
@@ -1076,10 +1068,7 @@ inline std::string class_display_name(const void *klass) {
     return name && name[0] ? std::string(name) : std::string{};
 }
 
-// User-authored wrappers normally derive from Object, Component,
-// MonoBehaviour, or another generated wrapper. Recognize that inheritance
-// automatically so custom game types work everywhere a managed reference is
-// accepted, including fields, arguments, and return values.
+// Accept any wrapper derived from Object/Component/MonoBehaviour as a managed reference.
 template <class T> struct is_wrapper : std::bool_constant<std::is_base_of_v<Object, std::remove_cvref_t<T>>> {};
 template <class T> inline constexpr bool is_wrapper_v = is_wrapper<std::remove_cvref_t<T>>::value;
 }
@@ -1185,17 +1174,8 @@ inline std::unordered_map<std::string, bool> &member_presence_cache() {
 }
 }
 
-// IL2CPP and Mono builds strip UnityEngine members the game itself never
-// calls, so a wrapper cannot tell "removed from this build" from "the call
-// returned a default". These probes answer that without invoking anything, so
-// a caller can degrade instead of misreading a default as real data.
-// Presence is cached in both directions: Backend::find_method deliberately
-// caches only hits, and a miss re-walks every method of the class and its
-// bases, which is far too costly to repeat per object. An unresolved class is
-// not cached because that usually means the runtime is not ready yet.
-// argc is required, not defaulted: the backend's lookup rejects a name that
-// matches more than one arity as ambiguous and answers null, so an "any arity"
-// probe would report a perfectly present overloaded member as missing.
+// Stripped-member probes that invoke nothing. Results are cached both ways;
+// unresolved classes aren't (runtime not ready). argc is required: overloads are ambiguous.
 inline bool has_method(TypeRef type, std::string_view methodName, int argc) {
     const void *klass = type.resolve_class();
     if (!klass) {
@@ -1287,9 +1267,7 @@ inline constexpr TypeRef ResourcesType{"", "UnityEngine", "Resources"};
 inline constexpr TypeRef DebugType{"", "UnityEngine", "Debug"};
 
 namespace detail {
-// Object is the SDK's type-erased result wrapper, not a valid Unity component
-// search type. Keep heterogeneous results represented as Object while asking
-// Unity for every Component attached to the GameObject.
+// Object is type-erased; ask Unity for every Component.
 template <class T> constexpr TypeRef component_search_type() {
     if constexpr (std::is_same_v<std::remove_cvref_t<T>, Object>)
         return ComponentType;
@@ -1297,9 +1275,7 @@ template <class T> constexpr TypeRef component_search_type() {
         return T::unity_type();
 }
 
-// IL2CPP field setters take the address of raw value-type storage, but take a
-// managed object directly for reference fields. Field getters still write a
-// reference into an output slot, so FieldOut keeps its pointer-to-pointer form.
+// IL2CPP setters: raw storage for value types, the object for references.
 template <class T> struct FieldArg {
     T storage;
     void *ptr;

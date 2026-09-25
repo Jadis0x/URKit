@@ -436,8 +436,7 @@ struct PlannedWrite {
     bool moduleFile = false;
 };
 
-// Templates mark backend-only lines with //@unity{ ... //@unity} and
-// //@unreal{ ... //@unreal}. A project keeps its own blocks, never sees the other's.
+// Backend-only lines sit between //@unity{ ... //@unity} or //@unreal{ ... //@unreal}.
 std::string KeepBackendBlocks(const std::string &text, bool unreal) {
     const std::string drop = unreal ? "//@unity" : "//@unreal";
     const std::string keep = unreal ? "//@unreal" : "//@unity";
@@ -599,9 +598,7 @@ bool LooksLikeCxxSource(const fs::path &path) {
     return extension == ".h" || extension == ".hpp" || extension == ".cpp" || extension == ".cc";
 }
 
-// Keep in sync with the repository's own .clang-format. Generated projects
-// ship without the URKit source tree, so the style is inlined here instead
-// of looked up on disk.
+// Inlined copy of the repo .clang-format; keep in sync.
 const wchar_t *ClangFormatStyle() {
     return L"{BasedOnStyle: Microsoft, IndentWidth: 4, TabWidth: 4, UseTab: Never, "
            L"BreakBeforeBraces: Attach, AllowShortIfStatementsOnASingleLine: Never, "
@@ -610,11 +607,7 @@ const wchar_t *ClangFormatStyle() {
            L"SortIncludes: Never}";
 }
 
-// Generated code is assembled from concatenated raw strings, so guard clauses
-// and cleanup chains land on a single line with no wrapping. This is
-// best-effort: a mod author's machine may not have clang-format on PATH, so
-// any failure here silently keeps the unformatted text rather than failing
-// generation.
+// Best effort: without clang-format on PATH the text stays unformatted.
 void TryFormatCxxSource(const fs::path &destination, std::string &text) {
     if (!LooksLikeCxxSource(destination))
         return;

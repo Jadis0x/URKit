@@ -297,10 +297,7 @@ struct PeExportRecord {
     WORD ordinal = 0;
 };
 
-// Link-time identical-code folding is common in Unity GameAssembly builds. It can
-// legally make several export names point to one implementation when their x64
-// calling ABI is identical. The resolver therefore compares the ABI, not API
-// names: an alias is safe only when result and argument machine classes match.
+// ICF can fold several exports into one body; an alias is safe only when the x64 ABI classes match.
 enum class ExportAbiValue : std::uint8_t { Void, Gpr8, Gpr16, Gpr32, Gpr64, Floating32, Floating64 };
 
 struct ExportAbiSignature {
@@ -476,9 +473,7 @@ class StrictIl2CppExportResolver {
             if (length != 0 && !SehCopyMemory(exportNameAddress, exportName.data(), length, &exceptionCode))
                 return failRead("GameAssembly export name", exceptionCode);
 
-            // One unbindable name is not a broken table. Skip it so an unrelated
-            // forwarded or empty export cannot block every IL2CPP capability; the
-            // required/optional policy still rejects it at BindExact time.
+            // Skip one unbindable name; required/optional policy still rejects it at BindExact.
             const DWORD functionRva = functions[functionIndex];
             if (!functionRva || !RangeInImage(functionRva, 1)) {
                 ++unbindableExports_;
@@ -619,25 +614,16 @@ class StrictIl2CppExportResolver {
     size_t unbindableExports_ = 0;
 };
 
-// A guarded metadata fault is nearly always one stale or bogus pointer reaching
-// the runtime - a freed Il2CppClass*, a destroyed object's type - and not a
-// runtime that has stopped working. Tearing metadata access down on the first
-// such fault turned any one of those into "the mod goes dead until the game is
-// restarted", because the loader then hands the mod a null IL2CPP API table.
-// The switch now trips only on a burst, which is what an actually broken
-// runtime looks like.
+// One fault is usually a stale pointer, not a dead runtime; only a burst takes metadata offline.
 constexpr int kMetadataFaultBurstLimit = 8;
 constexpr auto kMetadataFaultBurstWindow = std::chrono::seconds(2);
 std::mutex g_metadataFaultMutex;
 int g_metadataFaultStreak = 0;
 std::chrono::steady_clock::time_point g_metadataFaultWindowStart{};
 
-// Guards Il2CppApi::metadataReady/cachedDomain so a burst-trip on one thread
-// and a recovery commit on another can't interleave into a torn or stale state.
+// Guards metadataReady/cachedDomain between burst trips and recovery.
 std::mutex g_metadataStateMutex;
-// Bumped every time a burst trip takes metadata offline; a recovery in flight
-// checks this before committing so it can't resurrect a domain that a fresh
-// fault just invalidated.
+// Bumped on every burst trip; recovery checks it before committing.
 uint64_t g_metadataFaultGeneration = 0;
 // Guards Il2CppApi::metadataRecoveryLastAttempt's check-then-set throttle.
 std::mutex g_metadataRecoveryMutex;
@@ -648,9 +634,7 @@ void NoteMetadataSuccess() {
         --g_metadataFaultStreak;
 }
 
-// Returns true exactly once per burst, the moment the streak crosses the
-// threshold - not on every fault afterward, which would just re-disable an
-// already-disabled subsystem.
+// True once per burst, when the streak crosses the threshold.
 bool NoteMetadataFault() {
     const auto now = std::chrono::steady_clock::now();
     std::scoped_lock lock(g_metadataFaultMutex);
@@ -684,15 +668,11 @@ std::invoke_result_t<Fn, Args...> InvokeMetadata(const char *operation, Fn funct
         {
             std::scoped_lock lock(g_metadataStateMutex);
             g_api->metadataReady = false;
-            // Dropped alongside metadataReady, under the same lock: a stale
-            // domain left behind here is exactly what an in-flight recovery's
-            // Il2CppThreadScope would otherwise attach against unguarded.
+            // Drop the domain too, under the same lock, so recovery can't attach to a stale one.
             g_api->cachedDomain = nullptr;
             ++g_metadataFaultGeneration;
         }
-        // Only a burst justifies dropping the lookup caches; doing it per fault
-        // discards every good entry and forces re-resolution, which is itself a
-        // fresh chance to touch the pointer that just faulted.
+        // Only a burst clears the caches; per-fault clearing re-touches the bad pointer.
         ClearIl2CppCaches();
         Log("[IL2CPP][ERROR] %d guarded metadata faults inside %lld ms; metadata access has been taken "
             "offline. It is retried automatically the next time the mod asks whether IL2CPP is available.",
@@ -734,8 +714,7 @@ struct MetadataAssemblyProbeResult {
     const char *firstImageName = nullptr;
 };
 
-// Shared by WaitForMetadataAccess (startup) and TryRecoverMetadataAccess
-// (post-fault recovery): domain -> assemblies -> first image -> validated name.
+// domain -> assemblies -> first image -> validated name.
 MetadataAssemblyProbeResult ProbeMetadataAssemblies(const Il2CppApi &api, Il2CppDomain *domain, const char *context) {
     MetadataAssemblyProbeResult result;
     char op[160]{};
@@ -854,9 +833,7 @@ int Api_IsAvailable() {
         return 0;
     if (g_api->MetadataAccessReady())
         return 1;
-    // The mod polls this before every metadata operation, which makes it the
-    // natural place to retry: an offline switch stays offline only while the
-    // runtime really cannot answer a probe.
+    // Polled before every metadata call, so recovery is retried here.
     return g_api->TryRecoverMetadataAccess() ? 1 : 0;
 }
 const void *Api_DomainGet() {
@@ -1399,8 +1376,7 @@ bool TryGetArrayLength(void *array, size_t *length, const char *operation) {
 
     DWORD exceptionCode = 0;
     if (g_api->il2cpp_offset_of_array_length_in_array_object_header) {
-        // Prefer the runtime's layout query. It is available in newer Unity
-        // versions and avoids depending on the historical accessor return type.
+        // Prefer the layout query on newer Unity.
         uint32_t lengthOffset = 0;
         if (!SehInvokeValue(g_api->il2cpp_offset_of_array_length_in_array_object_header, &lengthOffset,
                             &exceptionCode)) {
@@ -1433,9 +1409,7 @@ bool TryGetArrayLength(void *array, size_t *length, const char *operation) {
         return true;
     }
 
-    // Older IL2CPP releases predate the layout-query exports but expose the
-    // stable array-length accessor. Its integer return is zero-extended on the
-    // Windows x64 ABI, so the pointer-sized declaration covers both variants.
+    // Older IL2CPP: array length accessor; x64 zero-extends so pointer-size fits both.
     if (g_api->il2cpp_array_length) {
         il2cpp_array_size_t rawLength = 0;
         if (!SehInvokeValue(g_api->il2cpp_array_length, &rawLength, &exceptionCode,
@@ -1951,8 +1925,7 @@ const URK_Il2CppApi g_publicApi = [] {
     api.thread_detach = &Api_ThreadDetach;
     api.alloc = &Api_Alloc;
     api.free = &Api_Free;
-    // Extended IL2CPP public surface. These are direct, optional wrappers over
-    // the internal GameAssembly export table; unavailable exports fail closed.
+    // Optional export wrappers; missing exports fail closed.
     api.init = [](const char *domain_name) {
         if (g_api && g_api->il2cpp_init)
             g_api->il2cpp_init(domain_name);
@@ -2575,9 +2548,7 @@ const URK_Il2CppApi g_publicApi = [] {
     };
 
     api.debug_get_method_info = [](const void *method) -> const void * {
-        // The export fills a caller-owned struct, so the mod ABI's pointer
-        // return has to point at storage this layer owns. It stays valid until
-        // the same thread asks for another method.
+        // Export fills a caller struct; storage is per thread, valid until the next call.
         thread_local Il2CppDebugMethodInfo info{};
         if (!g_api || !g_api->il2cpp_debug_get_method_info || !method)
             return nullptr;
@@ -2589,9 +2560,7 @@ const URK_Il2CppApi g_publicApi = [] {
     api.debug_method_get_code_size = [](const void *info) -> size_t {
         if (!info)
             return 0;
-        // debug_get_method_info owns every pointer that reaches here and has
-        // already decoded the size, so read it back rather than handing this
-        // layer's own storage to an engine accessor.
+        // Size was already decoded by debug_get_method_info; read it back.
         const int32_t size = static_cast<const Il2CppDebugMethodInfo *>(info)->codeSize;
         return size > 0 ? static_cast<size_t>(size) : 0;
     };
@@ -2646,10 +2615,7 @@ bool Il2CppApi::TryRecoverMetadataAccess() {
         return true;
     if (!valid() || !thread_attach_available() || !il2cpp_domain_get)
         return false;
-    // Rate limited: a genuinely dead runtime must not be probed once per UI
-    // frame, and every probe is itself a guarded call into it. The throttle
-    // check-and-set happens under a lock so two threads racing in here can't
-    // both win the gate and run duplicate recovery probes.
+    // Rate limited under a lock so only one thread probes.
     const auto now = std::chrono::steady_clock::now();
     {
         std::scoped_lock lock(g_metadataRecoveryMutex);
@@ -2676,9 +2642,7 @@ bool Il2CppApi::TryRecoverMetadataAccess() {
         return false;
 
     std::scoped_lock lock(g_metadataStateMutex);
-    // A fresh fault burst tripped the breaker again while this probe was in
-    // flight; discard this success instead of resurrecting a domain the
-    // breaker just took offline out from under it.
+    // A new burst tripped during the probe; discard this result.
     if (g_metadataFaultGeneration != generationAtStart)
         return false;
     cachedDomain = domain;
@@ -2690,15 +2654,7 @@ bool Il2CppApi::TryRecoverMetadataAccess() {
 
 namespace {
 
-// MethodPointer() is called once per method when a tool indexes a whole domain
-// -- upwards of a hundred thousand times in a stock Unity build. Validating a
-// target with VirtualQuery plus GetModuleHandleEx costs far more than the
-// metadata read it guards (GetModuleHandleEx walks the loader's module list
-// under the loader lock), and it dominated the wall time of a full index. The
-// executable ranges of the only two modules a managed method may live in do
-// not change once they are mapped, so they are measured once from the section
-// headers and consulted directly; anything outside them still takes the
-// original path, which is also where the diagnostic messages live.
+// Cached executable ranges of GameAssembly/UnityPlayer; VirtualQuery per method is too slow for a full index.
 constexpr size_t kMaxImageExecutableRanges = 16;
 
 struct ImageExecutableRanges {
@@ -2742,8 +2698,7 @@ bool AddressInExecutableImage(const void *address, HMODULE gameAssembly, HMODULE
     for (int slot = 0; slot < 2; ++slot) {
         if (!modules[slot])
             continue;
-        // A reload maps the module somewhere else; re-measure rather than
-        // trusting ranges that belong to a previous mapping.
+        // Module was remapped; re-measure.
         if (cache[slot].module != modules[slot])
             MeasureExecutableRanges(modules[slot], cache[slot]);
         for (size_t range = 0; range < cache[slot].count; ++range)
@@ -2899,9 +2854,7 @@ Il2CppClass *Il2CppApi::FindClass(const char *imageName, const char *namespc, co
                      : nullptr;
     }
 
-    // Mono resolves an unqualified class by scanning every loaded assembly. Match
-    // that here so generated mod code behaves the same on both backends instead of
-    // silently failing for types outside a caller's hardcoded image list.
+    // Scan every assembly for unqualified classes, like Mono does.
     const std::string cacheKey = ClassLookupKey(*this, "", namespc, name);
     {
         Il2CppClass *cached = nullptr;

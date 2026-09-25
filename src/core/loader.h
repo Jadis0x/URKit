@@ -11,14 +11,8 @@ enum class LoaderRunStatus {
     Failed,
 };
 
-// Main loader entry. Runs on its own thread:
-//   1. resolves the selected Unity scripting backend
-//   2. waits for runtime/domain readiness
-//   3. initializes runtime API, hooks, main-thread callbacks, and SDK tooling
-//   4. scans the configured Mods directory using the active build policy
+// Loader entry, on its own thread: resolve backend, wait for runtime, init APIs, load mods.
 LoaderRunStatus Loader_Run(LoaderStartMode mode = LoaderStartMode::Proxy);
 
-// Process detach lifecycle. Calls optional native ModShutdown exports in
-// reverse load order, clears per-module runtime callbacks, and releases loader
-// state. Safe to call more than once.
+// Calls ModShutdown in reverse load order and releases loader state. Idempotent.
 void Loader_Shutdown();

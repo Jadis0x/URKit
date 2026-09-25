@@ -164,9 +164,14 @@ inline std::vector<Object> instances_of(Object klass, bool exact = false) {
     const auto *a = api();
     if (!a || !klass)
         return {};
-    std::vector<Handle> handles(a->instances_of(klass.handle(), nullptr, 0, exact ? 1 : 0));
-    const std::size_t written = a->instances_of(klass.handle(), handles.data(), handles.size(), exact ? 1 : 0);
-    handles.resize(written < handles.size() ? written : handles.size());
+    // Each call walks every object, so the first gets room and a second is rare.
+    std::vector<Handle> handles(256);
+    std::size_t count = a->instances_of(klass.handle(), handles.data(), handles.size(), exact ? 1 : 0);
+    if (count > handles.size()) {
+        handles.resize(count);
+        count = a->instances_of(klass.handle(), handles.data(), handles.size(), exact ? 1 : 0);
+    }
+    handles.resize(count < handles.size() ? count : handles.size());
     std::vector<Object> objects;
     objects.reserve(handles.size());
     for (const Handle handle : handles)
@@ -175,9 +180,7 @@ inline std::vector<Object> instances_of(Object klass, bool exact = false) {
 }
 
 // --- Struct values -------------------------------------------------------------
-// A struct is copied by value, so its generated mirror carries a layout. The
-// layout is checked against the live struct before any copy: a game update that
-// changed it makes accesses fail (and says so once) instead of reading garbage.
+// Mirrors carry a layout checked against the live struct; a mismatch fails once, loudly.
 
 struct FieldLayout {
     const char *name;
@@ -227,11 +230,7 @@ template <typename S> bool layout_matches() {
 }
 
 // --- Places: any value, however deep -------------------------------------------
-// A member (or a call frame's parameter) and steps into it: array elements,
-// set and map slots, map keys and values, struct members. The loader resolves
-// a place again on every use, so a container that reallocated is never read
-// through a stale address. Strings, texts and containers are changed by the
-// engine's own code on the game thread; see URK_UnrealApi version 3.
+// Member or frame parameter plus steps; re-resolved on every use. See URK_UnrealApi v3.
 
 class Place {
   public:
@@ -354,14 +353,10 @@ struct SoftPath {
     std::string path;
 };
 
-// An element with no mirror to copy it into (a struct whose layout the
-// generator could not express): counted, inserted, removed, and reached in
-// place through at(), never copied.
+// Element without a mirror: counted, inserted, removed, reached via at(), never copied.
 struct Opaque {};
 
-// An enum value by name. Generated enum types list names only; each name is
-// looked up in the running game's enum, so a patch that renumbers it changes
-// nothing. A value read from the game carries its number instead.
+// Enum value by name, resolved in the running game; values read from the game keep their number.
 template <typename Self> class Enum {
   public:
     using UrkEnumTag = void;
@@ -646,8 +641,7 @@ class FrameView {
         return value;
     }
 
-    // Any kind through a place: strings, texts, enums, containers. What the
-    // loader makes here is the frame's, and goes back to the engine with it.
+    // Any kind through a place; what the loader makes here is released with the frame.
     Place parameter(const char *name) const { return Place(frame_, name); }
     template <typename T> bool set_value(const char *parameter, const T &value) {
         return frame_ && parameter && Traits<T>::set(Place(frame_, parameter), value);
@@ -702,8 +696,7 @@ inline void observe_process_event(URK_UnrealProcessEventObserverFn observer, voi
         a->process_event_observe(observer, user);
 }
 
-// One call of a hooked function: its parameters and return value by name,
-// readable and writable until the callback returns.
+// One hooked call; parameters and return value valid until the callback returns.
 class HookedCall : public FrameView {
   public:
     explicit HookedCall(const URK_UnrealHookedCall &call) : FrameView(call.frame), call_(call) {}
@@ -717,8 +710,8 @@ class HookedCall : public FrameView {
     URK_UnrealHookedCall call_;
 };
 
-// Callbacks around one function's calls; removed when this goes away. before
-// returns false to skip the body. Calls made inside a callback are not hooked.
+// Before/after callbacks for one function, removed on destruction.
+// before returns false to skip the body. Nested calls aren't hooked.
 class FunctionHook {
   public:
     using Before = std::function<bool(HookedCall &)>;
@@ -853,8 +846,7 @@ inline bool SetScaleMethod(const FrameView &frame) {
 }
 } // namespace detail
 
-// An actor of klass in world_context's world, as Blueprint's SpawnActor node
-// makes one: construction scripts and BeginPlay run. Game thread; null on failure.
+// Spawns like Blueprint's SpawnActor (construction script, BeginPlay). Game thread; null on failure.
 inline Object spawn_actor(Object world_context, Object klass, Location at = {}, Rotation facing = {},
                           Object owner = {}) {
     const Object statics = find("GameplayStatics");
@@ -898,8 +890,7 @@ inline bool post_to_game_thread(URK_UnrealPostedWorkFn work, void *user = nullpt
 }
 
 // --- Typed access, used by the generated headers in types/ -------------------
-// Headers carry names only; each access resolves the member on the live class,
-// so a game update that moves offsets needs no rebuild.
+// Members are resolved by name on the live class, so offset changes need no rebuild.
 
 // A numeric or bool member. Empty when the object is gone or the member is not.
 template <typename T> class Value {
@@ -946,9 +937,7 @@ template <typename T> class Member {
     Place place_;
 };
 
-// FName, FString and FText members as UTF-8. Writes go through the engine
-// (game thread): a name through its name table, a string into an engine buffer,
-// a text through its own conversion - the old value released the same way.
+// FName, FString and FText members as UTF-8. Writes go through the engine (game thread).
 using NameValue = Member<std::string>;
 using StringValue = Member<std::string>;
 using TextValue = Member<std::string>;
@@ -982,8 +971,7 @@ template <typename T> class ObjectMember {
     std::int32_t index_;
 };
 
-// A struct-valued member. Writes may change numbers and nested structs, and
-// objects of the right class; anything owning an allocation must stay as read.
+// Struct member. Writes may change numbers, nested structs and objects; not allocations.
 template <typename S> class StructMember {
   public:
     StructMember(const Object &owner, const char *member, std::int32_t index = 0)
@@ -1019,9 +1007,7 @@ template <typename T> class StructObject {
     Handle handle_ = null_handle;
 };
 
-// A TArray member. Elements are made, released and moved by the engine's own
-// code on the game thread; reads work anywhere. at(i) reaches into an element
-// (a struct element's members through its mirror's place accessors).
+// TArray member. Changes run on the game thread; reads anywhere. at(i) reaches an element.
 template <typename T> class ArrayMember {
   public:
     ArrayMember(const Place &place) : place_(place) {}
@@ -1180,8 +1166,7 @@ template <typename T> class WeakMember {
 // An interface reference: the object; the loader fills the interface address.
 using InterfaceMember = WeakMember<Object>;
 
-// A single-cast delegate member. bind() is refused unless the function exists
-// on the object with the delegate's signature.
+// Single-cast delegate; bind() needs a function with a matching signature.
 class DelegateMember {
   public:
     DelegateMember(const Place &place) : place_(place) {}
@@ -1248,8 +1233,7 @@ template <typename T> std::vector<T> typed_instances(Object klass, bool exact) {
 }
 } // namespace URK::unreal
 
-// The statics every generated class carries. Lookups go through the live
-// object array each time, so a Blueprint class reloaded with its map is found.
+// Statics of every generated class; looked up live so reloaded Blueprint classes are found.
 #define URK_UNREAL_TYPE(Self, Base, ReflectedName, Package)                                                          \
     Self() = default;                                                                                                  \
     explicit Self(::URK::unreal::Handle handle) : Base(handle) {}                                                      \

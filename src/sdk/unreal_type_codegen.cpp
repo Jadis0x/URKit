@@ -13,8 +13,7 @@
 namespace UnrealTypeCodegen {
 namespace {
 
-// Must match src/unreal/unreal_type_dump.h. Version 1 had no structs, version 2
-// no container element types or enums.
+// Must match src/unreal/unreal_type_dump.h.
 constexpr const char *kMagic = "URKIT-UNREAL-TYPES";
 constexpr int kVersion = 3;
 
@@ -227,8 +226,7 @@ bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error
 
 // --- identifiers -----------------------------------------------------------
 
-// C++ keywords, Windows macros that break a declaration, and what the runtime
-// wrapper and the generated bodies already use.
+// C++ keywords, breaking Windows macros and names the runtime already uses.
 const std::unordered_set<std::string> &Reserved() {
     static const std::unordered_set<std::string> words = {
         "alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand", "bitor", "bool", "break", "case", "catch",
@@ -273,8 +271,7 @@ std::string Identifier(const std::string &name) {
     return out;
 }
 
-// Unique within one scope: taken holds what is already used there. The urk_
-// prefix is left to generated helpers.
+// Unique within a scope; the urk_ prefix is reserved.
 std::string Unique(std::string base, std::set<std::string> &taken, const std::string &avoid) {
     if (Reserved().count(base) || base == avoid || base.rfind("urk_", 0) == 0)
         base += '_';
@@ -431,8 +428,7 @@ class Generator {
         return target;
     }
 
-    // Mirrors the loader: a call leaving one of these in its frame is refused,
-    // because the loader cannot release a kind it does not know.
+    // Same rule as the loader: unknown kinds can't be released, so calls are refused.
     bool Leaks(const Shape &shape, int depth = 0) {
         if (shape.kind == "unknown" || depth > 16)
             return true;
@@ -465,10 +461,7 @@ class Generator {
         return target;
     }
 
-    // The C++ value a shape reads and writes as through a place (Traits<T>):
-    // container elements, map keys and values, and function parameters. A
-    // function body instantiates Traits where its header only forward-declares
-    // other classes, so there (untyped) object references are plain Objects.
+    // C++ type used through a place (Traits<T>). In function bodies object refs are plain Objects.
     std::optional<std::string> PlaceType(const Shape &shape, std::set<std::string> &includes,
                                          std::set<std::string> &forwards, int depth = 0, bool untyped = false) {
         if (depth > 4)
@@ -534,8 +527,7 @@ class Generator {
         return std::string(kRuntime) + "Object";
     }
 
-    // A member reached through a place (a class property, or a struct mirror's
-    // member kept as bytes): its wrapper type, or nothing when it has none.
+    // Wrapper type for a member reached through a place, if any.
     std::optional<std::string> PlaceMemberType(const Shape &shape, std::set<std::string> &includes,
                                                std::set<std::string> &forwards) {
         if (const Type *type = EnumOf(shape, includes))
@@ -687,8 +679,7 @@ class Generator {
             members << ";\n";
             if (!typed) {
                 layout.opaque.push_back(member->name);
-                // Kept as bytes in the copy, reached in place: a string, an
-                // array, a text... of a struct value where it lives in the game.
+                // Kept as bytes, reached in place (strings, arrays, text...).
                 if (const std::optional<std::string> access =
                         PlaceMemberType(shape, layout.includes, layout.forwards)) {
                     accessors << "    static " << *access << ' ' << name << "(const " << kRuntime << "Place &self"
@@ -767,8 +758,7 @@ class Generator {
         return {entry.ident + ".h", out.str()};
     }
 
-    // Names only: E::Name() is looked up in the running game's enum when used,
-    // so an update that renumbers the enum needs no rebuild.
+    // Names only; resolved in the running game, so renumbering needs no rebuild.
     Header EmitEnum(const Type &entry) {
         std::ostringstream out;
         out << Preamble(entry, ": value names only, each looked up in the running game.");
@@ -881,8 +871,7 @@ class Generator {
             const bool enumerated = EnumOf(shape, context.includes) != nullptr;
             const std::optional<std::string> value = enumerated ? std::nullopt : ValueType(shape);
             const Type *structValue = value ? nullptr : StructValue(shape, context.includes);
-            // Kinds that go through a place: strings, texts, enums, containers,
-            // soft references, delegates.
+            // Kinds that go through a place.
             const bool object = shape.kind == "object" || shape.kind == "class";
             const std::optional<std::string> placed =
                 value || structValue || object ? std::nullopt : PlaceType(shape, context.includes, context.forwards, 0, true);

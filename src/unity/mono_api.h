@@ -196,8 +196,7 @@ bool Mono_AttachCurrentThread(MonoApi &api, MonoDomain *domain, const char *purp
                               MonoThread **attachedThread = nullptr);
 void Mono_DetachThread(MonoApi &api, MonoThread *thread);
 
-// Native loader/mod threads are not Mono threads. Every embedding API call must
-// run on a known Mono thread, either one attached here or Unity's current thread.
+// Embedding calls must run on a Mono-attached thread.
 class MonoThreadScope {
   public:
     enum class Mode {

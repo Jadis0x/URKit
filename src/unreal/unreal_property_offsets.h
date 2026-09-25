@@ -1,7 +1,6 @@
 #pragma once
 
-// FField/FProperty layout (4.25+), anchored on structs whose C++ declaration
-// fixes everything: FColor, FGuid.
+// FField/FProperty layout (4.25+), anchored on FColor and FGuid.
 
 #include "unreal_struct_offsets.h"
 
@@ -52,8 +51,7 @@ struct FieldOffsets {
     }
 };
 
-// Walks the property chain once its offsets are known. Also the shape the rest
-// of the toolkit will read members through.
+// Walks the property chain once offsets are known.
 class PropertyChain {
   public:
     PropertyChain(const MemoryReader &reader, const NameTable &names, const StructOffsets &structs,
@@ -68,8 +66,7 @@ class PropertyChain {
     std::optional<std::string> NameOf(Address field) const;
     Address FindMember(Address structObject, std::string_view name) const;
 
-    // The same, continued up the Super chain: a member is usually declared by
-    // a class further up than the one an instance reports.
+    // Same, continued up the Super chain.
     Address FindMemberDeep(Address structObject, std::string_view name) const;
 
   private:
@@ -96,8 +93,7 @@ std::int32_t FindOffsetInternalOffset(const ObjectFinder &finder, const NameTabl
 std::int32_t FindPropertyFlagsOffset(const ObjectFinder &finder, const NameTable &names, const StructOffsets &structs,
                                      const FieldOffsets &fields);
 
-// Runs the steps in dependency order. Returns everything at kOffsetNotFound
-// when the build predates the FField split, where properties are objects.
+// Runs the steps in order. All kOffsetNotFound before the FField split.
 FieldOffsets FindFieldOffsets(const ObjectFinder &finder, const NameTable &names, const StructOffsets &structs);
 
 } // namespace URK::Unreal

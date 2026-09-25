@@ -1,7 +1,6 @@
 #pragma once
 
-// UFunction parameter block. Offsets are where the engine stores numbers that
-// agree with what the property chain already implies.
+// UFunction parameter block; offsets verified against the property chain.
 
 #include "unreal_module.h"
 #include "unreal_property_values.h"

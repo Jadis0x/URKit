@@ -1,7 +1,6 @@
 #pragma once
 
-// Callbacks before and after one UFunction's calls, its Blueprint overrides'
-// included, from ProcessEvent and the Blueprint VM. Calls a callback makes pass by.
+// Before/after callbacks for a UFunction and its Blueprint overrides.
 
 #include "unreal_memory.h"
 
@@ -53,8 +52,7 @@ class FunctionHooks {
 
     // Zero when function is null or both callbacks are.
     std::uint64_t Add(Address function, Callback before, Callback after, void *user);
-    // True: no callback of it runs again. Other threads' calls past before get
-    // their after first; false when they time out, and user must stay alive.
+    // True once no callback runs again; false on timeout (user must stay alive).
     bool Remove(std::uint64_t id, std::uint32_t timeoutMs = kDefaultRemoveTimeoutMs);
 
     // False when a before callback skips the body. Every Before needs its After.

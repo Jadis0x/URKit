@@ -1,7 +1,6 @@
 #pragma once
 
-// FMulticastDelegateProperty's own virtuals (Get/Set/Add/Remove/ClearDelegate):
-// sparse delegates keep their bindings in engine storage only these reach.
+// FMulticastDelegateProperty virtuals; sparse delegate bindings are only reachable through them.
 
 #include "unreal_property_offsets.h"
 #include "unreal_property_values.h"

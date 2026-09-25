@@ -6,8 +6,7 @@
 namespace URK::Unreal {
 namespace {
 
-// PE fields are spelled out rather than taken from windows.h: the reader may be
-// describing another process's image, and the tests describe no process at all.
+// PE fields spelled out: the image may be another process's or synthetic.
 constexpr std::uint16_t kDosSignature = 0x5A4D;      // "MZ"
 constexpr std::uint32_t kNtSignature = 0x00004550;   // "PE\0\0"
 constexpr std::uint16_t kPe32PlusMagic = 0x20B;

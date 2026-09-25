@@ -1,7 +1,6 @@
 #pragma once
 
-// PE section enumeration through the MemoryReader, so the bootstrap knows where
-// globals live and tests can use a synthetic image.
+// PE section enumeration through MemoryReader.
 
 #include "unreal_memory.h"
 
@@ -33,20 +32,17 @@ using InstructionLength = std::size_t (*)(const std::uint8_t *code, std::size_t 
 struct ScanRegion {
     Address start = kNullAddress;
     std::uint64_t size = 0;
-    // A global the engine constructs at runtime has to live somewhere it can
-    // be written, which is what lets a scan look there first.
+    // Runtime-constructed globals must live in writable memory.
     bool writable = false;
 };
 
 // Empty unless the headers are a plausible 64-bit image.
 std::vector<ModuleSection> ReadModuleSections(const MemoryReader &reader, Address moduleBase);
 
-// The sections engine globals can live in: readable data, never code, and never
-// the link-support sections that hold nothing a scan wants.
+// Readable data sections, excluding code and link-support sections.
 std::vector<ScanRegion> ModuleDataRegions(const MemoryReader &reader, Address moduleBase);
 
-// The sections that can be executed, which is what tells a pointer to a native
-// function from any other pointer.
+// Executable sections; tells native function pointers apart.
 std::vector<ScanRegion> ModuleCodeRegions(const MemoryReader &reader, Address moduleBase);
 
 // Read-only data: where string literals live.
@@ -63,8 +59,7 @@ struct FunctionRange {
     Address end = kNullAddress;
 };
 
-// Exact function bounds from the x64 exception directory (.pdata), which every
-// non-leaf function has an entry in. Reads through the reader on demand.
+// Function bounds from .pdata; read on demand.
 class FunctionTable {
   public:
     static FunctionTable Read(const MemoryReader &reader, std::span<const Address> modules);
@@ -80,8 +75,7 @@ class FunctionTable {
     // That function's primary entry and the chained ones laid out right after it.
     std::vector<FunctionRange> Pieces(Address address) const;
 
-    // First entry starting after address. A leaf function has no entry of its
-    // own, so this is where it ends at the latest.
+    // First entry after address; a leaf function ends there at the latest.
     Address NextBegin(Address address) const;
 
   private:

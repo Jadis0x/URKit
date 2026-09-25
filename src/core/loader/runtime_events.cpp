@@ -52,11 +52,7 @@ struct MonoCursorMethods {
     MonoMethod *getLockState = nullptr;
     MonoMethod *setLockState = nullptr;
 
-    // Taking the cursor for the menu needs the setters. Managed stripping keeps
-    // only the members a game actually uses, so a game that assigns
-    // Cursor.visible without ever reading it back ships without the getter -
-    // and requiring all four used to disable cursor control completely, leaving
-    // the game free to keep warping the cursor under the menu.
+    // Setters are enough; stripped builds often lack the getters.
     bool ready() const { return setVisible && setLockState; }
     bool canReadState() const { return getVisible && getLockState; }
 };
@@ -72,9 +68,7 @@ struct MonoInputMethods {
     bool ready() const {
         return getKey && getKeyDown && getKeyUp && getMouseButton && getMouseButtonDown && getMouseButtonUp;
     }
-    // Suppressing the clicks the menu swallows only needs the mouse helpers. A
-    // build that stripped Input.GetKeyDown still has these, and used to lose
-    // suppression along with the rest.
+    // Click suppression needs only the mouse helpers.
     bool readyForMouseSuppression() const { return getMouseButton && getMouseButtonDown && getMouseButtonUp; }
 };
 
@@ -135,8 +129,7 @@ struct Il2CppCursorMethods {
     const Il2CppMethod *getLockState = nullptr;
     const Il2CppMethod *setLockState = nullptr;
 
-    // See MonoCursorMethods::ready(): the setters are the capability, the
-    // getters only say what to restore afterwards.
+    // Setters are the capability; getters only tell what to restore.
     bool ready() const { return setVisible && setLockState; }
     bool canReadState() const { return getVisible && getLockState; }
 };
@@ -1542,10 +1535,7 @@ void Il2CppDestroyImmediateDetour(Il2CppObject *object, bool allowDestroyingAsse
     ModLifecycle_DispatchObjectDestroyRequested(request);
 }
 
-// What the cursor looks like from outside the runtime. Unity's Locked mode
-// hides the cursor and clips it to the window, both of which Windows reports, so
-// a build whose Cursor getters were stripped can still have its state saved and
-// put back.
+// Cursor state as Windows sees it, for builds with stripped Cursor getters.
 bool ReadNativeCursorState(CursorState *state) {
     if (!state)
         return false;
@@ -2504,9 +2494,7 @@ uint64_t TryActivateMonoRuntimeEvents(MonoApi &mono) {
 
     if (needInput || needMouseSuppression) {
         const MonoInputMethods inputMethods = ResolveInputMethods(mono);
-        // Keep whatever resolved, even a partial set: the mouse hooks below run
-        // off the mouse helpers alone, and the capability flag stays gated on
-        // the full set so callers still get what it promises.
+        // Keep a partial set: mouse hooks need only the helpers. The capability flag still needs all.
         if (inputMethods.readyForMouseSuppression() || inputMethods.ready()) {
             std::lock_guard lock(g_eventsMutex);
             if (g_backend != RuntimeEventsBackend::Mono || g_mono != &mono)
@@ -3522,8 +3510,7 @@ int RuntimeEvents_CurrentScene(URK_SceneInfo *scene) {
 }
 
 int RuntimeEvents_MenuCursorSetOpen(void *ownerModule, int open) {
-    // References are counted per module so an unmatched close from one mod can
-    // never release another mod's cursor ownership.
+    // Counted per module so one mod can't release another's lease.
     if (!ownerModule)
         return 0;
     {
@@ -3539,9 +3526,7 @@ int RuntimeEvents_MenuCursorSetOpen(void *ownerModule, int open) {
         g_menuCursorDesired.store(g_menuCursorLeases.AnyOpen() ? 1 : 0,
                                   std::memory_order_release);
     }
-    // The caller is commonly an ImGui render/WndProc thread. Queue the state
-    // change; Unity/Mono cursor calls are applied by the runtime event pump on
-    // the Unity thread instead of synchronously on the render thread.
+    // Often called from the render thread; the event pump applies it on the Unity thread.
     if (g_unityMainThreadId.load(std::memory_order_acquire) == GetCurrentThreadId())
         RuntimeEvents_Pump();
     g_menuCursorLastApplyResult.store(1, std::memory_order_release);

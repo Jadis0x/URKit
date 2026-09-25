@@ -21,8 +21,7 @@ using HashFn = std::uint32_t(__fastcall *)(const void *self, const void *src);
 using IdenticalFn = bool(__fastcall *)(const void *self, const void *a, const void *b, std::uint32_t flags);
 using InitializeFn = void(__fastcall *)(const void *self, void *dest);
 using CopyFn = void(__fastcall *)(const void *self, void *dest, const void *src, std::int32_t count);
-// InitializeValueInternal comes this many slots past DestroyValueInternal at most
-// (2 in 4.25-5.4, 3 from 5.5 on).
+// Max slots from DestroyValueInternal to InitializeValueInternal (2 up to 5.4, 3 after).
 constexpr std::int32_t kInitializeWindow = 6;
 
 struct Sample {
@@ -242,8 +241,7 @@ void PropertyVirtuals::MeasureLocked() {
     }
     hashSlot_ = hashes.front();
 
-    // Identical: before the hash in every version. Only small comparing bodies
-    // are called, and a slot counts only if it answers every probe right.
+    // Identical sits before the hash; a slot must answer every probe.
     std::vector<std::int32_t> identical;
     for (std::int32_t slot = 0; slot < hashSlot_; ++slot) {
         const auto s = static_cast<std::size_t>(slot);

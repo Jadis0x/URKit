@@ -8,8 +8,7 @@ namespace {
 // Nothing calibrated here lives past the UObject header.
 constexpr std::int32_t kMaxHeaderOffset = 0x40;
 
-// RF_ClassDefaultObject | RF_Public | RF_Standalone, common among the objects
-// the engine registers first.
+// RF_ClassDefaultObject | RF_Public | RF_Standalone, common on early objects.
 constexpr std::uint32_t kCommonFlagValue = 0x43;
 constexpr std::int32_t kFlagSampleCount = 0x100;
 constexpr std::int32_t kMinObjectsCarryingCommonFlag = 0xA0;
@@ -18,12 +17,10 @@ constexpr std::int32_t kMinObjectsCarryingCommonFlag = 0xA0;
 constexpr std::int32_t kIndexProbeA = 0x55;
 constexpr std::int32_t kIndexProbeB = 0x123;
 
-// A wrong Class offset either leaves mapped memory or never settles, so a short
-// walk decides.
+// A wrong Class offset leaves mapped memory or never settles.
 constexpr int kClassWalkLimit = 0x10;
 
-// What an FName comparison index looks like process-wide. A counter has too low
-// an average, a flag word almost no spread, a pointer's low half overflows.
+// Statistics of an FName comparison index, unlike counters, flags or pointers.
 constexpr std::uint32_t kMaxComparisonIndex = 0x4000000;
 constexpr std::uint64_t kMaxAverageComparisonIndex = kMaxComparisonIndex / 2;
 constexpr std::uint64_t kMinAverageComparisonIndex = 0x280;
@@ -106,8 +103,7 @@ std::int32_t FindClassOffset(const ObjectArray &objects) {
     if (objectA == kNullAddress || objectB == kNullAddress)
         return kOffsetNotFound;
 
-    // Two unrelated objects, so an offset settling for one chain by chance is
-    // not mistaken for the class pointer.
+    // Two unrelated objects so a chance match isn't taken for Class.
     auto ReachesFixedPoint = [&reader](Address startA, Address startB, std::int32_t offset) {
         Address nextA = startA;
         Address nextB = startB;
@@ -149,8 +145,7 @@ std::int32_t FindOuterOffset(const ObjectArray &objects, const ObjectOffsets &kn
     if (total < 2)
         return kOffsetNotFound;
 
-    // Packages have no Outer, so several pairs are sampled and the lowest
-    // offset that holds for any wins.
+    // Packages have no Outer; lowest offset that holds for any pair wins.
     constexpr std::int32_t kPairCount = 0x10;
     const std::int32_t span = total < 0x400 ? total : 0x400;
 
@@ -199,8 +194,7 @@ std::int32_t FindNameOffset(const ObjectArray &objects, const ObjectOffsets &kno
         bool inRange = true;
     };
 
-    // Claimed offsets are excluded, as is each claimed pointer's upper half: a
-    // 4-aligned read there samples the middle of that pointer.
+    // Skip claimed offsets and the upper halves of claimed pointers.
     auto IsCandidate = [&known](std::int32_t offset) {
         constexpr std::int32_t kPointerHalf = sizeof(Address) / 2;
         for (const std::int32_t claimed : {known.classPointer, known.outer}) {
@@ -262,8 +256,7 @@ std::int32_t FindNameOffset(const ObjectArray &objects, const ObjectOffsets &kno
 ObjectOffsets FindObjectOffsets(const ObjectArray &objects) {
     ObjectOffsets offsets;
 
-    // Fallbacks place each field behind its predecessor, as the engine declares
-    // them, and apply only when measurement failed outright.
+    // Fallbacks stack fields in declaration order; used only when measurement fails.
     offsets.flags = FindFlagsOffset(objects);
     if (offsets.flags == kOffsetNotFound)
         offsets.flags = sizeof(Address);

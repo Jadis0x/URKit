@@ -1,7 +1,6 @@
 #pragma once
 
-// ProcessEvent's vtable index, found by the fields it reads (ParmsSize,
-// ReturnValueOffset, FunctionFlags). The address is read per object: classes override it.
+// ProcessEvent's vtable slot, found by the fields it reads. Address is per object (overrides).
 
 #include "unreal_functions.h"
 #include "unreal_module.h"
@@ -47,24 +46,20 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
 // The implementation this object dispatches to, read from its own vtable.
 Address ProcessEventFor(const MemoryReader &reader, const ProcessEventLocation &location, Address object);
 
-// Every distinct implementation across the game's classes, base first. Hooking
-// only the base would miss every actor.
+// Every distinct implementation, base first; hooking only the base misses actors.
 std::vector<Address> ProcessEventImplementations(const ObjectFinder &finder, const TypeQueries &types,
                                                  const StructOffsets &structs,
                                                  const ProcessEventLocation &location);
 
-// The parameter block a call is made with. Zeroed whole, padding included,
-// because the engine reads every byte of it.
+// Call parameter block, zeroed including padding.
 class CallFrame {
   public:
-    // Owns its FunctionInfo: a frame handed out through the ABI outlives the
-    // caller's copy, and holding a pointer to it crashed the game.
+    // Owns its FunctionInfo; frames outlive the caller's copy across the ABI.
     explicit CallFrame(FunctionInfo info)
         : info_(std::make_shared<const FunctionInfo>(std::move(info))),
           bytes_(static_cast<std::size_t>(info_->parmsSize), 0) {}
 
-    // A view of a call in progress: the engine's block, the return value at
-    // returned when the caller keeps it elsewhere (a script call's result).
+    // View over an in-flight call; returned points at an external return value.
     CallFrame(std::shared_ptr<const FunctionInfo> info, void *data, void *returned)
         : info_(std::move(info)), view_(static_cast<std::uint8_t *>(data)),
           returned_(static_cast<std::uint8_t *>(returned)) {}
@@ -112,8 +107,7 @@ class CallFrame {
     std::uint8_t *returned_ = nullptr;
 };
 
-// In-process only: the frame must live where the game can read it, and the call
-// must run on a thread the engine owns.
+// In-process only, on an engine thread.
 bool InvokeProcessEvent(const ProcessEventLocation &location, Address object, Address function, void *frame);
 
 inline bool InvokeProcessEvent(const ProcessEventLocation &location, Address object, CallFrame &frame) {

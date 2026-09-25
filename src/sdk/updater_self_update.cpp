@@ -629,9 +629,7 @@ bool DownloadAndRestart(const AvailableUpdate &update, std::string *error) {
             *error = "downloaded updater SHA-256 does not match the published release digest";
         return false;
     }
-    // The helper is a stable sibling filename. Replacing an old helper keeps
-    // subsequent updater releases from failing solely because a prior helper
-    // binary remains next to the updater.
+    // Replace a leftover helper so it doesn't block later updates.
     if (!CopyFileW(target.c_str(), helper.c_str(), FALSE)) {
         std::filesystem::remove(download, filesystemError);
         if (error)
@@ -671,8 +669,7 @@ void RemoveStaleSelfUpdateHelper() noexcept {
     std::error_code filesystemError;
     if (!std::filesystem::exists(helper, filesystemError) || filesystemError)
         return;
-    // The helper exits right after relaunching this process, so its image can stay
-    // locked for a moment. A later launch retries whatever these attempts miss.
+    // The helper may still be locked briefly; a later launch retries.
     for (int attempt = 0; attempt < 10; ++attempt) {
         if (std::filesystem::remove(helper, filesystemError) && !filesystemError)
             return;

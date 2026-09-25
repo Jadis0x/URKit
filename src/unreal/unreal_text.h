@@ -1,7 +1,6 @@
 #pragma once
 
-// UTF-8 (the ABI) <-> UTF-16 (TCHAR on Windows). Invalid sequences become U+FFFD
-// rather than failing: engine strings are not validated either.
+// UTF-8 <-> UTF-16. Invalid sequences become U+FFFD.
 
 #include <cstdint>
 #include <string>

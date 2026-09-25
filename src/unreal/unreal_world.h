@@ -1,7 +1,6 @@
 #pragma once
 
-// GWorld and its actors. Found as the global pointing at a live World-derived
-// object, not by signature; the rest is ordinary reflection.
+// GWorld and its actors; found as the global pointing at a live UWorld.
 
 #include "unreal_module.h"
 #include "unreal_property_values.h"
@@ -42,8 +41,7 @@ class WorldView {
     // UE5 ships ULevel::Actors unreflected, so this finds nothing there.
     std::vector<Address> ReflectedActorList(Address level) const;
 
-    // Through the object array instead: an actor's outer is its level.
-    // Slower, always available.
+    // Via the object array (actor outer == level). Slower, always works.
     std::vector<Address> ActorsOwnedBy(Address level) const;
 
     // The two steps together.

@@ -39,8 +39,7 @@ Address FindEngineLoopTick(const MemoryReader &reader, Address moduleBase, const
 std::vector<std::size_t> AddressTakenCounts(const MemoryReader &reader, std::span<const ScanRegion> code,
                                             const std::vector<Address> &targets);
 
-// Globals the code in range reads or writes through rip-relative operands,
-// kept to the writable regions. Not a decoder: stray matches are possible.
+// Writable globals referenced rip-relative in range. Stray matches possible.
 std::vector<Address> GlobalReferences(const MemoryReader &reader, const FunctionRange &range,
                                       std::span<const ScanRegion> writable);
 

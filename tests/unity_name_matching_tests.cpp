@@ -1,7 +1,4 @@
-// Covers the assembly-image and managed-type name matching that both the Mono
-// and IL2CPP bindings depend on. These are the rules that decide whether a class
-// or method lookup succeeds, and the shapes Unity reports change between engine
-// versions, so every accepted spelling is pinned here.
+// Image and type name matching shared by the Mono and IL2CPP bindings.
 
 #include "src/unity/unity_name_matching.h"
 
@@ -38,8 +35,7 @@ void CheckType(const char *requested, const char *actual, bool expected) {
 int main() {
     using namespace URK::UnityNames;
 
-    // Unity reports image names with and without the extension depending on
-    // version and on which API the name came from.
+    // Unity reports image names with and without the extension.
     CheckImage("UnityEngine.CoreModule.dll", "UnityEngine.CoreModule.dll", true);
     CheckImage("UnityEngine.CoreModule", "UnityEngine.CoreModule.dll", true);
     CheckImage("UnityEngine.CoreModule.dll", "UnityEngine.CoreModule", true);
@@ -92,8 +88,7 @@ int main() {
     CheckType("long", "System.Int64", true);
     CheckType("ulong", "System.UInt64", true);
 
-    // TypeObject arguments are emitted as System.Type by the generated SDK; the
-    // Mono binding used to normalize this differently from the IL2CPP one.
+    // TypeObject arguments are emitted as System.Type.
     CheckType("Type", "System.Type", true);
     CheckType("System.Type", "System.Type", true);
 

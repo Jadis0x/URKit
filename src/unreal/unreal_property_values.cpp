@@ -8,13 +8,11 @@
 namespace URK::Unreal {
 namespace {
 
-// How far past Offset_Internal the tail can be. FProperty ends with a handful
-// of chain pointers, and shipped builds add none.
+// Max distance of the tail past Offset_Internal.
 constexpr std::int32_t kMinTailGap = 0x08;
 constexpr std::int32_t kMaxTailGap = 0x60;
 
-// Enough of each kind to make an accidental agreement unlikely, few enough that
-// the walk stops early in a game holding hundreds of thousands of objects.
+// Samples per kind: enough to rule out chance, few enough to stop early.
 constexpr std::size_t kSamplesPerKind = 4;
 constexpr std::int32_t kMaxObjectsWalked = 0x4000;
 constexpr std::int32_t kMaxChainLength = 0x200;
@@ -37,8 +35,7 @@ bool PlausibleBoolTail(const MemoryReader &reader, const FieldOffsets &fields, A
     return *byteMask != 0 && *byteMask == *fieldMask && (*byteMask & (*byteMask - 1)) == 0;
 }
 
-// The tail pointer must reach an object of this kind; an FField is never in the
-// object array.
+// The tail must reach an object of this kind; FFields aren't in the object array.
 bool PointsToObjectWithFlags(const ObjectFinder &finder, const StructOffsets &structs, Address field,
                              std::int32_t offset, std::uint64_t required) {
     const std::optional<Address> target = finder.Reader().ReadPointer(field + offset);
@@ -60,8 +57,7 @@ bool PointsToProperty(const MemoryReader &reader, const FieldOffsets &fields, Ad
     return castFlags && (*castFlags & kCastFlagProperty) != 0;
 }
 
-// An array's element property sits past the tail; take the first offset every
-// array agrees on, starting at the tail.
+// Array element property: first offset from the tail all arrays agree on.
 std::int32_t FindArrayInnerOffset(const MemoryReader &reader, const FieldOffsets &fields,
                                   const std::vector<Address> &arrays, std::int32_t tail) {
     if (arrays.empty())
@@ -79,8 +75,7 @@ std::int32_t FindArrayInnerOffset(const MemoryReader &reader, const FieldOffsets
     return kOffsetNotFound;
 }
 
-// The first offset from start where every sample passes: a container's element
-// properties, or an enum property's UEnum.
+// First offset from start where every sample passes.
 template <typename Test>
 std::int32_t FirstAgreeingOffset(const std::vector<Address> &samples, std::int32_t start, Test test) {
     if (samples.empty())
@@ -105,8 +100,7 @@ struct Samples {
     std::vector<Address> maps;
     std::vector<Address> enums;
 
-    // Arrays are excluded: they do not share the tail, so they cannot help
-    // decide where it is.
+    // Arrays don't share the tail; exclude them.
     std::size_t Kinds() const {
         return static_cast<std::size_t>(!bools.empty()) + static_cast<std::size_t>(!objects.empty()) +
                static_cast<std::size_t>(!structs.empty());
@@ -130,8 +124,7 @@ void Collect(std::vector<Address> &into, Address field) {
         into.push_back(field);
 }
 
-// Every property the graph holds, sorted by the kind whose tail says something
-// checkable about itself.
+// All properties, grouped by kind.
 Samples CollectSamples(const ObjectFinder &finder, const StructOffsets &structs, const FieldOffsets &fields) {
     const MemoryReader &reader = finder.Reader();
     const ObjectArray &objects = finder.Objects();
@@ -256,8 +249,7 @@ const char *PropertyKindName(PropertyKind kind) {
 }
 
 PropertyKind ClassifyProperty(std::uint64_t castFlags) {
-    // Most derived first: FClassProperty also carries FObjectProperty, and
-    // every numeric kind also carries FNumericProperty.
+    // Most derived first: cast flags include every base's flags.
     struct Mapping {
         std::uint64_t flag;
         PropertyKind kind;
@@ -310,8 +302,7 @@ PropertyTailOffsets FindPropertyTailOffsets(const ObjectFinder &finder, const St
         return resolved;
 
     const Samples samples = CollectSamples(finder, structs, fields);
-    // One kind agreeing with itself is not agreement: padding satisfies a bool
-    // mask often enough, and a chain pointer is a property pointer.
+    // Needs two kinds to agree; one kind alone matches padding too easily.
     if (samples.Kinds() < 2) {
         resolved.failure = "fewer than two property kinds to agree (bools " + std::to_string(samples.bools.size()) +
                            ", objects " + std::to_string(samples.objects.size()) + ", structs " +
@@ -521,8 +512,7 @@ std::optional<std::int64_t> PropertyValues::ReadInteger(Address instance, const 
     case PropertyKind::UInt64:
         return ReadWidened<std::int64_t>(*reader_, value);
     case PropertyKind::Enum:
-        // An enum property is a numeric property wearing a name; its width is
-        // whatever the property underneath it takes up.
+        // An enum's width is its underlying property's.
         switch (info.elementSize) {
         case 1:
             return ReadWidened<std::uint8_t>(*reader_, value);
@@ -710,15 +700,13 @@ bool PropertyValues::WriteBool(MemoryWriter &writer, Address instance, const Pro
     if (at == kNullAddress || info.kind != PropertyKind::Bool || info.boolLayout.fieldMask == 0)
         return false;
 
-    // A bitfield shares its byte with its neighbours, so the byte is read back
-    // and only this property's bits are touched.
+    // Bitfield: read-modify-write only this property's bits.
     const Address byteAddress = at + static_cast<Address>(info.boolLayout.byteOffset);
     const std::optional<std::uint8_t> current = reader_->ReadAs<std::uint8_t>(byteAddress);
     if (!current)
         return false;
 
-    // FBoolProperty::SetPropertyValue: clear FieldMask, set ByteMask (1 for a
-    // native bool, never 0xFF).
+    // FBoolProperty::SetPropertyValue: clear FieldMask, set ByteMask (1 for native bool).
     const auto cleared = static_cast<std::uint8_t>(*current & ~info.boolLayout.fieldMask);
     const auto updated = static_cast<std::uint8_t>(value ? (cleared | info.boolLayout.byteMask) : cleared);
     return writer.WriteAs<std::uint8_t>(byteAddress, updated);

@@ -327,13 +327,8 @@ inline bool query_swap_chain_desc(IDXGISwapChain *swap_chain, DXGI_SWAP_CHAIN_DE
     return SUCCEEDED(swap_chain->GetDesc(desc));
 }
 
-// Dear ImGui registers exactly one window class for its secondary Win32
-// viewports, and every viewport window it creates uses it. That class is the
-// only reliable way to tell another mod's viewport apart from the game's own
-// window: the IMGUI_CONTEXT property cannot do it, because
-// ImGui_ImplWin32_Init() also stamps it on the *main* window, so the first mod
-// in the process to initialize its backend would hide the game window from
-// every mod that installs later.
+// ImGui's Win32 viewport class identifies other mods' viewports; IMGUI_CONTEXT
+// is also set on the main window, so it can't.
 inline bool is_imgui_viewport_window(HWND hwnd) {
     if (!hwnd)
         return false;
@@ -342,13 +337,8 @@ inline bool is_imgui_viewport_window(HWND hwnd) {
     return length > 0 && std::wcscmp(class_name, L"ImGui Platform") == 0;
 }
 
-// Multi-viewport support registers a window class, and a class atom is keyed on
-// (name, module). A mod whose backend named the executable would share that atom
-// with every other mod in the process and have its viewport windows dispatched by
-// whichever mod registered first. The Win32 backend is compiled through
-// third_party/imgui_win32_module_scope.cpp so the class belongs to this DLL; report
-// the result once so a regression there shows up in the log rather than only as a
-// crash inside another mod's ImGui.
+// Viewport class atoms are keyed on (name, module); the backend is built per DLL
+// so mods don't share one. Logged once to catch regressions.
 inline void log_viewport_class_ownership() {
     static bool logged = false;
     if (logged)
@@ -370,8 +360,7 @@ inline bool is_process_main_window(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd || GetWindow(hwnd, GW_OWNER) != nullptr) {
         return false;
     }
-    // An injected process can contain several independent ImGui contexts, so a
-    // late-installed hook must not adopt another mod's viewport swap chain.
+    // Several ImGui contexts can coexist; don't adopt another mod's viewport swap chain.
     if (is_imgui_viewport_window(hwnd))
         return false;
     DWORD process_id = 0;
@@ -402,9 +391,7 @@ inline bool is_active_game_swap_chain(IDXGISwapChain *swap_chain) {
     if (swap_chain == g_active_swap_chain)
         return true;
 
-    // Secondary ImGui swap chains are the common hot path here when several
-    // generated mods coexist. Reject them by their Win32 viewport marker before
-    // paying for two COM identity queries on every detached-window Present.
+    // Cheap Win32 marker check before the COM identity queries.
     DXGI_SWAP_CHAIN_DESC desc{};
     if (query_swap_chain_desc(swap_chain, &desc) && desc.OutputWindow &&
         is_imgui_viewport_window(desc.OutputWindow))
@@ -977,9 +964,7 @@ inline bool any_window_mouse_button_down() {
 
 inline void queue_input_event(const InputEvent &event) {
     std::lock_guard lock(g_input_mutex);
-    // A stalled or replaced Present chain must never turn queued Win32 input
-    // into unbounded process memory. The next successful frame resynchronizes
-    // ImGui from the current physical mouse state.
+    // Bound the input queue if Present stalls; the next frame resyncs the mouse.
     if (g_input_events.size() >= 512) {
         g_input_events.clear();
         InputEvent reset{};
@@ -1957,12 +1942,8 @@ inline void report_viewport_cost() {
     g_viewport_cost_tick = now;
 }
 
-// UpdatePlatformWindows() stamps the frame it ran for *before* it consults the
-// viewport flag, and the next NewFrame() asserts that the stamp is current. So
-// it has to run for every frame NewFrame() started, even while detached
-// viewports are off -- skipping it leaves the stamp stale, and turning the
-// toggle back on then trips that assert on the very next frame. Only the
-// detached-window bookkeeping below is conditional.
+// Must run every frame NewFrame() started, or the next NewFrame() asserts.
+// Only the detached-window part is conditional.
 inline void render_platform_windows() {
     PlatformRendererGuard platformGuard{};
     const LONGLONG started = performance_counter();
@@ -2057,9 +2038,7 @@ inline void render_dx12_frame(IDXGISwapChain *swap_chain) {
     submission.commandList->ResourceBarrier(1, &barrier);
     if (!g_dx12_resources.submit_frame(submission)) {
         log("DX12 overlay command submission failed; UI frame synchronization is unavailable.");
-        // The only early return past NewFrame(). Dear ImGui still expects the
-        // platform-window update for the frame it started, so give it one
-        // before leaving rather than stranding the frame stamp.
+        // Early return after NewFrame(): still close the platform-window update.
         render_platform_windows();
         return;
     }
@@ -2411,10 +2390,7 @@ inline bool install() {
                 g_present1_hooked = true;
             }
         }
-        // Flip-model swap chains present through Present1, bitblt ones through
-        // Present, and a process can use both. Half the pair means the overlay
-        // draws on only some frames. Attaching can fail just because another
-        // thread was starting or ending, so drop it and let the retry try again.
+        // Present and Present1 both need hooks; drop a half pair and retry later.
         const bool wanted_present = targets.present != nullptr;
         const bool wanted_present1 = targets.present1 && targets.present1 != targets.present;
         if ((wanted_present && !g_present_hooked) || (wanted_present1 && !g_present1_hooked)) {
@@ -2607,8 +2583,7 @@ bool install(const URK_ModContext *ctx) {
             g_install_failed = true;
             return false;
         }
-        log("graphics-specific ImGui hook selection scheduled on the Unity main "
-            "thread.");
+        log("graphics-specific ImGui hook selection scheduled on the game thread.");
     }
     return true;
 }

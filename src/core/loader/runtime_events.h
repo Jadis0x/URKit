@@ -16,8 +16,7 @@ uint64_t RuntimeEvents_Capabilities();
 void RuntimeEvents_AfterModsLoaded();
 void RuntimeEvents_Pump();
 int RuntimeEvents_CurrentScene(URK_SceneInfo *scene);
-// Backends without Unity's scene hooks report here; distinct forces a change
-// for a scene that looks like the current one (the same map loaded again).
+// Scene reports for backends without Unity hooks; distinct forces a reload of the same map.
 void RuntimeEvents_ObserveScene(const URK_SceneInfo &scene, bool distinct);
 void RuntimeEvents_SetMainThread(unsigned long threadId);
 

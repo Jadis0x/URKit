@@ -1,14 +1,5 @@
-// Generates a Mono, an IL2CPP and an Unreal mod project straight from the generator
-// library, then compiles a probe translation unit against the result.
-//
-// The SDK templates are raw string literals, so nothing in the URKit build
-// itself type-checks them; a syntax error or a broken API reaches users only
-// when they build a generated project. The probe instantiates the templates that
-// callers actually reach, because a header-only parse would not look inside an
-// uninstantiated template.
-//
-// No game is required: the generator only records the game directory in the
-// manifest.
+// Generates Mono, IL2CPP and Unreal projects and compiles a probe against each.
+// Templates are raw strings, so this is the only thing that type-checks them.
 
 #include "src/sdk/il2cpp_sdk_generator.h"
 #include "src/sdk/mono_sdk_generator.h"
@@ -72,9 +63,7 @@ bool SyntaxCheck(const fs::path &projectRoot, const fs::path &source, const fs::
     return status == 0;
 }
 
-// Reaches the version-sensitive template paths: both spellings of the object
-// finders, unqualified type resolution, component access, and the IL2CPP helper
-// surface. Nothing here runs; instantiation is the point.
+// Instantiates version-sensitive template paths; nothing runs.
 constexpr std::string_view kProbeSource = R"PROBE(
 #include "sdk/unity/unity.h"
 
@@ -84,8 +73,7 @@ constexpr std::string_view kProbeSource = R"PROBE(
 namespace {
 
 void probe_object_finders() {
-    // Both names must instantiate: Unity renamed this API in 2022.2, and the
-    // generated SDK falls back across the rename in both directions.
+    // Renamed in Unity 2022.2; both names must instantiate.
     std::vector<URK::Unity::GameObject> byOldName = URK::Unity::Object::FindObjectsOfType<URK::Unity::GameObject>();
     std::vector<URK::Unity::GameObject> byNewName = URK::Unity::Object::FindObjectsByType<URK::Unity::GameObject>(
         URK::Unity::FindObjectsSortMode::None);
@@ -123,8 +111,7 @@ void probe_scene_traversal() {
 }
 
 void probe_stripped_member_detection() {
-    // Managed stripping removes UnityEngine members the game never calls, so
-    // presence has to be answerable without invoking anything.
+    // Stripped members must be detectable without invoking them.
     (void)URK::Unity::has_method(URK::Unity::GameObjectType, "get_scene", 0);
     (void)URK::Unity::has_method(URK::Unity::TransformType, "SetParent", 1);
     (void)URK::Unity::has_property(URK::Unity::GameObjectType, "tag");
@@ -176,9 +163,7 @@ struct GeneratedProject {
     std::string label;
 };
 
-// A loader type dump with the cases codegen must survive: keyword and reserved
-// member names, a member named like its class, same class name in two packages,
-// kinds without a typed form, and functions it must leave out.
+// Type dump with codegen edge cases: reserved names, duplicates, untyped kinds, skipped functions.
 std::string UnrealTypeDump() {
     const auto row = [](std::initializer_list<std::string_view> fields) {
         std::string line;
@@ -230,8 +215,7 @@ std::string UnrealTypeDump() {
     dump += row({"C", "Settings", "/Script/PluginB", "Object", "/Script/CoreUObject"});
     dump += row({"C", "BP Door_C", "/Game/Doors/BP Door", "Actor", "/Script/Engine"});
     dump += row({"P", "Open", "bool", "1", "1", "0", "", ""});
-    // Structs: layouts with offsets, a bitfield pair, a nested struct, an object,
-    // members kept as bytes, and a struct that only inherits.
+    // Struct cases: offsets, bitfields, nesting, objects, byte members, inherit-only.
     const auto field = [&](std::string_view name, std::string_view kind, std::string_view size,
                            std::string_view offset, std::string_view inner = "", std::string_view innerPackage = "",
                            std::string_view mask = "0", std::string_view fieldMask = "255") {
@@ -270,7 +254,8 @@ void CheckUnrealTypes(const GeneratedProject &project) {
                                  "bool Teleport(const ::URK::unreal::types::Vector &Where)",
                                  "std::optional<::URK::unreal::types::Vector> GetSpot()",
                                  "std::optional<bool> Sweep(::URK::unreal::types::HitLike *Hit)",
-                                 "No typed form yet: GetLabel(), Blocked()."})
+                                 "std::optional<::URK::unreal::types::Labelled> GetLabel()",
+                                 "No typed form yet: Blocked()."})
         Check(pawn.find(expected) != std::string::npos, project.label + ": Pawn.h has " + expected);
     Check(pawn.find("OnHit") == std::string::npos && pawn.find("ExecuteUbergraph") == std::string::npos,
           project.label + ": Pawn.h leaves out delegate signatures and the ubergraph");
@@ -344,11 +329,7 @@ std::string ReadText(const fs::path &path) {
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-// A setter whose C++ parameter is the generic `Object` wrapper cannot be
-// dispatched by inferred type: inference yields "UnityEngine.Object" while the
-// property's declared C# type is something narrower (AudioClip, Font, ...), so
-// the exact-overload lookup never matches and the call silently never happens.
-// Such setters must name the declared type through CallExact.
+// Setters taking a generic Object must use CallExact with the declared type.
 void CheckObjectSettersAreExact(const GeneratedProject &project) {
     const std::string text = ReadText(project.root / "sdk" / "unity" / "unity_components.h");
     Check(!text.empty(), project.label + ": unity_components.h is readable");
@@ -402,8 +383,7 @@ void CheckLayout(const GeneratedProject &project) {
     }
 }
 
-// Every entry of the Unreal adapter, plus the generated runtime source that
-// includes it in place of the Unity headers.
+// Every Unreal adapter entry plus the runtime source that includes it.
 constexpr std::string_view kUnrealProbeSource = R"PROBE(
 #include "sdk/unreal/unreal_runtime.h"
 #include "sdk/unreal/types/BP_Door_C.h"
@@ -515,16 +495,14 @@ void CheckUnrealLayout(const GeneratedProject &project) {
           project.label + ": mod_hooks.cpp does not reference Unity");
     Check(ReadText(project.root / ".urk/project.ini").find("unreal") != std::string::npos,
           project.label + ": manifest records the Unreal backend");
-    // A syntax check cannot see this: the wrong version macro compiles and then
-    // rejects the mod at load time.
+    // Wrong version macro compiles but fails at load.
     const std::string lifecycle = ReadText(project.root / "mod/generated/mod_lifecycle.cpp");
     Check(lifecycle.find("URK_UNREAL_API_VERSION") != std::string::npos &&
               lifecycle.find("IL2CPP") == std::string::npos && lifecycle.find("MONO") == std::string::npos,
           project.label + ": mod_lifecycle.cpp validates the Unreal API table");
 }
 
-// A backend's project must not offer the other backend's helpers; the shared ABI
-// header (sdk/mod_sdk.h) is the only place both appear.
+// Each backend's project must not expose the other's helpers.
 void CheckBackendSurface(const GeneratedProject &project, bool unreal) {
     std::vector<std::string_view> forbidden = {"//@unity", "//@unreal"};
     if (unreal) {

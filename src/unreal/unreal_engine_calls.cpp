@@ -39,8 +39,7 @@ template <typename T> T Load(const std::uint8_t *at) {
 
 template <typename T> void Store(std::uint8_t *at, T value) { std::memcpy(at, &value, sizeof(T)); }
 
-// A mod-side FString handed to a native call as a const input: the thunk copies
-// it into its own local, so the buffer stays ours and is never freed.
+// Mod-side FString passed as const input; the thunk copies it, we keep the buffer.
 struct InputString {
     explicit InputString(std::u16string_view text) : units(text) { units.push_back(u'\0'); }
     void WriteHeader(std::uint8_t *at) const {
@@ -195,8 +194,7 @@ bool EngineCalls::EmptyArray(std::uint8_t *header) {
         return true;
     bool handedOver = false;
     if (Load<void *>(header) && !FreeThroughLeft(header, &handedOver)) {
-        // Once the engine had the buffer it may be gone: forget it (a leak at
-        // worst) instead of keeping a pointer that could be freed again.
+        // The engine may have freed it; forget the pointer (leak at worst).
         if (handedOver)
             std::memset(header, 0, kArrayHeaderSize);
         return false;
@@ -205,8 +203,7 @@ bool EngineCalls::EmptyArray(std::uint8_t *header) {
     return true;
 }
 
-// FString UKismetStringLibrary::LeftPad(const FString&, int32 ChCount) makes
-// ChCount spaces in one engine allocation; its reported Max is the capacity.
+// LeftPad(FString, ChCount) allocates ChCount spaces; Max is the capacity.
 std::optional<EngineCalls::Block> EngineCalls::Allocate(std::size_t bytes, std::size_t alignment) {
     if (!Ensure(padState_, pad_, "KismetStringLibrary", "LeftPad",
                 {{"SourceString", PropertyKind::String, kArrayHeaderSize},
@@ -255,8 +252,7 @@ bool EngineCalls::AssignChars(std::uint8_t *header, const void *chars, std::size
     if (!block)
         return false;
     std::memcpy(block->data, chars, count * charSize);
-    // The new string goes in before the old buffer goes back, so a failed free
-    // can only leak it.
+    // Assign first, free after: a failed free only leaks.
     std::uint8_t old[kArrayHeaderSize];
     std::memcpy(old, header, kArrayHeaderSize);
     Store<void *>(header, block->data);
@@ -302,8 +298,7 @@ std::optional<std::string> EngineCalls::TextToString(const std::uint8_t *text) {
     if (!Load<void *>(text))
         return std::string();
     textToString_.Clear();
-    // A bitwise alias of the caller's text as a const input: the thunk takes its
-    // own reference and drops it again.
+    // Bitwise alias as const input; the thunk adds and drops its own ref.
     std::memcpy(textToString_.At("InText"), text, static_cast<std::size_t>(textToString_.SizeOf("InText")));
     if (!textToString_.Invoke(processEvent_)) {
         textToString_.Clear();
@@ -349,8 +344,7 @@ bool EngineCalls::MakeEmptyText(std::uint8_t *text) {
 // ITextData's Release slot, proven by GetRefCount reading 1, 2, 1.
 namespace {
 
-// TSharedRef's reference controller (UE4): vtable (DestroyObject, deleting
-// destructor), then the shared and weak counts.
+// UE4 TSharedRef controller: vtable (DestroyObject, deleting dtor), shared, weak.
 constexpr std::size_t kSharedCount = 8;
 constexpr std::size_t kWeakCount = 12;
 using DestroyObjectFn = void(__fastcall *)(void *controller);
@@ -374,8 +368,7 @@ void ReleaseShared(std::uint8_t *controller) {
 
 } // namespace
 
-// A fresh text's controller, both counts at 1: MakeShared holds the data inline at
-// +16, a TSharedRef made from `new` holds a pointer to it there.
+// Fresh controller, counts 1/1: MakeShared stores data inline at +16, `new` stores a pointer.
 bool EngineCalls::MeasureSharedTextRelease(std::uint8_t *probe) {
     auto *data = Load<std::uint8_t *>(probe);
     auto *controller = Load<std::uint8_t *>(probe + sizeof(Address));
@@ -455,8 +448,7 @@ bool EngineCalls::CanReleaseText(const std::uint8_t *text) {
     auto **vtable = *reinterpret_cast<void ***>(owner);
     const std::size_t slot = textSize_ == 24 ? 1 : 2;
     const Address release = reinterpret_cast<Address>(vtable[slot]);
-    // Every text history shares FTextHistory's final Release; another class is
-    // still an engine function at the proven slot.
+    // All histories share FTextHistory's Release; other classes are still engine code at that slot.
     if (std::find(releaseFunctions_.begin(), releaseFunctions_.end(), release) == releaseFunctions_.end()) {
         if (!ImageCode(vtable[slot]) || (textSize_ == 24 && !ImageCode(vtable[0]))) {
             failure_ = "a text's Release slot is not code of a loaded image";
@@ -516,8 +508,7 @@ bool EngineCalls::ValidName(const std::uint8_t *name, std::size_t size) {
 
 // --- soft references -------------------------------------------------------------
 
-// A soft reference is TPersistentObjectPtr: a weak pointer, then FSoftObjectPath,
-// which is reflected - so what it owns is found by name, not assumed.
+// TPersistentObjectPtr: weak pointer, then the reflected FSoftObjectPath.
 std::int32_t EngineCalls::SoftPathOffset() {
     if (softLayoutState_ == State::Ready)
         return softPathOffset_;
@@ -659,8 +650,7 @@ Address EngineCalls::SoftTarget(const std::uint8_t *soft, std::size_t size, bool
 
 // --- weak references ---------------------------------------------------------------
 
-// The engine gives an object its weak serial number when a weak pointer to it is
-// made; a soft reference made from the object carries one.
+// Weak pointer creation assigns the serial; a soft ref from the object carries one.
 bool EngineCalls::MakeWeak(Address object, std::uint8_t *weak) {
     NativeCall &call = softFromObject_[0];
     if (object == kNullAddress) {
@@ -696,8 +686,7 @@ bool EngineCalls::MakeWeak(Address object, std::uint8_t *weak) {
     return true;
 }
 
-// Where FUObjectItem keeps the serial number: the one offset holding the serial
-// the engine just gave each of several objects.
+// FUObjectItem serial offset: the one matching fresh serials on several objects.
 bool EngineCalls::MeasureWeak() {
     if (weakState_ != State::Unbound)
         return weakState_ == State::Ready;

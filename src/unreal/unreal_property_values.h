@@ -1,7 +1,6 @@
 #pragma once
 
-// Reading and writing members. The per-kind tail offset must satisfy several
-// kinds at once; an array's Inner sits past it in UE5, so it is measured apart.
+// Member reads and writes. Tail offset is shared by several kinds; UE5 array Inner is separate.
 
 #include "unreal_property_offsets.h"
 
@@ -11,8 +10,7 @@
 
 namespace URK::Unreal {
 
-// Cast flags for the remaining property kinds. Engine constants, used here to
-// classify a property rather than to anchor an offset.
+// Cast flags for the remaining property kinds, used for classification.
 inline constexpr std::uint64_t kCastFlagInt8Property = 0x2;
 inline constexpr std::uint64_t kCastFlagEnum = 0x4;
 inline constexpr std::uint64_t kCastFlagScriptStruct = 0x10;
@@ -84,17 +82,14 @@ enum class PropertyKind {
 
 const char *PropertyKindName(PropertyKind kind);
 
-// Which kind the cast flags describe. Order matters: a property carries every
-// flag its bases carry, so the most derived match wins.
+// Kind from cast flags; most derived match wins.
 PropertyKind ClassifyProperty(std::uint64_t castFlags);
 
-// Where a property's kind-specific members begin. Most kinds share the tail;
-// an array's element property is measured separately.
+// Start of kind-specific members; array element property measured separately.
 struct PropertyTailOffsets {
     std::int32_t tail = kOffsetNotFound;
     std::int32_t arrayInner = kOffsetNotFound;
-    // FSetProperty::ElementProp, FMapProperty::KeyProp/ValueProp,
-    // FEnumProperty::Enum. Each measured on live properties of its kind.
+    // FSetProperty::ElementProp, FMapProperty::KeyProp/ValueProp, FEnumProperty::Enum.
     std::int32_t setElement = kOffsetNotFound;
     std::int32_t mapKey = kOffsetNotFound;
     std::int32_t mapValue = kOffsetNotFound;
@@ -110,13 +105,11 @@ struct PropertyTailOffsets {
     std::int32_t boolByteMask() const { return tail + 2; }
     std::int32_t boolFieldMask() const { return tail + 3; }
 
-    // The first pointer of the kinds that share the tail: PropertyClass,
-    // Struct, UnderlyingProp.
+    // First pointer of the tail-sharing kinds: PropertyClass, Struct, UnderlyingProp.
     std::int32_t firstPointer() const { return tail; }
 };
 
-// Lowest offset that satisfies every kind found, plus the array element slot.
-// Needs two kinds to agree, so a one-kind graph fails rather than guesses.
+// Lowest offset satisfying every kind, plus the array element slot. Needs two kinds.
 PropertyTailOffsets FindPropertyTailOffsets(const ObjectFinder &finder, const StructOffsets &structs,
                                             const FieldOffsets &fields);
 
@@ -147,8 +140,7 @@ struct PropertyInfo {
     Address inner = kNullAddress;
     // Map: the value property.
     Address valueInner = kNullAddress;
-    // The UEnum of an enum or byte, the signature UFunction of a delegate, and
-    // inner for the kinds where that is an object.
+    // UEnum, delegate signature, or inner when it is an object.
     Address typeObject = kNullAddress;
 
     bool Resolved() const { return field != kNullAddress && offset != kOffsetNotFound; }
@@ -178,12 +170,10 @@ class PropertyValues {
     std::optional<PropertyInfo> Describe(Address field) const;
     const PropertyTailOffsets &Tail() const { return tail_; }
 
-    // What a value of this property must be aligned to in memory: the kind's
-    // C++ alignment, or a struct's measured MinAlignment.
+    // Required alignment: the kind's C++ alignment or the struct's MinAlignment.
     std::int32_t AlignmentOf(const PropertyInfo &info) const;
 
-    // Where a member's value sits inside an instance. Static C arrays are
-    // addressed by index; anything else only has index zero.
+    // Value address in an instance; index only for static C arrays.
     Address ValueAddress(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
 
     // Whatever the kind holds, widened. Byte, enum and every integer kind.
@@ -193,16 +183,14 @@ class PropertyValues {
     Address ReadObject(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
     std::optional<std::string> ReadName(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
 
-    // FString is a TArray of characters; the text is copied out as UTF-8,
-    // never touched.
+    // FString text copied out as UTF-8.
     std::optional<std::string> ReadString(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
     // The characters of any string kind at a value address, as UTF-8.
     std::optional<std::string> ReadStringAt(Address value, PropertyKind kind) const;
 
     std::optional<ArrayView> ReadArray(Address instance, const PropertyInfo &info, std::int32_t index = 0) const;
 
-    // In-place only. FString/TArray/TMap/FText own engine allocations, so
-    // changing one means calling into the game, not writing memory.
+    // In-place only; engine-owned kinds need engine calls.
     bool WriteInteger(MemoryWriter &writer, Address instance, const PropertyInfo &info, std::int64_t value,
                       std::int32_t index = 0) const;
     bool WriteFloating(MemoryWriter &writer, Address instance, const PropertyInfo &info, double value,

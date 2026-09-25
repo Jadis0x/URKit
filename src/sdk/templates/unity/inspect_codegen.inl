@@ -212,14 +212,11 @@ void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr);
     return nullptr;
 }
 )URKUNITY";
-    // Keep the large Inspect implementation backend-neutral. These tokens cover the
-    // small metadata API differences that cannot be expressed by a namespace swap.
+    // Tokens for the few Mono/IL2CPP metadata API differences.
     const std::string replacementInspect = [mono] {
         std::string text = R"URKUNITY(namespace Inspect {
 inline constexpr std::uint32_t kStaticMemberFlag = 0x0010u;
-// Metadata names are normally UTF-8, but an obfuscator can intentionally
-// return invalid byte sequences. Preserve valid names and give malformed names
-// stable printable IDs so UI consumers can distinguish members.
+// Obfuscated names may be invalid UTF-8; replace them with stable printable IDs.
 inline bool metadata_name_is_valid_utf8(std::string_view text) {
     for (std::size_t index = 0; index < text.size();) {
         const unsigned char first = static_cast<unsigned char>(text[index]);
@@ -1663,9 +1660,7 @@ inline void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr) {
         replaceAll("@METHOD_GET_PARAM@", mono ? "method_get_param_type" : "method_get_param");
         replaceAll("@METHOD_PARAMETERS@", methodParameters);
         replaceAll("@ENUM_BASETYPE@", enumBaseType);
-        // A reformat once split these placeholders across lines, so every
-        // substitution silently missed and the emitted header did not compile.
-        // Fail at generation time rather than shipping a broken SDK.
+        // Fail generation if a placeholder didn't substitute.
         for (const std::string_view placeholder : {"@BACKEND", "@TYPE_GET_CLASS", "@METHOD_GET_PARAM",
                                                    "@METHOD_PARAMETERS", "@ENUM_BASETYPE"}) {
             if (text.find(placeholder) != std::string::npos)

@@ -106,8 +106,7 @@ std::string ReadWide(const std::vector<std::uint8_t> &blob, std::size_t at) {
     return text;
 }
 
-// Searched inside the located blob rather than by walking String structures:
-// a few hundred bytes, already the right ones.
+// Searched in the located blob, not by walking String structures.
 std::string ValueForKey(const std::vector<std::uint8_t> &blob, const char *key) {
     const std::size_t keyUnits = std::strlen(key);
     for (std::size_t at = 0; at + (keyUnits + 1) * 2 < blob.size(); at += 2) {
@@ -279,8 +278,7 @@ EngineVersion ParseEngineVersion(const std::string &text) {
 
 namespace {
 
-// UBT's on-disk layout, which a packed title keeps even when its version
-// resource is stripped - the loader still needs the paths.
+// UBT layout survives a stripped version resource.
 struct LayoutEvidence {
     bool engineBinaries = false;
     bool targetBinaries = false;
@@ -314,8 +312,7 @@ UnrealPresence DetectUnreal(const MemoryReader &reader, std::span<const ModuleCa
         return presence;
     }
 
-    // Split build: the object array is CoreUObject's, the name pool Core's,
-    // so both have to be scanned.
+    // Split build: array in CoreUObject, name pool in Core; scan both.
     Address core = kNullAddress;
     Address coreUObject = kNullAddress;
     Address engine = kNullAddress;
@@ -367,8 +364,7 @@ UnrealPresence DetectUnreal(const MemoryReader &reader, std::span<const ModuleCa
         return presence;
     }
 
-    // No branch string: a packed title and a non-Unreal process look alike, so
-    // the layout only earns a maybe and the bootstrap settles it.
+    // No branch string: only a maybe; the bootstrap decides.
     if (layout.Any()) {
         presence.confidence = DetectionConfidence::Possible;
         presence.layout = UnrealLayout::Monolithic;

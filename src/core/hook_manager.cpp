@@ -27,8 +27,7 @@ struct HookRecord {
     void *safety_hook = nullptr;
 };
 
-// Mid hook callbacks run on game threads at very high frequency, so dispatch
-// reads the slot without taking g_hook_mutex; only attach/detach lock.
+// Dispatch reads the slot lock-free; only attach/detach take g_hook_mutex.
 struct MidHookSlot {
     std::atomic<URK_MidHookCallbackFn> callback{nullptr};
     void *user_data = nullptr;
@@ -87,20 +86,15 @@ void ConfigureDetoursAddressPolicy() {
     if (g_detours_address_policy_configured)
         return;
 
-    // Mono JIT code can fall inside Detours' legacy 32-bit system range.
-    // Disable that exclusion before allocating x64 trampolines.
+    // Mono JIT code can sit in Detours' legacy system range; lift that exclusion.
     DetourSetSystemRegionLowerBound(nullptr);
     DetourSetSystemRegionUpperBound(nullptr);
     g_detours_address_policy_configured = true;
-    Log("[hooks][Detours] x64 trampoline allocator configured for low-address "
-        "Unity JIT targets.");
+    Log("[hooks][Detours] x64 trampoline allocator configured for low-address JIT targets.");
 #endif
 }
 
-// Detours suspends threads one by one and allocates between suspensions; a
-// thread suspended inside the process heap's lock would block those forever.
-// Owning the lock first means no suspended thread can hold it, and ours is
-// recursive. No logging while held: the logger's lock is another such trap.
+// Hold the heap lock across suspension so no suspended thread owns it. No logging while held.
 class ProcessHeapHold {
   public:
     ProcessHeapHold() : heap_(GetProcessHeap()), held_(heap_ && HeapLock(heap_)) {}
@@ -160,9 +154,7 @@ DetoursResult UpdateTransactionThreads(std::vector<HANDLE> *opened_threads) {
 
         const LONG update_result = DetourUpdateThread(thread);
         if (update_result != NO_ERROR) {
-            // A thread that ends between the snapshot and the suspend fails with
-            // ERROR_ACCESS_DENIED. It runs no code we could relocate an IP out from
-            // under, so skip it. Anything still running is a real failure.
+            // Threads exiting after the snapshot fail with ERROR_ACCESS_DENIED; skip them.
             DWORD exit_code = 0;
             const bool exited = GetExitCodeThread(thread, &exit_code) && exit_code != STILL_ACTIVE;
             CloseHandle(thread);
@@ -194,9 +186,7 @@ void CloseThreadHandles(std::vector<HANDLE> *threads) {
     threads->clear();
 }
 
-// Enlistment suspends every thread in the snapshot, so any thread starting or
-// ending during the walk fails the transaction for reasons unrelated to the
-// target. Retry before reporting it as an unhookable target.
+// Thread churn during enlistment fails the transaction; retry before giving up.
 constexpr int kTransactionAttempts = 4;
 
 bool IsRetriableTransactionStage(const DetoursResult &result) {
@@ -502,8 +492,7 @@ int AttachDetours(void **original, void *detour) {
     return 1;
 }
 
-// A target's chain is patched by a single backend: mixing trampolines from two
-// disassembler/allocator implementations on one prologue is not recoverable.
+// One backend per target; mixed trampolines on a prologue can't be undone.
 bool TargetAcceptsBackend(const std::vector<HookRecord *> &existing, uint32_t backend, void *target) {
     if (existing.empty() || existing.front()->backend == backend)
         return true;
@@ -609,8 +598,7 @@ void DispatchMidHook(unsigned index, URK_HookRegisters *registers) {
 }
 
 bool ReleaseMidSlot(MidHookSlot &slot) {
-    // Silence the callback before the patch is removed so a thread already
-    // inside the stub cannot reach a detached mod's code.
+    // Silence the callback before unpatching so no thread reaches a detached mod.
     slot.callback.store(nullptr, std::memory_order_release);
     const bool destroyed = SafetyHookBackend_DestroyMid(slot.safety_hook);
     slot.safety_hook = nullptr;

@@ -1,7 +1,6 @@
 #pragma once
 
-// Engine memory handled by native Kismet calls, each measured before use.
-// Game thread only.
+// Engine memory via measured native Kismet calls. Game thread only.
 
 #include "unreal_functions.h"
 #include "unreal_module.h"
@@ -71,30 +70,25 @@ class EngineCalls {
         std::uint8_t *data = nullptr;
         std::size_t bytes = 0;
     };
-    // At least bytes of FMemory aligned to alignment, allocated by the engine as
-    // a string buffer; the capacity it reports is the usable size.
+    // Engine-allocated string buffer of at least bytes; reported capacity is usable.
     std::optional<Block> Allocate(std::size_t bytes, std::size_t alignment);
     // Frees an FMemory block through the engine's move assignment. Null is fine.
     bool Free(void *data);
     // Whether Free can run: the native call bound and measured, nothing freed.
     bool FreeReady();
-    // Free for a buffer already detached from engine memory: a failure leaks
-    // it and is noted, never leaves it reachable.
+    // Free for a detached buffer: failure leaks and is logged.
     void ReleaseOrLeak(void *data, const char *what);
-    // Frees an array's buffer (never its elements) and zeroes the header. If
-    // the engine failed after taking the buffer, the header is zeroed anyway.
+    // Frees the buffer (not elements) and zeroes the header, even on failure.
     bool EmptyArray(std::uint8_t *header);
     // New engine-owned buffer; the old one is freed by the engine.
     bool AssignChars(std::uint8_t *header, const void *chars, std::size_t count, std::size_t charSize);
 
-    // FText. Reads go through the engine's own conversion; assignment puts the
-    // old value where a native call's move assignment releases it.
+    // FText: read via engine conversion, assign via a native move assignment.
     std::optional<std::string> TextToString(const std::uint8_t *text);
     bool AssignText(std::uint8_t *text, std::u16string_view value);
     // Makes a zeroed (or valid) slot hold the engine's empty text.
     bool MakeEmptyText(std::uint8_t *text);
-    // Drops the slot's reference through the text data's own Release (measured)
-    // and zeroes it. Whether this build allows it is known after the first try.
+    // Releases via ITextData::Release and zeroes the slot; support known after first try.
     bool ReleaseText(std::uint8_t *text);
     bool TextReleaseAvailable();
     // Whether ReleaseText would release this text, without releasing it.
@@ -102,8 +96,7 @@ class EngineCalls {
 
     // FName from text, through the engine's name table.
     bool MakeName(std::u16string_view text, std::uint8_t *name, std::size_t size);
-    // Whether name holds an FName the table has: its entry is read, then named
-    // again by the engine, and only the engine's own answer is accepted.
+    // True only if the engine names the entry back the same.
     bool ValidName(const std::uint8_t *name, std::size_t size);
 
     // Soft references: TSoftObjectPtr (or TSoftClassPtr when isClass).
@@ -119,8 +112,7 @@ class EngineCalls {
     static constexpr std::size_t kWeakSize = 8;
     bool MakeWeak(Address object, std::uint8_t *weak);
     Address WeakTarget(const std::uint8_t *weak);
-    // Reading a weak pointer needs the serial number's place, measured once on
-    // the game thread; after that it is a plain read.
+    // Serial offset is measured once on the game thread; reads are plain after.
     bool WeakReady() const { return weakState_ == State::Ready; }
     bool MeasureWeakNow() { return MeasureWeak(); }
 

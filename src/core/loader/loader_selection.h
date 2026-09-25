@@ -8,6 +8,5 @@ struct LoaderSelection {
     std::vector<std::string> modPaths;
 };
 
-// Shows the injected-loader path selection UI. Returns false when the user
-// cancels or when no valid selection was made.
+// Loader path picker. False when cancelled or invalid.
 bool Loader_SelectPaths(LoaderSelection *selection);

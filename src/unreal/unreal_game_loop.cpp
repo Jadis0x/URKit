@@ -7,8 +7,7 @@
 namespace URK::Unreal {
 namespace {
 
-// A native thunk is a few instructions; this covers one without an exception
-// table entry of its own.
+// Covers a native thunk without its own .pdata entry.
 constexpr Address kMaxThunkBytes = 0x80;
 // A frame counter of a running game is far below this; stray data is not.
 constexpr std::uint64_t kMaxPlausibleFrame = std::uint64_t{1} << 40;
@@ -94,8 +93,7 @@ std::vector<Address> GameLoop::FindFrameCounterWrites(const MemoryReader &reader
     if (counter == kNullAddress || !length || bounds.Empty())
         return writes;
 
-    // Every disp32 that reaches the counter from the end of an instruction
-    // ending right after it, or after an imm8/imm32.
+    // Every disp32 reaching the counter, with or without a trailing immediate.
     constexpr std::size_t kChunk = 0x10000;
     constexpr std::size_t kOverlap = sizeof(std::int32_t) - 1;
     std::vector<Address> displacements;
@@ -118,8 +116,7 @@ std::vector<Address> GameLoop::FindFrameCounterWrites(const MemoryReader &reader
         }
     }
 
-    // Decode each function holding one from its first instruction; a jump
-    // table or padding that breaks the sweep only loses a candidate.
+    // Decode from each function start; a broken sweep only loses a candidate.
     constexpr std::size_t kMaxInstruction = 15;
     std::vector<FunctionRange> decoded;
     std::vector<std::uint8_t> body;

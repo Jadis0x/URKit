@@ -9,8 +9,7 @@ namespace {
 // Globals are pointer aligned, as they were for the bootstrap scan.
 constexpr Address kScanStep = sizeof(Address);
 
-// Renaming any of these is a deliberate engine change; the walk reports it
-// instead of guessing an offset.
+// Renamed members are reported, not guessed.
 constexpr const char *kWorldClassName = "World";
 constexpr const char *kPersistentLevelName = "PersistentLevel";
 constexpr const char *kActorsName = "Actors";
@@ -94,8 +93,7 @@ std::vector<Address> WorldView::ActorsInLevel(Address level) const {
     return ActorsOwnedBy(level);
 }
 
-// Every actor the level owns. An actor's outer is its level, so the object
-// array answers this without any member having to be reflected.
+// Actors whose outer is the level, via the object array.
 std::vector<Address> WorldView::ActorsOwnedBy(Address level) const {
     std::vector<Address> actors;
     if (level == kNullAddress)
@@ -131,8 +129,7 @@ std::vector<Address> WorldView::ReflectedActorList(Address level) const {
     actors.reserve(static_cast<std::size_t>(view->num));
     for (std::int32_t index = 0; index < view->num; ++index) {
         const std::optional<Address> actor = finder_->Reader().ReadPointer(view->ElementAt(index));
-        // The list keeps the slots of actors it has destroyed, so an empty one
-        // is expected rather than a reason to stop.
+        // Destroyed actors leave null slots; keep going.
         if (actor && *actor != kNullAddress)
             actors.push_back(*actor);
     }

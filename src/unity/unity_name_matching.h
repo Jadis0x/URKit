@@ -1,10 +1,6 @@
 #pragma once
 
-// Assembly-image and managed-type name matching shared by the Mono and IL2CPP
-// bindings. Both runtimes report names in shapes that vary across Unity versions
-// (with or without ".dll", with or without a directory, C# aliases versus CLR
-// names), so the two backends must agree on what counts as the same name. Keeping
-// one implementation here is what stops them drifting apart per backend.
+// Image and type name matching shared by the Mono and IL2CPP bindings.
 
 #include <algorithm>
 #include <cctype>
@@ -62,10 +58,7 @@ inline bool ImageNameMatches(const char *requested, const char *actual) {
     return ImageNameMatches(ImageNameVariants(requested), actual);
 }
 
-// Folds C# aliases onto their CLR names and drops decorations the runtimes add,
-// so "int", "Int32" and "System.Int32" compare equal. Comparison is
-// case-insensitive: the result is only ever tested against another normalized
-// name, and requiring exact case would reject spellings both runtimes accept.
+// Folds C# aliases to CLR names ("int" == "System.Int32"); case-insensitive.
 inline std::string NormalizeTypeName(std::string type) {
     std::string suffix;
     while (!type.empty() && (type.back() == '&' || type.back() == '*')) {

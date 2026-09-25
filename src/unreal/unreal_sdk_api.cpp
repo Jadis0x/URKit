@@ -33,14 +33,12 @@ bool CopyOut(const std::string &text, char *output, std::size_t outputSize) {
     return true;
 }
 
-// A handle is a bare address: only one the object array still holds is touched,
-// so a mod keeping a destroyed object gets failures, not freed memory.
+// Only handles still in the object array are touched; stale ones just fail.
 bool Live(const UnrealEngine &engine, Address object) {
     return engine.Available() && IsLiveObject(engine.Finder(), object);
 }
 
-// What an object member write may hold: the member must be an object or class
-// reference, and the value one of its class.
+// Object member writes: member must be an object/class ref and the value of its class.
 bool AssignableMember(const UnrealEngine &engine, const PropertyInfo &info, Address value) {
     return (info.kind == PropertyKind::Object || info.kind == PropertyKind::Class) && Assignable(engine, info, value);
 }
@@ -96,8 +94,7 @@ class MemberCache {
 
 MemberCache g_members;
 
-// Writes only what the caller's struct has room for: size says which version it
-// was compiled against. Version 1 had no bool layout, version 2 no type object.
+// Writes only what the caller's struct size covers (v1: no bool layout, v2: no type object).
 void FillInfo(URK_UnrealPropertyInfo *info, const PropertyInfo &from) {
     constexpr std::uint32_t kVersion1 = offsetof(URK_UnrealPropertyInfo, bool_byte_offset);
     constexpr std::uint32_t kVersion2 = offsetof(URK_UnrealPropertyInfo, type_object);
@@ -125,8 +122,7 @@ bool IsStruct(const UnrealEngine &engine, Address object) {
     return Live(engine, object) && ObjectIs(engine.Finder(), engine.Structs(), object, kCastFlagStruct);
 }
 
-// One member resolved from an instance. Every value entry goes through this,
-// so a missing member or mismatched kind fails the same way everywhere.
+// Resolves a member for every value entry, so failures are uniform.
 struct ResolvedMember {
     PropertyInfo info;
 };
@@ -159,7 +155,11 @@ void Unreal_EngineVersion(std::int32_t *major, std::int32_t *minor, std::int32_t
         *patch = version.patch;
 }
 
-int Unreal_UsesFieldProperties() { return UnrealEngine::Instance().Version().UsesFieldProperties() ? 1 : 0; }
+// 4.25 is the floor, so a bootstrapped engine has FField properties even with no version.
+int Unreal_UsesFieldProperties() {
+    const UnrealEngine &engine = UnrealEngine::Instance();
+    return engine.Available() || engine.Version().UsesFieldProperties() ? 1 : 0;
+}
 
 // --- object lookup --------------------------------------------------------
 
@@ -416,8 +416,7 @@ int Unreal_WriteStruct(URK_UnrealObject object, const char *memberName, std::int
 
 // --- services ---------------------------------------------------------------------
 
-// What makes, changes and frees engine memory, built once the ladder resolved.
-// Changes run on the game thread only; reflection-only reads anywhere.
+// Engine memory services, built after calibration. Changes on the game thread only.
 struct Services {
     explicit Services(UnrealEngine &engine)
         : calls(engine.Finder(), engine.Chain(), engine.Values(), engine.Functions(), engine.Types(), engine.Structs(),
@@ -467,8 +466,7 @@ bool OnGameThread() {
 
 // --- calling ------------------------------------------------------------------
 
-// A frame as mods hold it: the parameter block, plus which parameters hold
-// engine memory the loader must give back.
+// Mod-held frame: parameter block plus which parameters own engine memory.
 struct LoaderFrame {
     explicit LoaderFrame(FunctionInfo info)
         : frame(std::move(info)), engineOwned(frame.Function().parameters.size(), 0) {}
@@ -535,8 +533,7 @@ void ReleasePending() {
     t_releasing = false;
 }
 
-// A UFunction's outer is the class that declares it, so inherited functions
-// are found by climbing. An instance stands for its class.
+// A UFunction's outer is its class; climb for inherited ones.
 URK_UnrealObject Unreal_FindFunction(URK_UnrealObject ownerClass, const char *name) {
     UnrealEngine &engine = UnrealEngine::Instance();
     if (!name || !Live(engine, ownerClass))
@@ -606,15 +603,13 @@ int Unreal_CallFrameSet(URK_UnrealCallFrame *frame, const char *parameterName, c
     const std::size_t index = static_cast<std::size_t>(parameter - callFrame->Function().parameters.data());
     const PropertyKind kind = parameter->info.kind;
     const Ownership ownership = Serve().owned.Classify(parameter->info);
-    // Engine memory already in the slot would be lost under the mod's bytes;
-    // place_clear gives it back first.
+    // place_clear releases engine memory before raw bytes overwrite it.
     if (ownership != Ownership::None && loaderFrame->engineOwned[index])
         return 0;
     // A hooked call's strings and containers are the engine's; places replace them.
     if (ownership != Ownership::None && callFrame->View())
         return 0;
-    // The engine assigns over what it writes, freeing the old value: that value
-    // must be its own (or empty), never a buffer the mod made.
+    // The engine frees the old value on assignment, so it must be engine-owned or empty.
     if (Written(*parameter) && kind != PropertyKind::Struct && ownership != Ownership::None) {
         const std::size_t at = static_cast<std::size_t>(parameter->info.offset);
         if (parameter->info.offset < 0 || size != static_cast<std::size_t>(parameter->info.elementSize) ||
@@ -757,8 +752,7 @@ std::optional<PlaceContext> ResolvePlace(const URK_UnrealPlace *place, bool desc
     return context;
 }
 
-// A change through a place: on success a frame parameter now holds what the
-// loader must give back.
+// On success a frame parameter may now own engine memory.
 template <typename Change> int Changed(const URK_UnrealPlace *place, Change change) {
     std::optional<PlaceContext> context = ResolvePlace(place, false);
     if (!context)
@@ -974,8 +968,7 @@ int Unreal_EnumName(URK_UnrealObject enumObject, std::int64_t value, char *outpu
 
 // --- hooking / dispatch ---------------------------------------------------
 
-// The loader's game loop and mods share one hook. It comes off only when
-// neither holds it, so a mod's remove cannot stop the game loop.
+// Loader and mods share one hook; it's removed only when neither holds it.
 std::mutex g_hookMutex;
 bool g_loaderHold = false;
 bool g_modHold = false;
@@ -1355,8 +1348,7 @@ bool UnrealEngine::EnsureBootstrapped() {
         return elapsed;
     };
 
-    // Partial state is never read while available_ is false; every failure
-    // restamps the cooldown.
+    // Partial state is unused while available_ is false; failures restamp the cooldown.
     const auto failed = [this, attemptStart](const char *why) {
         failure_.store(why, std::memory_order_release);
         const std::uint64_t now = GetTickCount64();
@@ -1603,8 +1595,7 @@ void UnrealSdk_SetLog(LogSink log) { g_log.store(log, std::memory_order_release)
 void UnrealSdk_ReleasePending() {
     if (!UnrealEngine::Instance().Available() || !OnGameThread())
         return;
-    // Once, on the first frame: every measurement engine memory depends on, so
-    // a build where one fails says so at load rather than at a mod's first use.
+    // Once, on the first frame, so failed measurements show at load.
     static bool measured = false;
     if (!measured) {
         measured = true;

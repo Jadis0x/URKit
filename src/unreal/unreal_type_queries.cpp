@@ -2,20 +2,18 @@
 
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace URK::Unreal {
 namespace {
 
-// Deep enough for any engine hierarchy, shallow enough that a corrupted chain
-// cannot become a loop.
+// Bounds the walk so a corrupt chain can't loop.
 constexpr std::int32_t kMaxDepth = 0x40;
 
-// Where a class can keep its default object. UClass declares it past everything
-// UStruct does, and shipped builds add members ahead of it rather than after.
+// Range for ClassDefaultObject; past UStruct, shipped builds add fields before it.
 constexpr std::int32_t kMaxDefaultObjectOffset = 0x300;
 
-// Enough classes that an offset satisfying all of them by chance is not worth
-// considering.
+// Enough classes to rule out a chance match.
 constexpr std::size_t kClassSamples = 8;
 constexpr std::int32_t kMaxObjectsWalked = 0x4000;
 
@@ -65,12 +63,10 @@ std::int32_t FindClassDefaultObjectOffset(const ObjectFinder &finder, const Stru
         for (const Sample &sample : samples) {
             const std::optional<Address> defaultObject = reader.ReadPointer(sample.classObject + offset);
             if (!defaultObject || *defaultObject == kNullAddress) {
-                // A class whose default object has not been created yet is not
-                // evidence against the offset.
+                // No CDO yet is not evidence against the offset.
                 continue;
             }
-            // The two things only the real field satisfies: what it points at
-            // belongs to this very class, and carries its name.
+            // The CDO must belong to this class and carry its name.
             if (finder.ClassOf(*defaultObject) != sample.classObject ||
                 !NamedAfterClass(finder, *defaultObject, sample.name)) {
                 satisfied = false;
@@ -257,31 +253,43 @@ bool TypeQueries::IsDefaultObject(Address object) const {
     return DefaultObjectOf(finder_->ClassOf(object)) == object;
 }
 
+Address TypeQueries::TrustedClassOf(Address object) const {
+    const std::int32_t offset = finder_->Offsets().classPointer;
+    Address classObject = kNullAddress;
+    if (object == kNullAddress || offset == kOffsetNotFound ||
+        !finder_->Reader().ReadTrusted(object + offset, &classObject, sizeof(classObject)))
+        return kNullAddress;
+    return classObject;
+}
+
+// One pass; each class is judged once, since a game has far fewer classes than objects.
 std::vector<Address> TypeQueries::InstancesOf(const InstanceQuery &query) const {
     std::vector<Address> found;
     if (query.classObject == kNullAddress)
         return found;
 
-    const ObjectArray &objects = finder_->Objects();
-    const std::int32_t total = objects.Num();
-    for (std::int32_t index = 0; index < total; ++index) {
-        const Address object = objects.ObjectAt(index);
-        if (object == kNullAddress)
-            continue;
-
-        const Address classObject = finder_->ClassOf(object);
+    struct Verdict {
+        bool matches = false;
+        Address defaultObject = kNullAddress;
+    };
+    std::unordered_map<Address, Verdict> verdicts;
+    finder_->Objects().ForEach([&](std::int32_t, Address object) {
+        const Address classObject = TrustedClassOf(object);
         if (classObject == kNullAddress)
-            continue;
-        if (query.exact ? classObject != query.classObject : !IsChildOf(classObject, query.classObject))
-            continue;
-        if (!query.includeDefaults && IsDefaultObject(object))
-            continue;
-
+            return true;
+        const auto [entry, added] = verdicts.try_emplace(classObject);
+        Verdict &verdict = entry->second;
+        if (added) {
+            verdict.matches =
+                query.exact ? classObject == query.classObject : IsChildOf(classObject, query.classObject);
+            if (verdict.matches && !query.includeDefaults)
+                verdict.defaultObject = DefaultObjectOf(classObject);
+        }
+        if (!verdict.matches || (!query.includeDefaults && object == verdict.defaultObject))
+            return true;
         found.push_back(object);
-        if (query.limit != 0 && found.size() >= query.limit)
-            break;
-    }
-
+        return query.limit == 0 || found.size() < query.limit;
+    });
     return found;
 }
 
@@ -290,19 +298,24 @@ std::vector<Address> TypeQueries::SubclassesOf(Address classObject) const {
     if (classObject == kNullAddress || structs_.castFlags == kOffsetNotFound)
         return found;
 
-    const ObjectArray &objects = finder_->Objects();
-    const std::int32_t total = objects.Num();
-
-    for (std::int32_t index = 0; index < total; ++index) {
-        const Address object = objects.ObjectAt(index);
-        if (object == kNullAddress || object == classObject)
-            continue;
-        if (!ObjectIs(*finder_, structs_, object, kCastFlagClass))
-            continue;
-        if (IsChildOf(object, classObject))
+    // Keyed by the object's own class: is it a class-of-classes?
+    std::unordered_map<Address, bool> metaclasses;
+    const MemoryReader &reader = finder_->Reader();
+    finder_->Objects().ForEach([&](std::int32_t, Address object) {
+        if (object == classObject)
+            return true;
+        const Address meta = TrustedClassOf(object);
+        if (meta == kNullAddress)
+            return true;
+        const auto [entry, added] = metaclasses.try_emplace(meta);
+        if (added) {
+            const std::optional<std::uint64_t> flags = reader.ReadAs<std::uint64_t>(meta + structs_.castFlags);
+            entry->second = flags && (*flags & kCastFlagClass) == kCastFlagClass;
+        }
+        if (entry->second && IsChildOf(object, classObject))
             found.push_back(object);
-    }
-
+        return true;
+    });
     return found;
 }
 

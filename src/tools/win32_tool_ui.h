@@ -27,24 +27,20 @@ struct Palette {
     COLORREF surface = RGB(28, 30, 36);
     COLORREF surfaceMuted = RGB(23, 25, 30);
     COLORREF surfacePressed = RGB(38, 41, 49);
-    // Only one step off the surface it sits on. A brighter border is what made
-    // every panel edge read as a lit outline on a near-black canvas.
+    // One step off the surface; brighter borders glow on dark backgrounds.
     COLORREF border = RGB(42, 45, 54);
     COLORREF shadow = RGB(6, 7, 9);
     COLORREF text = RGB(228, 230, 237);
     COLORREF textMuted = RGB(138, 143, 157);
     COLORREF brand = RGB(16, 17, 21);
-    // Desaturated from full-chroma violet: at this luminance a 1px accent line
-    // no longer blooms against the dark background.
+    // Desaturated so 1px accent lines don't bloom.
     COLORREF accent = RGB(122, 112, 226);
     COLORREF accentHover = RGB(104, 94, 204);
 };
 
 inline constexpr Palette kPalette{};
 
-// ANTIALIASED_QUALITY, not CLEARTYPE_QUALITY: ClearType is subpixel rendering,
-// and on a dark surface its per-channel coverage shows up as orange and blue
-// fringes around every glyph. Grayscale antialiasing has no such artifact.
+// Grayscale AA: ClearType fringes on dark backgrounds.
 inline HFONT CreateUiFont(int height, int weight = FW_NORMAL, const wchar_t *face = L"Segoe UI") {
     HFONT font = CreateFontW(-height, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                              CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, face);
@@ -114,11 +110,7 @@ inline void Fill(HDC dc, const RECT &rect, COLORREF color) {
     DeleteObject(brush);
 }
 
-// GDI's RoundRect cannot antialias, so every rounded corner came out as a
-// visible stair-step. GDI+ can, and it is already a dependency elsewhere in the
-// repo. The token is intentionally never released: the process owns the UI for
-// its whole lifetime and shutdown ordering against live device contexts is not
-// worth the risk.
+// GDI+ for antialiased corners. The token is never released on purpose.
 inline bool EnsureGdiPlus() {
     static const bool ready = [] {
         Gdiplus::GdiplusStartupInput input{};
@@ -146,11 +138,7 @@ inline void AddRoundedRect(Gdiplus::GraphicsPath &path, const Gdiplus::RectF &re
     path.CloseFigure();
 }
 
-// kNoBackground means "leave whatever is already in the device context". Any
-// other value clears the full rect first, which owner-drawn controls must do:
-// RoundRect never touches the pixels outside the rounded shape, so the four
-// corners of a button kept uninitialised DC content and rendered as white
-// specks.
+// kNoBackground leaves the DC as is; otherwise clear first so corners aren't left dirty.
 inline constexpr COLORREF kNoBackground = CLR_INVALID;
 
 inline void DrawRoundedPanel(HDC dc, const RECT &rect, COLORREF fill, COLORREF border, int radius = 6,
@@ -174,16 +162,13 @@ inline void DrawRoundedPanel(HDC dc, const RECT &rect, COLORREF fill, COLORREF b
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
-    // Half-pixel inset so the one-pixel stroke lands on the pixel grid instead
-    // of straddling two rows at 50% coverage, which reads as a blurred edge.
+    // Half-pixel inset keeps 1px strokes sharp.
     const Gdiplus::RectF bounds(static_cast<Gdiplus::REAL>(rect.left) + 0.5f,
                                 static_cast<Gdiplus::REAL>(rect.top) + 0.5f,
                                 static_cast<Gdiplus::REAL>(rect.right - rect.left) - 1.0f,
                                 static_cast<Gdiplus::REAL>(rect.bottom - rect.top) - 1.0f);
     Gdiplus::GraphicsPath path;
-    // A radio ring asks for a radius of exactly half the box, and the half-pixel
-    // inset leaves the bounds one pixel smaller than that, so clamp before the
-    // arcs would overrun each other.
+    // Clamp so a radio ring's arcs don't overlap after the inset.
     const float maxRadius = std::min(bounds.Width, bounds.Height) * 0.5f;
     AddRoundedRect(path, bounds, std::min(static_cast<float>(radius), maxRadius));
 
@@ -200,9 +185,7 @@ inline void DrawElevatedPanel(HDC dc, const RECT &rect, COLORREF fill, COLORREF 
         Gdiplus::Graphics graphics(dc);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-        // A stack of translucent strokes instead of one hard offset rectangle:
-        // a solid black slab under the panel is what made the card look pasted
-        // on rather than raised.
+        // Layered translucent strokes read as a soft shadow.
         for (int spread = 5; spread >= 1; --spread) {
             const Gdiplus::RectF bounds(static_cast<Gdiplus::REAL>(rect.left - spread),
                                         static_cast<Gdiplus::REAL>(rect.top - spread + 2),
@@ -240,8 +223,7 @@ inline void DrawButton(const DRAWITEMSTRUCT &item, HFONT font, bool primary,
         SelectObject(item.hDC, oldFont);
 }
 
-// BS_OWNERDRAW buttons carry no check state, so ODS_CHECKED never arrives.
-// The owner passes its own state instead.
+// Owner-drawn buttons never get ODS_CHECKED; the caller passes the state.
 inline void DrawRadioButton(const DRAWITEMSTRUCT &item, HFONT font, bool checked) {
     RECT rect = item.rcItem;
     Fill(item.hDC, rect, kPalette.surface);
@@ -251,9 +233,7 @@ inline void DrawRadioButton(const DRAWITEMSTRUCT &item, HFONT font, bool checked
     const int top = rect.top + (rect.bottom - rect.top - diameter) / 2;
     RECT circle{rect.left, top, rect.left + diameter, top + diameter};
 
-    // A GDI Ellipse is not antialiased, so the ring came out as a ragged
-    // pixel outline. The radius equals half the box, so the shared rounded-rect
-    // helper draws the same circle with smooth edges.
+    // Rounded-rect helper for a smooth circle; GDI Ellipse isn't antialiased.
     DrawRoundedPanel(item.hDC, circle, kPalette.surfaceMuted, checked ? kPalette.accent : kPalette.textMuted,
                      diameter / 2);
 

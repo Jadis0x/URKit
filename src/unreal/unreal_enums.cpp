@@ -96,8 +96,7 @@ bool EnumNames::Measure(EngineCalls &engine) {
     int closestChecks = -1;
     for (std::int32_t offset = kFirstOffset; offset < kLastOffset; offset += 8) {
         for (const Form form : {Form::Parallel, Form::Pairs}) {
-            // Only enums that read plausibly are asked about; the engine's
-            // answers decide, and one disagreement rejects the candidate.
+            // Plausible enums only; one engine disagreement rejects the candidate.
             int enums = 0;
             int checks = 0;
             int readable = 0;

@@ -145,8 +145,7 @@ inline std::string GameObject::tag() const {
 }
 
 namespace detail {
-// runtime_invoke expects value-type params as pointers to local storage, but
-// managed reference/object/string params as the managed pointer itself.
+// Value types go by pointer to storage; references by the managed pointer.
 template <class T> struct Arg {
     T storage;
     void *ptr;
@@ -678,8 +677,7 @@ detail::FindObjectsUsingRooted(TypeRef owner, std::string_view methodName, std::
         return {};
     }
     void *array = InvokeStatic<void *>(owner, methodName, TypeObject{type}, std::forward<ExtraArgs>(extraArgs)...);
-    // FindObjectsOfType is the pre-2022.2 spelling, FindObjectsByType the newer one.
-    // Neither exists in every Unity version, so fall back across the rename both ways.
+    // FindObjectsOfType (pre-2022.2) vs FindObjectsByType; try both.
     if (!array && methodName == "FindObjectsOfType" && sizeof...(ExtraArgs) == 0) {
         clear_error();
         array = InvokeStatic<void *>(owner, "FindObjectsByType", TypeObject{type}, FindObjectsSortMode::None);
@@ -948,9 +946,7 @@ inline void *make_reflection_array(void *elementType, const std::vector<void *> 
         return nullptr;
     }
     TypeRef arrayTypeRef{"mscorlib", "System", "Array"};
-    // Array.CreateInstance expects the element Type. Passing MakeArrayType()
-    // here creates a jagged array (for example Type[][] instead of Type[]),
-    // so reference writes either fail or corrupt the reflection invocation.
+    // Pass the element type; MakeArrayType() would create a jagged array.
     void *array =
         InvokeStatic<void *>(arrayTypeRef, "CreateInstance", TypeObject{elementType}, static_cast<int>(values.size()));
     if (!array) {
@@ -1020,8 +1016,7 @@ inline ResolvedGenericMethod find_generic_method(const void *klass, std::string_
             if (!methodInfo)
                 continue;
 
-            // A runtime can surface an inflated MethodInfo while enumerating a
-            // generic definition. Normalize it before validating generic arity.
+            // Normalize inflated MethodInfos before checking generic arity.
             Object reflectionMethod{methodInfo};
             void *genericDefinition = reflectionMethod.CallExact<void *>("GetGenericMethodDefinition", {});
             if (!genericDefinition)
@@ -1157,8 +1152,7 @@ Ret Object::InvokeGeneric(std::string_view methodName, const std::vector<TypeObj
         return detail::from_result<Ret>(nullptr);
     }
 
-    // GetGenericArguments() provides a correctly typed, fresh Type[] for the
-    // selected definition. Reuse it instead of synthesizing a reflection array.
+    // Reuse GetGenericArguments()' fresh Type[].
     void *typeArray = resolved.genericParameterArray;
     if (!detail::Backend::has_array_length() || !detail::Backend::has_array_ref_at() ||
         !detail::Backend::has_array_set_ref() || detail::Backend::array_length(typeArray) != genericTypes.size()) {
@@ -1342,9 +1336,7 @@ detail::RootedObjectArray<T> detail::QueryComponentsRooted(const Object &target,
         return {};
     }
 
-    // GetComponentsInternal is Unity's native-backed implementation. Prefer it
-    // because stripped managed wrappers can retain metadata without a callable
-    // body in IL2CPP players.
+    // Prefer the native-backed GetComponentsInternal; stripped wrappers may lack a body.
     auto result = target.CallArrayExactRooted<T>(
         "GetComponentsInternal",
         {"System.Type", "System.Boolean", "System.Boolean", "System.Boolean", "System.Boolean", "System.Object"},
@@ -1366,8 +1358,7 @@ detail::RootedObjectArray<T> detail::QueryComponentsRooted(const Object &target,
             result = target.CallArrayExactRooted<T>(publicMethod, {"System.Type", "System.Boolean"},
                                                     TypeObject{typeObject}, true);
         } else {
-            // Preserve compatibility with older Unity versions that only expose
-            // the one-parameter overload, then try the newer explicit overload.
+            // Old one-parameter overload first, then the newer one.
             result = target.CallArrayExactRooted<T>(publicMethod, {"System.Type"}, TypeObject{typeObject});
             if (!result) {
                 const std::string oneParameterError =

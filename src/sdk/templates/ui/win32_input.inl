@@ -146,10 +146,7 @@ bool is_imgui_platform_window(HWND window) {
     GetWindowThreadProcessId(window, &processId);
     if (processId != GetCurrentProcessId())
         return false;
-    // The window class, not the IMGUI_CONTEXT property: ImGui_ImplWin32_Init()
-    // also stamps that property on the game's main window, so testing it would
-    // report the game window as an ImGui viewport as soon as any mod in the
-    // process initializes its backend.
+    // Check the window class; IMGUI_CONTEXT is also set on the game window.
     wchar_t className[32]{};
     const int length = GetClassNameW(window, className, static_cast<int>(std::size(className)));
     return length > 0 && std::wcscmp(className, L"ImGui Platform") == 0;

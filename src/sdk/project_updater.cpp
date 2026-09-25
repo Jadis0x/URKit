@@ -686,8 +686,7 @@ bool PreviewUpdate(const fs::path &projectRoot, UpdatePreview *preview, std::str
 
     UpdatePreview result;
     result.inspection = inspection;
-    // A template fix does not always bump the SDK version; the ledger tells
-    // content apart, so an equal version still gets compared file by file.
+    // Templates can change without a version bump; compare files anyway.
     const bool compareContent = !inspection.updateAvailable && inspection.hasManifest &&
                                 inspection.hasGeneratedFileLedger;
     if ((inspection.updateAvailable || compareContent) && !BuildPreview(inspection, &result.changes, error))

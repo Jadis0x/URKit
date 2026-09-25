@@ -104,8 +104,7 @@ std::optional<std::string> ObjectFinder::NameOf(Address object) const {
     return name;
 }
 
-// A hit must still be live and still carry the name: GC frees objects and
-// reuses both their slots and their memory.
+// GC reuses slots and memory; recheck liveness and name.
 template <typename Accept> Address ObjectFinder::Lookup(std::string_view name, Accept accept) const {
     const std::string key = NameKey(name);
     std::lock_guard lock(index_->mutex);

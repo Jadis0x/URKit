@@ -26,8 +26,7 @@ class OwnedValues {
 
     // Reflection only; safe off the game thread.
     Ownership Classify(const PropertyInfo &info, int depth = 0) const;
-    // Whether zeroed bytes are not yet a valid value (a text must hold the
-    // engine's empty text).
+    // True when zeroed bytes aren't a valid value (FText needs the empty text).
     bool NeedsInitialize(const PropertyInfo &info, int depth = 0) const;
 
     // Game thread. Releases and zeroes one element; unchanged when refused.
@@ -36,8 +35,7 @@ class OwnedValues {
     bool Releasable(const PropertyInfo &info, const std::uint8_t *value);
     // Game thread. Makes zeroed bytes a valid default value.
     bool Initialize(const PropertyInfo &info, std::uint8_t *value, int depth = 0);
-    // Game thread. Gives every text slot still zeroed the engine's empty text,
-    // leaving texts already made alone; *made tells whether any was.
+    // Game thread. Fills zeroed text slots with the empty text; *made reports any.
     bool FillNullTexts(const PropertyInfo &info, std::uint8_t *value, bool *made, int depth = 0);
     // Whether the value, or anything it contains, is an FText.
     bool HoldsText(const PropertyInfo &info, int depth = 0) const;
@@ -48,8 +46,7 @@ class OwnedValues {
     EngineCalls &Engine() { return *engine_; }
     Containers &Stores() { return containers_; }
 
-    // FScriptDelegate as a multicast delegate's element: measured from a reflected
-    // single-cast delegate, 0 when none was found.
+    // FScriptDelegate size from a reflected single-cast delegate; 0 if none.
     std::int32_t DelegateSize();
     // The element a multicast delegate's invocation list holds.
     PropertyInfo DelegateElement();

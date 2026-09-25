@@ -1,6 +1,4 @@
-// Unity SDK generation is split by the public header it produces. The first
-// fragments build the canonical module text; the final fragments specialize it
-// for Mono or IL2CPP and split it into standalone headers.
+// Unity SDK templates, split by generated header; last fragments specialize for Mono/IL2CPP.
 
 #include "unity/types.inl"
 #include "unity/components.inl"

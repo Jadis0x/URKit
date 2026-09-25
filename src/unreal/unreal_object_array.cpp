@@ -1,5 +1,6 @@
 #include "unreal_object_array.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -43,8 +44,7 @@ constexpr FixedObjectArrayLayout kFixedLayout{.objectsOffset = 0x00, .maxObjects
 // Generous bounds: they exclude noise, not pin a particular game's numbers.
 constexpr std::int32_t kMaxPlausibleElements = 0x400000;
 constexpr std::int32_t kMinFixedElements = 0x1000;
-// Fixed-form items are three pointers wide and InternalIndex follows vtable and
-// flags, so "object five reports five" confirms the array cheaply.
+// Fixed items are three pointers; "object N reports index N" confirms the array.
 constexpr std::int32_t kFixedItemStride = sizeof(Address) * 3;
 constexpr std::int32_t kFixedProbeIndex = 5;
 constexpr std::int32_t kFixedInternalIndexOffset = sizeof(Address) + sizeof(std::int32_t);
@@ -159,8 +159,7 @@ bool ValidateLayout(const MemoryReader &reader, Address address, const ChunkedOb
     if (elementsPerChunk < kMinElementsPerChunk || elementsPerChunk > kMaxElementsPerChunk)
         return false;
 
-    // Mutually consistent counts are what make the match trustworthy without a
-    // signature; passing both by accident is unlikely.
+    // Consistent counts make the match reliable without a signature.
     if (((*numElements / elementsPerChunk) + 1) != *numChunks)
         return false;
     if ((*maxElements / elementsPerChunk) != *maxChunks)
@@ -182,8 +181,7 @@ bool ValidateLayout(const MemoryReader &reader, Address address, const ChunkedOb
 std::optional<ObjectItemLayout> ProbeObjectItemLayout(const MemoryReader &reader, Address firstItem) {
     ObjectItemLayout layout;
 
-    // The UObject pointer is the first field pointing at an object; anything
-    // ahead of it is engine bookkeeping.
+    // The UObject pointer is the first field that points at an object.
     for (std::int32_t offset = 0; offset < 0x20; offset += 4) {
         if (reader.PointsToObject(firstItem + offset)) {
             layout.pointerOffset = offset;
@@ -193,8 +191,7 @@ std::optional<ObjectItemLayout> ProbeObjectItemLayout(const MemoryReader &reader
     if (layout.pointerOffset == kOffsetNotFound)
         return std::nullopt;
 
-    // First spacing at which the second and third items also hold objects.
-    // Checking two rejects a spacing landing on padding in the first.
+    // First stride where items 2 and 3 also hold objects.
     const Address base = firstItem + static_cast<Address>(layout.pointerOffset);
     for (std::int32_t stride = sizeof(Address); stride <= 0x38; stride += 4) {
         const Address second = base + static_cast<Address>(stride);
@@ -294,6 +291,47 @@ Address ObjectArray::ItemAt(std::int32_t index) const {
     if (!chunkAddress || *chunkAddress == kNullAddress)
         return kNullAddress;
     return *chunkAddress + static_cast<Address>(indexInChunk) * layout_.item.stride;
+}
+
+std::int32_t ObjectArray::ReadBlock(std::int32_t first, std::int32_t total, std::vector<Address> &objects,
+                                   std::vector<std::uint8_t> &bytes) const {
+    constexpr std::int32_t kBlockItems = 4096;
+    if (first < 0 || first >= total || !layout_.item.Resolved())
+        return 0;
+    std::int32_t count = std::min(kBlockItems, total - first);
+    const std::int32_t stride = layout_.item.stride;
+    const std::int32_t objectsOffset = layout_.chunked ? layout_.chunks.objectsOffset : layout_.fixed.objectsOffset;
+    Address items = kNullAddress;
+    const std::optional<Address> table = reader_->ReadPointer(address_ + objectsOffset);
+    if (table && *table != kNullAddress) {
+        if (!layout_.chunked) {
+            items = *table + static_cast<Address>(first) * stride;
+        } else if (layout_.elementsPerChunk > 0) {
+            const std::int32_t indexInChunk = first % layout_.elementsPerChunk;
+            count = std::min(count, layout_.elementsPerChunk - indexInChunk);
+            const std::optional<Address> chunk = reader_->ReadPointer(
+                *table + static_cast<Address>(first / layout_.elementsPerChunk) * sizeof(Address));
+            if (chunk && *chunk != kNullAddress)
+                items = *chunk + static_cast<Address>(indexInChunk) * stride;
+        }
+    }
+    objects.assign(static_cast<std::size_t>(count), kNullAddress);
+    if (items == kNullAddress)
+        return count;
+    bytes.resize(static_cast<std::size_t>(count) * stride);
+    if (reader_->Read(items, bytes.data(), bytes.size())) {
+        for (std::int32_t i = 0; i < count; ++i)
+            std::memcpy(&objects[i], bytes.data() + static_cast<std::size_t>(i) * stride + layout_.item.pointerOffset,
+                        sizeof(Address));
+        return count;
+    }
+    // Part of the block is gone; take what is left item by item.
+    for (std::int32_t i = 0; i < count; ++i) {
+        const std::optional<Address> object =
+            reader_->ReadPointer(items + static_cast<Address>(i) * stride + layout_.item.pointerOffset);
+        objects[i] = object ? *object : kNullAddress;
+    }
+    return count;
 }
 
 Address ObjectArray::ObjectAt(std::int32_t index) const {

@@ -1,7 +1,6 @@
 #pragma once
 
-// URK_UnrealApi over the live calibration. Mods get opaque handles, never
-// offsets; process-global, so a singleton.
+// URK_UnrealApi over the live calibration; opaque handles, process-wide singleton.
 
 #include "mod_sdk.h"
 #include "unreal_bootstrap.h"
@@ -43,20 +42,17 @@ class UnrealEngine {
     UnrealEngine(const UnrealEngine &) = delete;
     UnrealEngine &operator=(const UnrealEngine &) = delete;
 
-    // Thread-safe and retryable: the proxy loads before the object array
-    // exists. Only a non-UBT process is ruled out; a cooldown limits polling.
+    // Thread-safe and retryable; a cooldown limits polling.
     bool EnsureBootstrapped();
 
     static constexpr std::uint64_t kRetryCooldownMs = 100;
-    // The data scan costs seconds. Without anchors it is the only way in;
-    // with them it is a fallback for anchors that validate nothing.
+    // Data scan takes seconds; fallback when anchors fail.
     static constexpr std::uint64_t kScanRetryMs = 2000;
     static constexpr std::uint64_t kScanFallbackMs = 10000;
     // Too early in startup ProcessEvent may not pin down yet; retried this long.
     static constexpr std::uint64_t kProcessEventGraceMs = 10000;
 
-    // Version resource and module layout only, no scan. Cached; the answer
-    // cannot change while the process lives.
+    // Version resource and module layout only. Cached.
     const UnrealPresence &Presence();
 
     // This process can never be supported, so waiting for it is pointless.
@@ -131,12 +127,10 @@ class UnrealEngine {
     BootstrapProfile profile_{};
 };
 
-// Static table, same pointer every call. An invalid installer leaves the API
-// read-only: hook_install/call refuse cleanly, everything else still works.
+// Static table. Without an installer the API is read-only.
 const URK_UnrealApi *UnrealSdkApi(const HookInstaller &installer);
 
-// The loader's own claim on the ProcessEvent hook, for the game loop. Needs the
-// installer UnrealSdkApi was given; mods' install/remove leave this claim alone.
+// Loader's own claim on the ProcessEvent hook; mods' install/remove don't touch it.
 bool UnrealSdk_HoldProcessEventHook();
 
 // Where the API reports refused calls; the loader passes its log.

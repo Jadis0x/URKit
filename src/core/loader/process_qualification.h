@@ -11,7 +11,5 @@ struct ProcessQualification {
     std::string reason;
 };
 
-// Uses modules loaded in the current process, plus the Unreal image check.
-// Files beside the executable are deliberately ignored so launchers and helper
-// processes cannot qualify merely because they share the game directory.
+// Uses loaded modules only, so launchers in the game folder don't qualify.
 ProcessQualification ProcessQualification_WaitForRuntime(unsigned timeoutMs);

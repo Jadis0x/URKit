@@ -1,7 +1,4 @@
-// Exercises the live SafetyHook engine: mid hook thunk-pool routing, the
-// register copy-in/copy-out marshalling, and the inline hook trampoline. These
-// break silently when SafetyHook changes its Context layout, so the assertions
-// run against real patched code rather than mocks.
+// Live SafetyHook tests: mid hook routing, register marshalling, inline trampolines.
 #include "safetyhook_backend.h"
 
 #include <cstdarg>

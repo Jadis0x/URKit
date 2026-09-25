@@ -15,8 +15,7 @@ constexpr std::size_t kOverlap = 16;
 // Enough for UObjectBaseInit with AllocateObjectPool inlined.
 constexpr std::size_t kMaxFunctionBytes = 0x4000;
 
-// Field offsets a reference may carry past the global it belongs to: before
-// UE5.8 ObjObjects sat 0x10 into FUObjectArray, and its own fields reach 0x28.
+// Field offsets past a global: ObjObjects was +0x10 before UE5.8, fields reach 0x28.
 constexpr std::int64_t kObjectArrayBefore = 0x28;
 constexpr std::int64_t kObjectArrayAfter = 0x10;
 constexpr std::int64_t kNamePoolBefore = 0x18;
@@ -33,8 +32,7 @@ bool InRegions(std::span<const ScanRegion> regions, Address address) {
     return false;
 }
 
-// visit(chunkStart, bytes, readable, owned): positions below owned belong to
-// this chunk; the rest is overlap for instructions that cross into the next.
+// visit(chunkStart, bytes, readable, owned); bytes past owned are overlap.
 void ForEachChunk(const MemoryReader &reader, std::span<const ScanRegion> regions,
                   const std::function<void(Address, const std::uint8_t *, std::size_t, std::size_t)> &visit) {
     std::vector<std::uint8_t> buffer(kChunkBytes + kOverlap);
@@ -110,8 +108,7 @@ std::vector<Address> CallsTo(const MemoryReader &reader, std::span<const ScanReg
     return sites;
 }
 
-// Bytes of immediate after a rip-relative operand, or -1 if the opcode is not
-// one that reads or writes a global.
+// Immediate bytes after a rip-relative operand, or -1 for other opcodes.
 int ImmediateAfter(std::uint8_t opcode) {
     switch (opcode) {
     case 0x01: case 0x03: case 0x09: case 0x0B: case 0x21: case 0x23: case 0x29: case 0x2B:
@@ -127,8 +124,7 @@ int ImmediateAfter(std::uint8_t opcode) {
     }
 }
 
-// Globals a function touches through rip-relative operands. Not a decoder: a
-// stray match only adds a candidate, and candidates are validated.
+// Globals touched via rip-relative operands. Not a decoder; candidates get validated.
 std::vector<Address> DataReferences(const MemoryReader &reader, const FunctionRange &range,
                                     std::span<const ScanRegion> writable) {
     std::vector<Address> targets;
@@ -184,8 +180,7 @@ std::vector<Address> Ranked(const std::map<Address, int> &votes) {
     return ranked;
 }
 
-// The pool is constructed in place: `lea rcx, [rip+NamePoolData]` sits just
-// ahead of every call to the constructor.
+// `lea rcx, [rip+NamePoolData]` precedes every constructor call.
 std::optional<Address> ThisArgumentBefore(const MemoryReader &reader, Address call) {
     constexpr std::size_t kLookBack = 24;
     constexpr std::size_t kLeaLength = 7;

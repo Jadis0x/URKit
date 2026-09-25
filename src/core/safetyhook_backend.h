@@ -5,19 +5,16 @@
 #include <cstddef>
 #include <cstdint>
 
-// Isolates every SafetyHook header from the rest of the runtime: those headers
-// pull in std::expected and therefore require C++23 from their translation unit.
+// Keeps SafetyHook headers (C++23) out of the rest of the runtime.
 
 bool SafetyHookBackend_Available();
 
-// Installs an inline hook and reports the trampoline that reaches the original
-// code. Returns an opaque handle, or nullptr on failure.
+// Inline hook; returns an opaque handle or nullptr.
 void *SafetyHookBackend_CreateInline(void *target, void *detour, void **trampoline);
 
 bool SafetyHookBackend_DestroyInline(void *handle);
 
-// A mid hook callback carries no user pointer, so the loader owns a fixed pool
-// of dispatch thunks and passes the slot that identifies this hook.
+// Mid hooks carry no user pointer, so a fixed thunk pool identifies the slot.
 constexpr unsigned SafetyHookBackend_MidSlotCount = 128;
 
 using SafetyHookBackend_MidDispatchFn = void (*)(unsigned slot, URK_HookRegisters *registers);
@@ -30,6 +27,5 @@ bool SafetyHookBackend_DestroyMid(void *handle);
 
 bool SafetyHookBackend_SetMidEnabled(void *handle, bool enabled);
 
-// The length of the x64 instruction at the start of code (Zydis), or 0 when
-// it does not decode or no decoder is built in.
+// Length of the instruction at code (Zydis), or 0.
 std::size_t SafetyHookBackend_InstructionLength(const std::uint8_t *code, std::size_t available);

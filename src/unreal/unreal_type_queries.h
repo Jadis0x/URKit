@@ -1,7 +1,6 @@
 #pragma once
 
-// Type tests over the Super chain. The CDO is the object whose class is this
-// class and whose name follows it.
+// Type tests over the Super chain, plus CDO lookup.
 
 #include "unreal_object_finder.h"
 #include "unreal_struct_offsets.h"
@@ -39,14 +38,12 @@ class TypeQueries {
     // The same question asked of an instance, through its class.
     bool IsA(Address object, Address classObject) const;
 
-    // How far up the chain base sits, or -1 when it is not on it. Useful for
-    // picking the most derived class a set of objects share.
+    // Depth of base in the chain, or -1.
     std::int32_t DistanceTo(Address structObject, Address base) const;
 
     Address DefaultObjectOf(Address classObject) const;
 
-    // A default object is not a live instance and is usually not what a caller
-    // asking for instances means.
+    // CDOs are excluded by default.
     bool IsDefaultObject(Address object) const;
 
     struct InstanceQuery {
@@ -64,13 +61,13 @@ class TypeQueries {
     // Every class deriving from this one, itself excluded.
     std::vector<Address> SubclassesOf(Address classObject) const;
 
-    // What an interface reference to object holds, as UObject::GetInterfaceAddress
-    // gives it: object plus the native vtable's offset, the object itself for a
-    // Blueprint interface, null when only a Blueprint implements a native one.
-    // Nothing when the object's class does not implement the interface.
+    // Interface address as UObject::GetInterfaceAddress returns it; nothing if not implemented.
     std::optional<Address> InterfaceAddress(Address object, Address interfaceClass) const;
 
   private:
+    // For objects from the array: no range query per read.
+    Address TrustedClassOf(Address object) const;
+
     const ObjectFinder *finder_;
     StructOffsets structs_;
     ClassOffsets classes_;

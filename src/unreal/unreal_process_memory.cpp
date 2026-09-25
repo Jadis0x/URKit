@@ -7,16 +7,14 @@
 namespace URK::Unreal {
 namespace {
 
-// Readable protections. PAGE_GUARD must be rejected untouched: touching it
-// fires the exception the game relies on.
+// Readable protections. PAGE_GUARD is rejected: touching it fires the game's exception.
 constexpr DWORD kReadableProtections = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
                                        PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
 constexpr DWORD kWritableProtections = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE |
                                        PAGE_EXECUTE_WRITECOPY;
 constexpr DWORD kBlockingProtections = PAGE_GUARD | PAGE_NOACCESS;
 
-// No destructors here: cl.exe rejects __try around them. Needs
-// -fasync-exceptions under clang.
+// No destructors here (cl.exe C2712); clang needs -fasync-exceptions.
 bool CopyGuarded(const void *source, void *out, std::size_t size) {
     __try {
         std::memcpy(out, source, size);
@@ -24,6 +22,33 @@ bool CopyGuarded(const void *source, void *out, std::size_t size) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+// Records the fault so a tripped guard page can be put back.
+int CatchFault(const EXCEPTION_POINTERS *info, DWORD *code, ULONG_PTR *address) {
+    const EXCEPTION_RECORD *record = info->ExceptionRecord;
+    *code = record->ExceptionCode;
+    *address = record->NumberParameters >= 2 ? record->ExceptionInformation[1] : 0;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+bool CopyCatching(const void *source, void *out, std::size_t size, DWORD *code, ULONG_PTR *address) {
+    __try {
+        std::memcpy(out, source, size);
+        return true;
+    } __except (CatchFault(GetExceptionInformation(), code, address)) {
+        return false;
+    }
+}
+
+// Touching a guard page clears it; a thread stack would then stop growing.
+void RearmGuardPage(ULONG_PTR address) {
+    MEMORY_BASIC_INFORMATION info{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &info, sizeof(info)) != sizeof(info) ||
+        info.State != MEM_COMMIT)
+        return;
+    DWORD old = 0;
+    VirtualProtect(reinterpret_cast<LPVOID>(address), 1, info.Protect | PAGE_GUARD, &old);
 }
 
 } // namespace
@@ -41,8 +66,7 @@ const ProcessMemory::Range *ProcessMemory::Remembered(Cache &cache, Address addr
     return nullptr;
 }
 
-// A range that is being re-asked takes its old slot back, so an expired answer
-// cannot sit alongside the answer that replaced it.
+// A re-queried range reuses its old slot so stale answers don't linger.
 ProcessMemory::Range &ProcessMemory::SlotFor(Cache &cache, Address address) const {
     for (Range &range : cache.ranges) {
         if (range.Holds(address))
@@ -71,8 +95,7 @@ const ProcessMemory::Range &ProcessMemory::Resolve(Address address) const {
         resolved.readable = usable && (info.Protect & kReadableProtections) != 0;
         resolved.writable = usable && (info.Protect & kWritableProtections) != 0;
     } else {
-        // Nothing is mapped there. Remembering the failure keeps a scan from
-        // asking about every address in a hole.
+        // Unmapped; cache the miss so scans skip the hole.
         resolved.start = address;
         resolved.end = address + 1;
         resolved.readable = false;
@@ -92,8 +115,7 @@ void ProcessMemory::Forget() const {
     cache.next = 0;
 }
 
-// A range can end mid-request, so the walk continues into the next one:
-// adjacent commits carrying the permission read as one buffer.
+// Continue into adjacent commits with the same permission.
 bool ProcessMemory::Spans(Address address, std::size_t size, bool Range::*permission) const {
     if (address == kNullAddress || size == 0)
         return false;
@@ -130,6 +152,18 @@ bool ProcessMemory::Read(Address address, void *out, std::size_t size) const {
 
     // Freed or reprotected since the query; its neighbours may be stale too.
     Forget();
+    return false;
+}
+
+bool ProcessMemory::ReadTrusted(Address address, void *out, std::size_t size) const {
+    if (!out || size == 0 || !PlausiblePointer(address) || !PlausiblePointer(address + size - 1))
+        return false;
+    DWORD code = 0;
+    ULONG_PTR faultAddress = 0;
+    if (CopyCatching(reinterpret_cast<const void *>(address), out, size, &code, &faultAddress))
+        return true;
+    if (code == STATUS_GUARD_PAGE_VIOLATION)
+        RearmGuardPage(faultAddress);
     return false;
 }
 

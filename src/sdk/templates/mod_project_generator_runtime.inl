@@ -1,5 +1,4 @@
-// Runtime templates are split along public API and generated source ownership
-// boundaries so an ABI change does not require editing lifecycle or mod files.
+// Runtime templates, split by public API and generated source ownership.
 
 #include "runtime/runtime_api.inl"
 #include "runtime/hooks_api.inl"

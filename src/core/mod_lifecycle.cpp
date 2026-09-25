@@ -340,8 +340,7 @@ bool ModLifecycle_UnloadModule(HMODULE module, const char *reason) {
     if (unloaded) {
         g_loadedMods.erase(it);
     } else {
-        // Shutdown already ran. Keep the still-mapped module tracked for a later
-        // detach/unload retry, but prevent callbacks or a second shutdown call.
+        // Already shut down; keep it tracked for a later unload but block callbacks.
         it->shutdown = nullptr;
         it->onSceneLoaded = nullptr;
         it->onSceneChanged = nullptr;

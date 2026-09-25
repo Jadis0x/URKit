@@ -7,8 +7,7 @@ namespace {
 constexpr std::int32_t kMaxStructOffset = 0x1B0;
 constexpr std::int32_t kMaxFieldNextOffset = 0x60;
 
-// Sizes the engine fixes and will not change: FColor is four bytes, FGuid is
-// four uint32s, FTransform is SIMD aligned.
+// Fixed engine sizes: FColor 4 bytes, FGuid 4 uint32s, FTransform SIMD aligned.
 constexpr std::int32_t kColorSize = 0x04;
 constexpr std::int32_t kGuidSize = 0x10;
 constexpr std::int16_t kTransformAlignment = 0x10;
@@ -84,8 +83,7 @@ std::int32_t FindSuperStructOffset(const ObjectFinder &finder) {
 }
 
 std::int32_t FindChildrenOffset(const ObjectFinder &finder) {
-    // Children points at the first child only, which is a function once
-    // properties live in the FField chain.
+    // Children is a function once properties moved to FField.
     const std::vector<Anchor<Address>> anchors{
         {finder.Find("PlayerController"), finder.FindInOuter("WasInputKeyJustReleased", "PlayerController")},
         {finder.Find("Controller"), finder.FindInOuter("UnPossess", "Controller")},
@@ -115,8 +113,7 @@ std::int32_t FindFieldNextOffset(const ObjectFinder &finder, std::int32_t childr
 
     const MemoryReader &reader = finder.Reader();
 
-    // Two libraries whose first child is a function with a successor, so the
-    // shared pointer offset can only be Next.
+    // First child is a function with a successor, so the shared offset is Next.
     const auto firstChild = [&](const char *owner) -> Address {
         const Address structure = finder.Find(owner);
         if (structure == kNullAddress)

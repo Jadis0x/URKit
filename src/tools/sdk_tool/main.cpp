@@ -470,10 +470,7 @@ class SdkGeneratorWindow {
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     }
 
-    // BS_OWNERDRAW is mutually exclusive with BS_AUTORADIOBUTTON, so these
-    // buttons hold no check state of their own and BM_SETCHECK/BM_GETCHECK are
-    // no-ops on them. options_ is the only source of truth; repainting is all
-    // the selection change needs.
+    // Owner-drawn buttons have no check state; options_ is the source of truth.
     int SelectedBackendId() const {
         if (options_.backendSelection == "il2cpp")
             return kIdBackendIl2Cpp;
@@ -839,10 +836,7 @@ class SdkGeneratorWindow {
 
         std::string error;
         if (!FillDerivedProjectPaths(next, error)) {
-            // Only the derived paths are invalid. options_ is now the sole
-            // record of what the user picked, so clearing it here would reset
-            // the backend radio and the locale checkbox on every refresh that
-            // runs before a game executable is chosen.
+            // Keep options_: clearing it would reset the user's picks on every refresh.
             Options kept;
             kept.backendSelection = next.backendSelection;
             kept.projectName = next.projectName;

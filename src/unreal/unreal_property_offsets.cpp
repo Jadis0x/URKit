@@ -7,8 +7,7 @@ constexpr std::int32_t kMaxChildPropertiesOffset = 0x80;
 constexpr std::int32_t kMaxFieldOffset = 0x48;
 constexpr std::int32_t kMaxPropertyOffset = 0x100;
 
-// Next follows Owner, which had a trailing bool before UE5.1.1, so the scan
-// starts past the narrower layout.
+// Owner had a trailing bool before UE5.1.1; start past the narrow layout.
 constexpr std::int32_t kFieldClassMinOffset = 0x08;
 constexpr std::int32_t kFieldOwnerOffset = 0x10;
 
@@ -17,8 +16,7 @@ constexpr std::uint64_t kPodMemberFlags = kPropertyFlagEdit | kPropertyFlagZeroC
                                           kPropertyFlagIsPlainOldData | kPropertyFlagNoDestructor |
                                           kPropertyFlagHasGetValueTypeHash;
 
-// First offset where both fields point into mapped memory; FFieldClass has no
-// vtable to check.
+// First offset where both fields are mapped pointers; FFieldClass has no vtable.
 std::int32_t FindSharedReadablePointer(const MemoryReader &reader, Address fieldA, Address fieldB, std::int32_t start,
                                        std::int32_t limit) {
     for (std::int32_t offset = start; offset <= limit; offset += sizeof(Address)) {
@@ -89,8 +87,7 @@ std::optional<std::string> PropertyChain::NameOf(Address field) const {
 }
 
 Address PropertyChain::FindMember(Address structObject, std::string_view name) const {
-    // A chain longer than this is a sign the offsets are wrong, not a struct
-    // with that many members.
+    // Longer chains mean wrong offsets.
     constexpr int kMaxChainLength = 0x1000;
 
     Address field = First(structObject);
@@ -104,8 +101,7 @@ Address PropertyChain::FindMember(Address structObject, std::string_view name) c
 }
 
 Address PropertyChain::FindMemberDeep(Address structObject, std::string_view name) const {
-    // Deep enough for any engine hierarchy, shallow enough that a corrupted
-    // chain cannot become a loop.
+    // Bounds the walk so a corrupt chain can't loop.
     constexpr int kMaxDepth = 0x40;
 
     Address current = structObject;
@@ -150,16 +146,14 @@ std::int32_t FindFieldNextOffset(const ObjectFinder &finder, const StructOffsets
     if (guidField == kNullAddress || vectorField == kNullAddress)
         return kOffsetNotFound;
 
-    // Starting past the narrow Owner lets the wide form fall through: its
-    // trailing bool is not a pointer, so the scan moves on to the real Next.
+    // The wide form's trailing bool isn't a pointer, so the scan reaches the real Next.
     return FindSharedFieldPointer(finder.Reader(), guidField, vectorField, kFieldOwnerOffset + sizeof(Address),
                                   kMaxFieldOffset);
 }
 
 std::int32_t FindFieldNameOffset(const ObjectFinder &finder, const NameTable &names, const StructOffsets &,
                                  const FieldOffsets &fields) {
-    // The first member of each struct is fixed by its declaration, so the name
-    // is known before any offset is.
+    // First member names are fixed by declaration.
     struct KnownFirstMember {
         const char *structName;
         const char *memberName;
@@ -203,8 +197,7 @@ std::int32_t FindFieldClassCastFlagsOffset(const ObjectFinder &finder, const Nam
     const Address guidField = FirstProperty(finder.Reader(), finder, fields, "Guid");
     const Address colorField = FirstProperty(finder.Reader(), finder, fields, "Color");
 
-    // FGuid is four int32s, FColor four bytes, so their property classes differ
-    // in exactly one flag.
+    // FGuid (int32s) and FColor (bytes) property classes differ in one flag.
     const std::vector<Anchor<std::uint64_t>> anchors{
         {chain.ClassOf(guidField),
          kCastFlagField | kCastFlagProperty | kCastFlagNumericProperty | kCastFlagIntProperty},
@@ -239,8 +232,7 @@ std::int32_t FindArrayDimOffset(const ObjectFinder &finder, const NameTable &nam
         {Member(finder, names, structs, fields, "Guid", "C"), 0x01},
         {Member(finder, names, structs, fields, "Guid", "D"), 0x01},
     };
-    // A plain member's array dimension is one, a value far too common to search
-    // for freely; it is only meaningful right next to the element size.
+    // ArrayDim 1 is too common to search alone; look next to the element size.
     return FindAnchoredOffset(finder.Reader(), anchors, fields.elementSize - 0x10, fields.elementSize + 0x10);
 }
 
@@ -249,8 +241,7 @@ std::int32_t FindOffsetInternalOffset(const ObjectFinder &finder, const NameTabl
     if (fields.fieldName == kOffsetNotFound)
         return kOffsetNotFound;
 
-    // FColor is declared B, G, R, A, so B sits at zero and G at one. Some builds
-    // spell FColor::R lowercase, but B and G are enough here.
+    // FColor is B, G, R, A: B at 0, G at 1.
     const std::vector<Anchor<std::int32_t>> anchors{
         {Member(finder, names, structs, fields, "Color", "B"), 0x00},
         {Member(finder, names, structs, fields, "Color", "G"), 0x01},
@@ -294,8 +285,7 @@ FieldOffsets FindFieldOffsets(const ObjectFinder &finder, const NameTable &names
     fields.fieldName = FindFieldNameOffset(finder, names, structs, fields);
     fields.fieldClassCastFlags = FindFieldClassCastFlagsOffset(finder, names, structs, fields);
 
-    // The remaining steps look members up by name, so they need the chain above
-    // to be complete first.
+    // Name lookups below need the chain above.
     fields.elementSize = FindElementSizeOffset(finder, names, structs, fields);
     fields.arrayDim = FindArrayDimOffset(finder, names, structs, fields);
     fields.offsetInternal = FindOffsetInternalOffset(finder, names, structs, fields);

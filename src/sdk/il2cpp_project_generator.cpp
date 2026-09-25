@@ -1365,9 +1365,7 @@ inline bool address_in_module(void *address, const char *module_name) {
     const auto *ptr = reinterpret_cast<const unsigned char *>(address);
     return ptr >= base && ptr < (base + nt->OptionalHeader.SizeOfImage);
 }
-// An icall may legitimately live outside GameAssembly.dll: Unity moves builtins
-// between modules across versions, and native plugins register their own. Require
-// executable code inside some mapped image rather than a fixed module list.
+// icalls may live outside GameAssembly.dll; require code in any mapped image.
 inline bool address_in_any_module(void *address) {
     if (!address)
         return false;
@@ -1482,14 +1480,8 @@ inline void *require_method_pointer(const URK::il2cpp::Method *method, Diagnosti
                                     const char *klass = nullptr, const char *method_name = nullptr) {
     return try_method_pointer(method, sink, image, namespc, klass, method_name);
 }
-// IL2CPP is ahead-of-time compiled, so a method always has a native entry
-// point even when nothing branches to it. Two cases make a perfectly installed
-// hook unreachable, and both are visible from the metadata: the entry point is
-// shared with another method because the C++ compiler folded identical bodies,
-// or the method is a generic definition whose entry point is a shared stub. A
-// third case, an inlined body, cannot be seen from here at all; it only shows
-// up as a hook that never fires. Report what is knowable so a silent hook is
-// at least an explained one.
+// Reports why a hook may never fire: ICF-shared entry or shared generic stub.
+// Inlined bodies can't be detected here.
 inline void warn_if_entry_point_unreachable(const URK::il2cpp::Method *method, void *target, DiagnosticSink sink,
                                             const char *method_name) {
     if (!sink || !method || !target)
@@ -1518,10 +1510,7 @@ inline void warn_if_entry_point_unreachable(const URK::il2cpp::Method *method, v
     emit(sink, message);
 }
 
-// try_hook_method_pointer seeds *original with the resolved method_pointer
-// target before attaching. On success, the hook backend may replace *original
-// with a trampoline. On failure, no hook is installed, but *original may still
-// contain the unhooked target pointer.
+// *original holds the target before attach and the trampoline on success.
 inline bool try_hook_method_pointer(const URK::il2cpp::Method *method, void **original, void *detour,
                                     DiagnosticSink sink = nullptr, const URK_HookOptions *options = nullptr,
                                     const char *image = nullptr, const char *namespc = nullptr,

@@ -7,14 +7,12 @@
 namespace URK::Unreal {
 namespace {
 
-// UFunction's counts sit past UStruct in a fixed order, but the order is not
-// trusted: each is checked against what the parameters say it must be.
+// UFunction counts follow UStruct; each offset is checked against the parameters.
 constexpr std::int32_t kNumParmsToParmsSize = 2;
 constexpr std::int32_t kNumParmsToReturnValueOffset = 4;
 constexpr std::int32_t kFunctionFlagsToNumParms = 4;
 
-// The engine pads a parameter block out to the alignment of what is in it, so
-// what the properties imply is a floor rather than the number itself.
+// Blocks are padded to alignment, so the implied size is a floor.
 constexpr std::int32_t kParmsSizeSlack = 0x10;
 
 constexpr std::int32_t kMaxFunctionOffset = 0x200;
@@ -23,8 +21,7 @@ constexpr std::int32_t kMaxChainLength = 0x100;
 constexpr std::size_t kFunctionSamples = 6;
 constexpr std::int32_t kMaxObjectsWalked = 0x4000;
 
-// What a function's own chain says about it, which is what the stored numbers
-// have to agree with.
+// What the property chain implies; stored numbers must agree.
 struct Expected {
     Address function = kNullAddress;
     std::int32_t numParms = 0;
@@ -37,8 +34,7 @@ bool IsParameter(const PropertyInfo &info) { return (info.propertyFlags & kPrope
 
 bool IsReturnValue(const PropertyInfo &info) { return (info.propertyFlags & kPropertyFlagReturnParm) != 0; }
 
-// Walks one function's properties and works out what the engine must have
-// stored for it.
+// Derives the expected stored numbers from the function's properties.
 std::optional<Expected> ExpectedOf(const PropertyChain &chain, const PropertyValues &values, Address function) {
     Expected expected;
     expected.function = function;
@@ -66,8 +62,7 @@ std::optional<Expected> ExpectedOf(const PropertyChain &chain, const PropertyVal
     return expected;
 }
 
-// Skip duplicate shapes and prefer a return value: a game's first functions are
-// identical delegate signatures, which pin nothing.
+// Skip duplicate shapes, prefer ones with a return value.
 std::vector<Expected> CollectFunctions(const ObjectFinder &finder, const StructOffsets &structs,
                                        const PropertyChain &chain, const PropertyValues &values) {
     std::vector<Expected> samples;
@@ -100,8 +95,7 @@ std::vector<Expected> CollectFunctions(const ObjectFinder &finder, const StructO
         withReturnValue += expected->hasReturnValue ? 1 : 0;
     }
 
-    // A set that answers with nothing leaves ReturnValueOffset unanchored, so
-    // one that does is worth looking further for.
+    // Keep looking for a sample with a return value to anchor ReturnValueOffset.
     if (withReturnValue == 0) {
         for (std::int32_t index = walked; index < total && withReturnValue == 0; ++index) {
             const Address object = objects.ObjectAt(index);
@@ -126,8 +120,7 @@ bool PointsIntoRegions(Address pointer, std::span<const ScanRegion> regions) {
     return false;
 }
 
-// UFunction's one pointer into code. Script functions have one too (the
-// interpreter), so flags cannot identify it.
+// The only code pointer in UFunction; script functions have one too.
 std::int32_t FindFuncOffset(const MemoryReader &reader, const std::vector<Expected> &samples,
                             std::span<const ScanRegion> codeRegions, std::int32_t start) {
     if (codeRegions.empty() || samples.empty())
@@ -164,8 +157,7 @@ FunctionOffsets FindFunctionOffsets(const ObjectFinder &finder, const StructOffs
     const PropertyValues values(reader, finder.Names(), structs, fields, tail);
 
     const std::vector<Expected> samples = CollectFunctions(finder, structs, chain, values);
-    // Defensive: a function's numbers are small and a real UStruct is full of
-    // small numbers, so one sample could match an earlier offset by chance.
+    // Small numbers are common, so one sample could match by chance.
     const bool differ = std::any_of(samples.begin(), samples.end(), [&](const Expected &other) {
         return other.numParms != samples.front().numParms || other.parmsSize != samples.front().parmsSize;
     });

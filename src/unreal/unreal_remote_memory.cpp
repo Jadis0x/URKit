@@ -43,8 +43,7 @@ bool FindMainModule(std::uint32_t pid, Address &base, std::uint64_t &size) {
     HANDLE snapshot = INVALID_HANDLE_VALUE;
     for (int attempt = 0; attempt < 8 && snapshot == INVALID_HANDLE_VALUE; ++attempt) {
         snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
-        // The snapshot fails while the loader holds its lock, which it does
-        // often in a game that is still starting up.
+        // Snapshots fail while the loader lock is held; common during startup.
         if (snapshot == INVALID_HANDLE_VALUE && GetLastError() != ERROR_BAD_LENGTH)
             return false;
     }

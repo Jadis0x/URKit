@@ -1,7 +1,6 @@
 #pragma once
 
-// UObject header offsets, each found by a property only the right field has.
-// Order matters: later steps exclude earlier claims.
+// UObject header offsets, each found by a trait only that field has. Order matters.
 
 #include "unreal_object_array.h"
 
@@ -28,8 +27,7 @@ std::int32_t FindClassOffset(const ObjectArray &objects);
 std::int32_t FindOuterOffset(const ObjectArray &objects, const ObjectOffsets &known);
 std::int32_t FindNameOffset(const ObjectArray &objects, const ObjectOffsets &known);
 
-// Runs the steps in order, falling back to the declared layout where a field
-// could not be measured.
+// Runs the steps in order; unmeasured fields fall back to the declared layout.
 ObjectOffsets FindObjectOffsets(const ObjectArray &objects);
 
 } // namespace URK::Unreal

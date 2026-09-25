@@ -6,8 +6,7 @@ int HookManager_Attach(void **original, void *detour, const URK_HookOptions *opt
 
 int HookManager_Detach(void **original, void *detour);
 
-// Returns the number of detached hooks, or -1 if any owned hook could not be
-// detached and the module must remain loaded.
+// Detached hook count, or -1 when one could not be detached (keep the module loaded).
 int HookManager_DetachModule(void *module);
 
 int HookManager_BackendAvailable(uint32_t backend);

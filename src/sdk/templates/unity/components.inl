@@ -2209,8 +2209,7 @@ struct AssetBundle : Object {
     static constexpr TypeRef unity_type() {
         return AssetBundleType;
     }
-    // This wrapper is a borrowed managed reference. Unity owns the bundle and
-    // its assets; do not use this or assets returned from it after Unload().
+    // Borrowed reference; invalid after Unload().
     static AssetBundle LoadFromFile(std::string_view path) {
         AssetBundle bundle = detail::InvokeStatic<AssetBundle>(AssetBundleType, "LoadFromFile", path);
         if (!bundle && !detail::fallback_error())
@@ -2328,9 +2327,7 @@ struct GameObject : Object {
         return detail::InvokeStatic<GameObject>(GameObjectType, "Find", name);
     }
     static GameObject FindWithTag(std::string_view tag) {
-        // FindWithTag is a managed convenience wrapper and can disappear from
-        // IL2CPP metadata after inlining/stripping. The canonical extern binding
-        // has retained this name from legacy Unity through Unity 6.
+        // The managed wrapper can be stripped; the extern binding survives through Unity 6.
         return detail::InvokeStatic<GameObject>(GameObjectType, "FindGameObjectWithTag", tag);
     }
     static std::vector<GameObject> FindGameObjectsWithTag(std::string_view tag) {
@@ -2426,9 +2423,7 @@ struct GameObject : Object {
     Scene scene() const {
         return Scene{Call<void *>("get_scene")};
     }
-    // Managed stripping drops GameObject.scene from builds whose own code
-    // never reads it, and then every object looks scene-less. Check this
-    // before treating an unreadable scene as "prefab or asset".
+    // GameObject.scene may be stripped; check before treating the object as an asset.
     static bool scene_available() {
         return has_method(GameObjectType, "get_scene", 0);
     }

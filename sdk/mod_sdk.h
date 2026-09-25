@@ -151,12 +151,8 @@ typedef enum URK_ObjectDestroyRequestFlags {
     URK_OBJECT_DESTROY_REQUEST_ALLOW_DESTROYING_ASSETS = 1u << 1
 } URK_ObjectDestroyRequestFlags;
 
-/*
- * Describes a call to UnityEngine.Object.Destroy or DestroyImmediate. This is
- * a destroy request notification; Unity may defer or reject the actual object
- * destruction. objectAddress is diagnostic identity only and must never be
- * dereferenced or retained as a live managed object reference.
- */
+/* Object.Destroy/DestroyImmediate request; Unity may defer or reject it.
+ * objectAddress is identity only: never dereference or retain it. */
 typedef struct URK_ObjectDestroyRequest {
     uint32_t size;
     uint32_t flags;
@@ -169,11 +165,8 @@ typedef struct URK_ObjectDestroyRequest {
 
 typedef void (*URK_OnObjectDestroyRequestedFn)(const URK_ObjectDestroyRequest *request);
 
-/*
- * Receives a native window message through the loader-owned dispatcher. Set
- * handled to non-zero to keep the message away from the game's original
- * window procedure. The return value becomes the dispatch result when handled.
- */
+/* Loader-dispatched window message. Set handled non-zero to skip the game's
+ * WndProc; the return value is then the dispatch result. */
 typedef intptr_t (*URK_WindowMessageCallback)(void *window, uint32_t message, uintptr_t wparam, intptr_t lparam,
                                               int *handled);
 
@@ -183,26 +176,12 @@ typedef struct URK_RuntimeApi {
     uint32_t (*backend)();
     uint64_t (*capabilities)();
     uintptr_t (*module_base)(uint32_t kind);
-    /*
-     * Copies the last scene observed by the runtime event pump. Returns zero
-     * until a scene is observed or when the backend cannot provide scene state.
-     */
+    /* Last scene seen by the event pump. Zero until one is observed. */
     int (*scene_current)(URK_SceneInfo *scene);
-    /*
-     * Acquires or releases one cursor-ownership reference for a native menu.
-     * References are isolated by the calling native module, so an unmatched
-     * release cannot affect another mod. Any leases left by an unloading mod
-     * are released automatically. While any reference is active, the loader
-     * exposes and unlocks the cursor. Mouse capture is reported separately so
-     * the game remains interactive outside the native menu.
-     * The last release restores the previous state. Returns zero without
-     * changing state when unavailable.
-     */
+    /* Ref-counted cursor lease per calling module; leaks are released on unload.
+     * While held the cursor is visible and unlocked. Zero when unavailable. */
     int (*menu_cursor_set_open)(int open);
-    /*
-     * Explicit Cursor.visible and Cursor.lockState access for game-specific
-     * menu-close policies.
-     */
+    /* Raw Cursor.visible / Cursor.lockState access. */
     int (*cursor_state_get)(URK_CursorState *state);
     int (*cursor_state_set)(const URK_CursorState *state);
     int (*input_get_key)(int32_t keyCode);
@@ -211,47 +190,21 @@ typedef struct URK_RuntimeApi {
     int (*input_get_mouse_button)(int32_t button);
     int (*input_get_mouse_button_down)(int32_t button);
     int (*input_get_mouse_button_up)(int32_t button);
-    /*
-     * Returns UnityEngine.SystemInfo.graphicsDeviceType on the captured main
-     * thread, or URK_GRAPHICS_DEVICE_UNKNOWN when unavailable. Callers must
-     * size-check this append-only entry before use.
-     */
+    /* SystemInfo.graphicsDeviceType, or URK_GRAPHICS_DEVICE_UNKNOWN. Size-check first. */
     int32_t (*graphics_device_type)();
-    /*
-     * Copies the current public individual SteamID64 reported by the Steam API
-     * module loaded by the game. Returns non-zero on success. The caller must
-     * provide at least URK_STEAM_ID64_MAX bytes. Returns zero and writes an
-     * empty string when Steam is unavailable or not initialized yet.
-     */
+    /* Current SteamID64 from the game's Steam module. Buffer must hold
+     * URK_STEAM_ID64_MAX bytes; writes "" and returns zero when Steam is not up. */
     int (*steam_id64)(char *output, size_t output_size);
-    /*
-     * Registers a module-owned callback without replacing GWLP_WNDPROC in the
-     * mod itself. Multiple mods may register for the same window. The loader
-     * removes any remaining callbacks before their owning module is unloaded.
-     * These append-only v7 entries must be size-checked before use.
-     */
+    /* v7: per-module WndProc callbacks, removed on unload. Size-check first. */
     int (*window_message_register)(void *window, URK_WindowMessageCallback callback);
     int (*window_message_unregister)(void *window, URK_WindowMessageCallback callback);
     intptr_t (*window_message_call_original)(void *window, uint32_t message, uintptr_t wparam, intptr_t lparam);
-    /*
-     * Owner-explicit cursor lease entry. owner_address must point inside the
-     * calling mod image. This v8 entry avoids return-address inference under
-     * aggressive tail-call optimization.
-     */
+    /* v8: cursor lease with an explicit owner address inside the mod image. */
     int (*menu_cursor_set_open_owned)(const void *owner_address, int open);
-    /*
-     * Reports whether a native menu is actively consuming mouse input. Cursor
-     * visibility and mouse capture are intentionally separate: opening an
-     * overlay must not disable the game's mouse controls outside that overlay.
-     * This v9 entry is owner-explicit and automatically released on unload.
-     */
+    /* v9: marks a menu as consuming mouse input; separate from cursor visibility.
+     * Released on unload. */
     int (*menu_mouse_capture_set_owned)(const void *owner_address, int capture);
-    /*
-     * Returns non-zero only on the Unity thread captured by the runtime event
-     * pump. This v10 entry lets mods reject unsafe Unity calls instead of
-     * mistaking a managed invocation without an exception for a valid
-     * cross-thread Unity operation.
-     */
+    /* v10: non-zero only on the captured Unity main thread. */
     int (*is_main_thread)();
 } URK_RuntimeApi;
 
@@ -275,89 +228,26 @@ typedef struct URK_Il2CppManagedHookResult {
 typedef struct URK_Il2CppApi {
     int version;
     uint32_t size;
-    /*
-     * Returns non-zero when the IL2CPP backend is available and initialized
-     * enough for v1 metadata lookups. Returns 0 when required runtime pieces are
-     * missing, initialization is incomplete, or IL2CPP support is unavailable.
-     * Mods must verify ctx->il2cpp is non-null and
-     * ctx->il2cpp->size >= offsetof(URK_Il2CppApi, is_available) +
-     * sizeof(ctx->il2cpp->is_available) before calling this function.
-     */
+    /* Non-zero once IL2CPP metadata lookups are usable. Size-check first. */
     int (*is_available)();
-    /*
-     * Returns an opaque IL2CPP domain handle for diagnostics/readiness checks, or
-     * nullptr when the domain is unavailable or not initialized. The returned
-     * pointer is not a public layout contract. Mods must table-size check through
-     * this field before calling it.
-     */
+    /* Opaque domain handle for readiness checks, or nullptr. */
     const void *(*domain_get)();
-    /*
-     * Looks up an IL2CPP image/assembly by runtime metadata name. image_name
-     * must be a non-null, non-empty UTF-8 string. Returns an opaque image handle,
-     * or nullptr for bad input, missing metadata, unavailable runtime state, or a
-     * failed lookup. Mods must table-size check through this field before use.
-     */
+    /* Image by metadata name, or nullptr. */
     const void *(*find_image)(const char *image_name);
-    /*
-     * Looks up a class by image name, namespace, and type name. image_name and
-     * name must be non-null and non-empty; namespc may be null or empty for the
-     * global namespace. Returns an opaque class handle, or nullptr for bad input,
-     * missing metadata, unavailable runtime state, or a failed lookup. Mods must
-     * table-size check through this field before use.
-     */
+    /* Class by image, namespace (null/empty = global) and name, or nullptr. */
     const void *(*find_class)(const char *image_name, const char *namespc, const char *name);
-    /*
-     * Looks up a method by class handle, method name, and parameter count. klass
-     * must be a class handle returned by this API, name must be non-null and
-     * non-empty, and argc must be >= 0. Returns an opaque method handle, or
-     * nullptr for bad input, unavailable runtime state, absent metadata,
-     * ambiguity, or failed lookup. Mods must table-size check through this field
-     * before use.
-     */
+    /* Method by name and parameter count; nullptr when missing or ambiguous. */
     const void *(*find_method)(const void *klass, const char *name, int argc);
-    /*
-     * Looks up an overload by class handle, method name, and exact parameter type
-     * names. klass must be a class handle returned by this API, name must be
-     * non-null and non-empty, parameter_type_names must contain parameter_count
-     * non-null entries when parameter_count > 0, and parameter_count must be >=
-     * 0. Returns an opaque method handle, or nullptr for bad input, unavailable
-     * runtime state, absent metadata, ambiguity, unsupported signatures, or a
-     * failed lookup. Mods must table-size check through this field before use.
-     */
+    /* Overload by exact parameter type names; nullptr when missing or ambiguous. */
     const void *(*find_method_exact)(const void *klass, const char *name, const char *const *parameter_type_names,
                                      int parameter_count);
-    /*
-     * Returns the current native entry point for a method handle returned by this
-     * API. Returns nullptr for bad input, unavailable runtime state, stripped
-     * methods, unhookable/internal-call/runtime-generated bodies, unsupported
-     * generic states, or methods with no safely exposable native body. Mods must
-     * table-size check through this field before use.
-     */
+    /* Native entry point, or nullptr for stripped, icall or runtime-generated bodies. */
     void *(*method_pointer)(const void *method);
-    /*
-     * Looks up a field by class handle and field name. klass must be a class
-     * handle returned by this API and name must be non-null and non-empty.
-     * Returns an opaque field handle, or nullptr for bad input, unavailable
-     * runtime state, absent metadata, or failed lookup. Mods must table-size
-     * check through this field before use.
-     */
+    /* Field by name, or nullptr. */
     const void *(*find_field)(const void *klass, const char *name);
-    /*
-     * Returns the runtime field offset reported by IL2CPP metadata for a field
-     * handle returned by this API. Returns a negative value for bad input,
-     * unavailable runtime state, unsupported field kinds, absent metadata, or
-     * failed lookup; implementations must not invent fallback offsets. Mods must
-     * table-size check through this field before use.
-     */
+    /* Field offset from metadata; negative on failure (no guessed fallback). */
     int32_t (*field_offset)(const void *field);
-    /*
-     * Returns a short backend-owned diagnostic string for the last failed IL2CPP
-     * API operation on the calling thread when practical, or a process-global
-     * static diagnostic otherwise. Returns nullptr or an empty string when no
-     * diagnostic is available. The returned pointer is backend-owned and must not
-     * be freed or stored indefinitely. Mods must table-size check through this
-     * field before use.
-     */
+    /* Last failure diagnostic for this thread; backend-owned, do not free or keep. */
     const char *(*last_error)();
     size_t (*domain_get_assembly_count)();
     const void *(*domain_get_assembly)(size_t index);
@@ -387,8 +277,7 @@ typedef struct URK_Il2CppApi {
     const void *(*field_get_type)(const void *field);
     uint32_t (*field_get_flags)(const void *field);
     int (*field_static_get_value)(const void *field, void *output);
-    /* IL2CPP setter semantics: pass raw storage for value types, but pass the
-     * managed object directly (including NULL) for reference types. */
+    /* Value types: pass raw storage. Reference types: pass the object (may be NULL). */
     int (*field_static_set_value)(const void *field, void *value);
     const char *(*property_get_name)(const void *property);
     const void *(*property_get_get_method)(const void *property);
@@ -405,12 +294,10 @@ typedef struct URK_Il2CppApi {
     /* Pointer-sized managed array length; do not narrow to uint32_t on 64-bit IL2CPP. */
     size_t (*array_length)(void *array);
     void *(*array_addr_with_size)(void *array, int element_size, size_t index);
-    /* Append-only safe object/reference array element helper. Implementations
-     * must not expose private array layout assumptions. */
+    /* Object/reference array element access without layout assumptions. */
     void *(*array_ref_at)(void *array, size_t index);
     int (*field_get_value)(void *object, const void *field, void *output);
-    /* Value types use a storage address; reference types use the managed
-     * object pointer directly and may pass NULL. */
+    /* Value types: storage address. Reference types: object pointer (may be NULL). */
     int (*field_set_value)(void *object, const void *field, void *value);
     int (*runtime_invoke)(const void *method, void *object, void **params, void **result, void **exception);
     const void *(*thread_current)();
@@ -511,10 +398,7 @@ typedef struct URK_Il2CppApi {
     uint32_t (*gchandle_new_weakref)(void *object, int track_resurrection);
     void *(*gchandle_get_target)(uint32_t gchandle);
     void (*gchandle_free)(uint32_t gchandle);
-    /*
-     * Returned buffers are IL2CPP-allocated; release them with this table's
-     * free() entry. Returns null when free() is unavailable.
-     */
+    /* Buffers are IL2CPP-allocated; release with free(). Null when free() is missing. */
     char *(*thread_get_name)(const void *thread, uint32_t *length);
     const void **(*thread_get_all_attached_threads)(size_t *size);
     int (*is_vm_thread)(const void *thread);
@@ -569,27 +453,17 @@ typedef struct URK_Il2CppApi {
     void (*debug_method_set_breakpoint_data_at)(const void *info, uint64_t location, void *data);
     void (*debug_method_clear_breakpoint_data)(const void *info);
     void (*debug_method_clear_breakpoint_data_at)(const void *info, uint64_t location);
-    /*
-     * Resolves and hooks MethodInfo::methodPointer after validating the target.
-     * Returns a diagnostic when the runtime uses an unsupported private layout.
-     */
+    /* Hooks MethodInfo::methodPointer after validating the target. */
     int (*attach_managed_method_hook)(const URK_Il2CppManagedMethodDesc *method, void **original, void *detour,
                                        const URK_HookOptions *options, URK_Il2CppManagedHookResult *result);
-    /*
-     * Official IL2CPP object and array layout queries. Size-check these
-     * append-only entries before use.
-     */
+    /* IL2CPP object/array layout queries. Size-check first. */
     uint32_t (*object_header_size)();
     uint32_t (*array_object_header_size)();
     uint32_t (*offset_of_array_length_in_array_object_header)();
     uint32_t (*offset_of_array_bounds_in_array_object_header)();
     uint32_t (*allocation_granularity)();
     int (*array_set_ref)(void *array, size_t index, void *value);
-    /*
-     * Unity 6 changed Il2CppGCHandle from a 32-bit token to a pointer-sized
-     * opaque handle. The older uint32_t entries remain in place for binary
-     * compatibility; new code must use these pointer-sized entries.
-     */
+    /* Unity 6 made Il2CppGCHandle pointer-sized; use these instead of the uint32_t ones. */
     uintptr_t (*gchandle_new_v2)(void *object, int pinned);
     uintptr_t (*gchandle_new_weakref_v2)(void *object, int track_resurrection);
     void *(*gchandle_get_target_v2)(uintptr_t gchandle);
@@ -723,7 +597,7 @@ typedef struct URK_MonoApi {
     void *(*method_get_object)(const void *method);
     /* Boxes a value-type storage slot into a managed object. */
     void *(*value_box)(const void *klass, void *data);
-    /* Returns non-zero when the method is a generic method definition or an inflated generic method. */
+    /* Non-zero for generic method definitions and inflated generic methods. */
     int (*method_is_generic)(const void *method);
 } URK_MonoApi;
 
@@ -736,15 +610,8 @@ static_assert(offsetof(URK_MonoApi, method_is_generic) > offsetof(URK_MonoApi, v
               "URK_MonoApi generic method helper must stay appended.");
 #endif
 
-/*
- * An Unreal object, or a UFunction, or a UClass, or the value of one - a
- * bare address in the target's own space. Never a pointer this side of the
- * ABI is allowed to dereference: everything it can mean is behind one of the
- * functions below, the same way the calibration this API is built on never
- * assumes what a field holds without asking the game.
- * URK_UNREAL_NULL_OBJECT marks "not found" everywhere one of these is
- * returned.
- */
+/* An address in the game's own space (object, class, function). Never
+ * dereference it; go through the API. URK_UNREAL_NULL_OBJECT means not found. */
 typedef uint64_t URK_UnrealObject;
 #define URK_UNREAL_NULL_OBJECT ((URK_UnrealObject)0)
 
@@ -778,8 +645,7 @@ typedef enum URK_UnrealPropertyKind {
     URK_UNREAL_PROPERTY_DELEGATE = 25,
     /* Version 3. An inline multicast delegate: a list of delegate bindings. */
     URK_UNREAL_PROPERTY_MULTICAST_DELEGATE = 26,
-    /* A sparse multicast delegate: its bindings live in engine-global storage
-     * no reflected path reaches, so only its kind is reported. */
+    /* Sparse multicast delegate: bindings are not reachable, only the kind is reported. */
     URK_UNREAL_PROPERTY_SPARSE_DELEGATE = 27,
     URK_UNREAL_PROPERTY_LAZY_OBJECT = 28,
     /* FUtf8String / FAnsiString: read and written as text like FString. */
@@ -787,72 +653,43 @@ typedef enum URK_UnrealPropertyKind {
     URK_UNREAL_PROPERTY_ANSI_STRING = 30
 } URK_UnrealPropertyKind;
 
-/*
- * One member's shape, as the calibrated property chain describes it - what
- * FindMember/FindMemberDeep resolve to before any value is touched. size is
- * the per-element byte width; a fixed C array reports array_dim above 1 and
- * value_index selects into it.
- */
+/* A member's shape. size is per element; fixed C arrays have array_dim > 1. */
 typedef struct URK_UnrealPropertyInfo {
     uint32_t size;
     int32_t kind;
     int32_t element_size;
     int32_t array_dim;
-    /* Object/Class: the required UClass. Struct: the UScriptStruct. Array:
-     * the element property. Enum: the underlying numeric property. */
+    /* Object/Class: required UClass. Struct: UScriptStruct. Array: element property.
+     * Enum: underlying numeric property. */
     URK_UnrealObject inner;
-    /* Appended (API version 2), filled only when size covers them. Bools: the
-     * byte of the value holding the bit and the bit; bool_field_mask 0xFF is a
-     * whole bool, anything else a bitfield. */
+    /* v2. Bools: byte and bit mask; 0xFF means a whole bool. */
     uint8_t bool_byte_offset;
     uint8_t bool_byte_mask;
     uint8_t bool_field_mask;
     uint8_t reserved;
-    /* Appended (API version 3), filled only when size covers it. The object
-     * the type is named by: Enum/Byte the UEnum (null for a plain byte),
-     * Struct the UScriptStruct, Object/Class/Weak/Soft/Lazy the UClass, the
-     * delegate kinds their signature UFunction. Null otherwise. */
+    /* v3. The type's UEnum, UScriptStruct, UClass or delegate signature; null otherwise. */
     URK_UnrealObject type_object;
 } URK_UnrealPropertyInfo;
 
-/*
- * A reflected function's parameter block, built once and reused across calls:
- * BuildFrame measures it from the function, and every set/get after that is
- * named lookup and a bounds-checked copy, never a raw offset the caller
- * worked out itself.
- */
+/* A function's parameter block, built once and reused; access is by name, bounds-checked. */
 typedef struct URK_UnrealCallFrame URK_UnrealCallFrame;
 
-/*
- * Called from inside UObject::ProcessEvent, on whichever thread the engine
- * made the call from - almost always the game thread, which is the point of
- * being handed one at all. Returning zero drops the call; the engine never
- * sees it. Do as little as this signature allows: anything heavier belongs on
- * a callback registered through unreal_post_to_game_thread instead.
- */
 /* Every Blueprint call, including script-to-script ones ProcessEvent misses.
- * Called before (after=0) and after (after=1) the body on the calling thread;
- * locals starts with the parameters. Hot path: return quickly. */
+ * Called before (after=0) and after (after=1) the body; hot path. */
 typedef void (*URK_UnrealScriptCallObserverFn)(void *user_data, URK_UnrealObject object, URK_UnrealObject function,
                                                void *locals, void *result, int after);
 
-/* An object getting (created=1, before its constructors) or losing (created=0,
- * after its destructors) its object array slot. Any thread; record the handle only. */
+/* Object gets (created=1) or loses (created=0) its array slot. Any thread; record only. */
 typedef void (*URK_UnrealObjectLifeObserverFn)(void *user_data, URK_UnrealObject object, int created);
 
+/* Runs inside ProcessEvent on the calling thread. Zero drops the call; keep it cheap. */
 typedef int (*URK_UnrealProcessEventObserverFn)(void *user_data, URK_UnrealObject object, URK_UnrealObject function,
                                                 void *parms);
 
-/*
- * Runs on the thread URK_UnrealApi identified as the engine's own, the same
- * thread ProcessEvent is called from. This is how a mod reaches Unreal safely
- * from a timer, a network callback, or any other thread it does not control.
- */
+/* Runs on the game thread. */
 typedef void (*URK_UnrealPostedWorkFn)(void *user_data);
 
-/* One call of a hooked function. frame reads and writes its parameters and
- * return value by name (call_frame_get/set, places) until the callback
- * returns; it is never destroyed or called. */
+/* One call of a hooked function; frame is valid until the callback returns. */
 typedef struct URK_UnrealHookedCall {
     URK_UnrealObject object;
     URK_UnrealObject function;
@@ -862,16 +699,11 @@ typedef struct URK_UnrealHookedCall {
     int32_t skipped;
 } URK_UnrealHookedCall;
 
-/* Before: zero skips the body, the frame's return value standing in for it.
- * After: the answer is ignored. Calls made inside a callback are not hooked. */
+/* Before: zero skips the body. After: result ignored. Calls inside are not hooked. */
 typedef int (*URK_UnrealFunctionHookFn)(void *user_data, const URK_UnrealHookedCall *call);
 
-/*
- * Version 3. Where a value lives: a live object's member, or a call frame's
- * parameter, then steps into it. A place is resolved again on every use -
- * containers reallocate, so an address kept from an earlier call would be
- * stale - and every step is bounds-checked against the live value.
- */
+/* v3. A value's location: object member or frame parameter, plus steps.
+ * Re-resolved on every use and bounds-checked. */
 #define URK_UNREAL_PLACE_MAX_STEPS 8
 
 typedef enum URK_UnrealStepKind {
@@ -879,7 +711,7 @@ typedef enum URK_UnrealStepKind {
     URK_UNREAL_STEP_ELEMENT = 1,
     /* A struct member by name; index selects into a fixed C array member. */
     URK_UNREAL_STEP_MEMBER = 2,
-    /* A map slot's key or value. index is the slot, as place_slots lists them. */
+    /* Map slot's key or value; index is the slot from place_slots. */
     URK_UNREAL_STEP_KEY = 3,
     URK_UNREAL_STEP_VALUE = 4
 } URK_UnrealStepKind;
@@ -891,7 +723,7 @@ typedef struct URK_UnrealStep {
 } URK_UnrealStep;
 
 typedef struct URK_UnrealPlace {
-    /* The root: a live object's member, or (object null) a frame parameter. */
+    /* Root: object member, or frame parameter when object is null. */
     URK_UnrealObject object;
     URK_UnrealCallFrame *frame;
     const char *member;
@@ -901,10 +733,7 @@ typedef struct URK_UnrealPlace {
     URK_UnrealStep steps[URK_UNREAL_PLACE_MAX_STEPS];
 } URK_UnrealPlace;
 
-/* A set element or map key to look up or add. The field matching the key's
- * kind is read: integer for integers, bools and enums (or text for an enum
- * by name), floating for float/double, object for objects and classes, text
- * (UTF-8) for names and strings, bytes/size for a struct's whole value. */
+/* Set element or map key. The field matching the key's kind is read. */
 typedef struct URK_UnrealKey {
     int64_t integer;
     double floating;
@@ -918,206 +747,98 @@ typedef struct URK_UnrealApi {
     uint32_t version;
     uint32_t size;
 
-    /*
-     * Non-zero once the calibration ladder has resolved against this process:
-     * the object array, the name table, and the field layout the rest of this
-     * API depends on. Every other entry returns a null object or zero when
-     * this is false rather than touching unmeasured memory.
-     */
+    /* Non-zero once calibration resolved. Everything else returns null/zero until then. */
     int (*is_available)();
 
-    /* The engine build this was measured against. Zero fields when unknown. */
+    /* Engine version; zero when unknown. */
     void (*engine_version)(int32_t *major, int32_t *minor, int32_t *patch);
-    /* True from 4.25 on, where properties left the UObject graph for FField.
-     * Informational: every entry below already accounts for it. */
+    /* 4.25+: properties are FField. Informational only. */
     int (*uses_field_properties)();
 
-    /*
-     * First object carrying this name in the object array. UE names are not
-     * unique on their own - find_in_outer disambiguates by outer chain, the
-     * way a member of a class is addressed.
-     */
+    /* First object with this name. Names are not unique; use find_in_outer. */
     URK_UnrealObject (*find_object)(const char *name);
     URK_UnrealObject (*find_object_in_outer)(const char *name, const char *outer_name);
     URK_UnrealObject (*class_of)(URK_UnrealObject object);
     URK_UnrealObject (*outer_of)(URK_UnrealObject object);
-    /* Writes a NUL-terminated name, truncated to fit. Returns non-zero on
-     * success; object being null or unresolved is not success. */
+    /* NUL-terminated, truncated to fit. */
     int (*name_of)(URK_UnrealObject object, char *output, size_t output_size);
 
     /* Whether struct_object derives from base or is base itself. */
     int (*is_child_of)(URK_UnrealObject struct_object, URK_UnrealObject base);
-    /* The same question asked of an instance, through its class. */
+    /* Same check through the instance's class. */
     int (*is_a)(URK_UnrealObject object, URK_UnrealObject class_object);
     URK_UnrealObject (*default_object_of)(URK_UnrealObject class_object);
-    /*
-     * Fills output with up to output_capacity live instances of class_object
-     * and returns how many the game actually has, which may exceed the
-     * capacity given - callers size their buffer from a first call with
-     * capacity zero. exact restricts the result to that exact class, excluding
-     * its subclasses.
-     */
+    /* Returns the total count, which may exceed capacity. exact excludes subclasses. */
     size_t (*instances_of)(URK_UnrealObject class_object, URK_UnrealObject *output, size_t output_capacity,
                            int exact);
 
-    /*
-     * The named member's shape on this object's class, or its bases - a
-     * struct's fields are usually declared above the class an instance
-     * reports. Returns zero and leaves *info untouched when no such member is
-     * reflected.
-     */
+    /* Member shape on the object's class or its bases. Zero when not reflected. */
     int (*describe_property)(URK_UnrealObject object, const char *member_name, URK_UnrealPropertyInfo *info);
 
-    /*
-     * Value access by member name, resolved through describe_property rather
-     * than an offset the caller supplies. Each returns zero without touching
-     * output when the member does not exist, is the wrong kind for the call,
-     * or the array index is out of range for a fixed C array member.
-     */
+    /* Value access by member name. Zero when missing, wrong kind or out of range. */
     int (*read_integer)(URK_UnrealObject object, const char *member_name, int32_t index, int64_t *output);
     int (*read_floating)(URK_UnrealObject object, const char *member_name, int32_t index, double *output);
     int (*read_bool)(URK_UnrealObject object, const char *member_name, int32_t index, int *output);
     URK_UnrealObject (*read_object)(URK_UnrealObject object, const char *member_name, int32_t index);
-    /* FName text, or FString text copied out of the allocation it points at -
-     * the game's own allocation is left untouched either way. */
+    /* FName or FString text, copied out. */
     int (*read_name)(URK_UnrealObject object, const char *member_name, int32_t index, char *output,
                      size_t output_size);
     int (*read_string)(URK_UnrealObject object, const char *member_name, int32_t index, char *output,
                        size_t output_size);
 
-    /*
-     * Writes are for values that fit where they already are. FString, TArray,
-     * TMap and FText own allocations the engine's allocator made and are not
-     * writable through these entries; the place_* entries (version 3) write
-     * them through the engine.
-     */
+    /* In-place writes only; strings, arrays, maps and text go through place_* (v3). */
     int (*write_integer)(URK_UnrealObject object, const char *member_name, int32_t index, int64_t value);
     int (*write_floating)(URK_UnrealObject object, const char *member_name, int32_t index, double value);
     int (*write_bool)(URK_UnrealObject object, const char *member_name, int32_t index, int value);
     int (*write_object)(URK_UnrealObject object, const char *member_name, int32_t index, URK_UnrealObject value);
 
-    /*
-     * A function by name on owner_class or a base of it - what UFunction the
-     * name refers to, not yet anything that can be called. An instance stands
-     * for its class.
-     */
+    /* Function by name on owner_class or a base. An instance stands for its class. */
     URK_UnrealObject (*find_function)(URK_UnrealObject owner_class, const char *name);
 
-    /*
-     * Measures function's parameter block and returns a frame sized to hold
-     * it, zeroed. The engine reads every byte of the block including padding
-     * no parameter covers, which is why this exists instead of a caller
-     * allocating parameter_bytes itself. Returns NULL when function is not a
-     * UFunction or its layout did not resolve.
-     */
+    /* Zeroed frame sized to the function's parameter block (padding included). */
     URK_UnrealCallFrame *(*call_frame_create)(URK_UnrealObject function);
     void (*call_frame_destroy)(URK_UnrealCallFrame *frame);
-    /*
-     * Sets or reads one parameter by its declared name. size must equal the
-     * parameter's element_size from describe_property; a mismatch is refused
-     * rather than partially applied, because a short write would corrupt
-     * whatever the frame holds after it.
-     */
+    /* One parameter by name. size must equal its element_size or the call is refused. */
     int (*call_frame_set)(URK_UnrealCallFrame *frame, const char *parameter_name, const void *value, size_t size);
     int (*call_frame_get)(const URK_UnrealCallFrame *frame, const char *parameter_name, void *output, size_t size);
 
-    /*
-     * Calls the frame's function on object through UObject::ProcessEvent,
-     * dispatched through object's own vtable so a class that overrides
-     * ProcessEvent - as AActor does - reaches its own implementation. Must be
-     * called from the thread unreal_game_thread_id names; calling it from
-     * anywhere else is calling into the engine from a thread it does not
-     * expect, which is undefined the same way calling any other Unreal API
-     * off-thread is. Returns zero without calling anything when that is not
-     * the calling thread, when object or the frame's function is null, or
-     * when ProcessEvent has not been hooked.
-     */
+    /* Calls through the object's own ProcessEvent. Game thread only; zero when
+     * off-thread, null or the hook is not installed. */
     int (*call)(URK_UnrealObject object, URK_UnrealCallFrame *frame);
 
-    /*
-     * Installs the ProcessEvent hook that observation, game-thread dispatch,
-     * and call all depend on. Idempotent: calling this again while already
-     * installed returns non-zero and changes nothing. Every class's own
-     * override is patched, not only UObject's base implementation, so no
-     * reflected call anywhere in the game is missed.
-     */
+    /* Installs the ProcessEvent hook on every override. Idempotent. */
     int (*hook_install)();
     int (*hook_installed)();
-    /*
-     * Takes the hook back out, once the reflected calls already inside it have
-     * finished. Returns zero when they did not finish in time: the hook is
-     * reported uninstalled and stops observing and dispatching either way, but
-     * the patch itself is left in place, because removing it out from under a
-     * call still running in it is what would take the game down. A mod that
-     * gets zero here must not unload its own image - the patch still points
-     * into it.
-     */
+    /* Removes the hook once in-flight calls finish. Zero on timeout: the patch
+     * stays, so the mod must not unload. */
     int (*hook_remove)();
 
-    /*
-     * Registers the callback ProcessEvent calls out to on its way through.
-     * Only one is held; registering again replaces it. Pass NULL to clear it.
-     * The callback must not itself call back into any *_call or *_post entry
-     * on the same thread from inside the outermost invocation - see the
-     * reentrancy note on URK_UnrealProcessEventObserverFn.
-     */
+    /* Single observer; NULL clears. Do not re-enter *_call or *_post from it. */
     void (*process_event_observe)(URK_UnrealProcessEventObserverFn observer, void *user_data);
 
-    /*
-     * The thread ProcessEvent has been observed called from most often, which
-     * is how the engine's own game thread is told apart from whichever thread
-     * happened to make the first call. Zero until the hook has seen enough
-     * calls to be sure.
-     */
+    /* Most frequent ProcessEvent thread; zero until known. */
     uint32_t (*game_thread_id)();
-    /*
-     * Queues work for that thread. Returns zero and queues nothing when the
-     * hook is not installed, the game thread is not yet identified, or the
-     * queue is full - this is a bounded mailbox, not a general task queue.
-     */
+    /* Queues work for the game thread. Zero when the hook is off or the queue is full. */
     int (*post_to_game_thread)(URK_UnrealPostedWorkFn work, void *user_data);
 
     /* Version 2: struct values. */
 
-    /* The bytes a value of this struct occupies as a member (its size rounded
-     * up to its alignment), supers included. Zero when struct_object is not a
-     * live UStruct. */
+    /* Size of a struct value as a member (aligned, supers included). Zero if not a UStruct. */
     int32_t (*struct_size)(URK_UnrealObject struct_object);
-    /*
-     * A member of a struct type rather than of an instance: its shape, and in
-     * *offset where it sits inside the struct's value. Supers are searched.
-     * This is how a mod checks a struct layout it was compiled with.
-     */
+    /* A struct type's member shape and offset. Supers are searched. */
     int (*describe_struct_member)(URK_UnrealObject struct_object, const char *member_name,
                                   URK_UnrealPropertyInfo *info, int32_t *offset);
-    /*
-     * A struct-valued member copied whole; size must equal its element_size.
-     * A write, and a struct parameter given to call_frame_set, is refused when
-     * it changes any part that owns an engine allocation or cannot be checked
-     * (names, strings, text, arrays, sets, maps, weak/soft/interface
-     * references, delegates), or holds an object that is not live and of the
-     * member's declared class. Numbers and nested structs are free to change.
-     */
+    /* Whole struct copy; size must equal element_size. Writes may change numbers and
+     * nested structs only, not engine-owned or unchecked parts. */
     int (*read_struct)(URK_UnrealObject object, const char *member_name, int32_t index, void *output,
                        size_t size);
     int (*write_struct)(URK_UnrealObject object, const char *member_name, int32_t index, const void *value,
                         size_t size);
 
-    /*
-     * Version 3: every kind readable and writable through a place, containers
-     * included. Engine memory is only ever made, changed and freed by the
-     * engine itself: a string or text is assigned through a native call's own
-     * assignment, and container storage comes from and returns to FMemory the
-     * same way. Anything that changes engine memory must run on the game
-     * thread and returns zero anywhere else; plain reads of numbers, names,
-     * strings and container sizes work from any thread.
-     *
-     * Each entry returns zero, changing nothing, when the place does not
-     * resolve, is the wrong kind for the call, or an index is out of range.
-     */
+    /* v3: every kind through a place. Engine memory is changed only by engine code,
+     * on the game thread; plain reads work anywhere. Zero changes nothing. */
 
-    /* The value's shape. An element/key/value step may name index -1 here:
-     * the element type is described even when the container is empty. */
+    /* Index -1 describes the element type even when the container is empty. */
     int (*place_describe)(const URK_UnrealPlace *place, URK_UnrealPropertyInfo *info);
 
     /* Integers, bytes and enums (by number). */
@@ -1127,49 +848,33 @@ typedef struct URK_UnrealApi {
     int (*place_write_floating)(const URK_UnrealPlace *place, double value);
     int (*place_read_bool)(const URK_UnrealPlace *place, int *output);
     int (*place_write_bool)(const URK_UnrealPlace *place, int value);
-    /* Object and class references, and the target of weak, lazy, soft and
-     * interface references (a soft one reads null until its asset is loaded)
-     * and of a delegate. A write must be live and of the declared class (for
-     * an interface: implement it); a lazy one takes only null. */
+    /* Objects, classes and weak/lazy/soft/interface/delegate targets.
+     * Writes must be live and of the declared class; lazy takes only null. */
     URK_UnrealObject (*place_read_object)(const URK_UnrealPlace *place);
     int (*place_write_object)(const URK_UnrealPlace *place, URK_UnrealObject value);
-    /*
-     * Text, UTF-8: names, strings, FText (its display string), an enum's
-     * value name, a soft reference's path, a delegate's function name.
-     * *length receives the full length even when output was too small, which
-     * returns zero. A write of an enum takes a value name; of a soft
-     * reference, a path; of a delegate, use place_bind instead.
-     */
+    /* UTF-8 text of names, strings, FText, enum names, soft paths, delegate functions.
+     * *length gets the full length even when output is too small. */
     int (*place_read_text)(const URK_UnrealPlace *place, char *output, size_t output_size, size_t *length);
     int (*place_write_text)(const URK_UnrealPlace *place, const char *utf8);
-    /* A struct's whole value, under write_struct's rules; or a lazy pointer's
-     * (weak pointer and GUID), copied from another lazy reference. */
+    /* A struct's whole value, or a lazy pointer copied from another. */
     int (*place_read_bytes)(const URK_UnrealPlace *place, void *output, size_t size);
     int (*place_write_bytes)(const URK_UnrealPlace *place, const void *value, size_t size);
 
     /* Elements in an array, set, map or multicast delegate; -1 otherwise. */
     int32_t (*place_count)(const URK_UnrealPlace *place);
-    /* The indices elements can be reached at, in iteration order: 0..n-1 for
-     * an array, the occupied slots of a set or map. Returns how many there
-     * are, which may exceed capacity. */
+    /* Reachable indices in iteration order. Returns the total, may exceed capacity. */
     int32_t (*place_slots)(const URK_UnrealPlace *place, int32_t *output, int32_t capacity);
-    /* Array or multicast delegate: count default elements before index
-     * (index == count appends). */
+    /* Array or multicast: inserts count defaults before index (index == count appends). */
     int (*place_insert)(const URK_UnrealPlace *place, int32_t index, int32_t count);
-    /* Array: count elements from index. Set or map: the slot at index (count
-     * must be 1). What the elements own is released through the engine. */
+    /* Array: removes count from index. Set/map: the slot at index (count = 1). */
     int (*place_remove)(const URK_UnrealPlace *place, int32_t index, int32_t count);
     /* Empties a container, string or text and releases what it owned. */
     int (*place_clear)(const URK_UnrealPlace *place);
     /* Set or map: the slot holding key, or -1. */
     int32_t (*place_find)(const URK_UnrealPlace *place, const URK_UnrealKey *key);
-    /* Set or map: the slot holding key, added (a map value default) when
-     * missing. -1 when the key could not be added. */
+    /* Slot holding key, adding it when missing. -1 on failure. */
     int32_t (*place_add)(const URK_UnrealPlace *place, const URK_UnrealKey *key);
-    /* A delegate (or a multicast binding): object and function together,
-     * refused unless the function exists on object with the delegate's
-     * signature - the engine would otherwise fail when it fires. A null
-     * object clears it. */
+    /* Binds object + function; refused unless the signature matches. Null object clears. */
     int (*place_bind)(const URK_UnrealPlace *place, URK_UnrealObject object, const char *function);
 
     /* An enum's entries as the running game defines them. */
@@ -1186,13 +891,11 @@ typedef struct URK_UnrealApi {
     int (*object_life_observe)(URK_UnrealObjectLifeObserverFn observer, void *user_data);
 
     /* Version 5 */
-    /* Callbacks around one function's calls (its Blueprint overrides too)
-     * through ProcessEvent and between Blueprints, in the order added. Native
-     * functions called straight from Blueprint bytecode are not seen. */
+    /* Before/after callbacks for one function (Blueprint overrides included).
+     * Native functions called straight from bytecode are not seen. */
     uint64_t (*function_hook_add)(URK_UnrealObject function, URK_UnrealFunctionHookFn before,
                                   URK_UnrealFunctionHookFn after, void *user_data);
-    /* Nonzero: no callback of it runs again (other threads' calls get their
-     * after first). Zero when those did not finish in time: stay loaded. */
+    /* Non-zero once no callback will run again. Zero on timeout: stay loaded. */
     int (*function_hook_remove)(uint64_t id);
 } URK_UnrealApi;
 
@@ -1234,11 +937,7 @@ typedef union URK_HookXmmRegister {
     double f64[2];
 } URK_HookXmmRegister;
 
-/*
- * Mid-function hook register context (x64). The loader copies the live
- * register file in before the callback and copies it back out afterwards, so
- * writes to these fields change execution when the target resumes.
- */
+/* Mid-function hook registers (x64). Writes take effect on resume. */
 typedef struct URK_HookRegisters {
     uint32_t size;
     uint32_t reserved;
@@ -1263,10 +962,7 @@ typedef struct URK_HookRegisters {
     uintptr_t rsp;
     /* Stack pointer used when execution resumes. Write this instead of rsp. */
     uintptr_t trampoline_rsp;
-    /*
-     * On entry this points at a trampoline holding the instruction(s) the hook
-     * displaced, not at the hooked address. Write it to redirect control flow.
-     */
+    /* Points at the displaced-instruction trampoline; write to redirect. */
     uintptr_t rip;
 } URK_HookRegisters;
 
@@ -1283,10 +979,7 @@ typedef struct URK_MidHookHandle URK_MidHookHandle;
 typedef struct URK_HookApi {
     uint32_t version;
     uint32_t size;
-    /*
-     * Installs a mid-function hook at an arbitrary instruction boundary.
-     * Returns NULL when the address is not hookable or the pool is exhausted.
-     */
+    /* Hooks an instruction boundary. NULL when unhookable or the pool is full. */
     URK_MidHookHandle *(*mid_attach)(void *target, URK_MidHookCallbackFn callback,
                                       const URK_MidHookOptions *options);
     int (*mid_detach)(URK_MidHookHandle *hook);
@@ -1315,9 +1008,7 @@ typedef struct URK_ModContext {
     uintptr_t gameAssemblyModuleBase;
     const URK_NetworkApi *network;
     const URK_HookApi *hooks;
-    /* Null on every backend but Unreal, and null there until the engine's
-     * calibration has resolved. Mods must check this before use rather than
-     * assuming it follows from runtimeBackend == URK_RUNTIME_BACKEND_UNREAL. */
+    /* Unreal only, and null until calibration resolves. Always check. */
     const URK_UnrealApi *unreal;
 } URK_ModContext;
 
@@ -1328,8 +1019,7 @@ static_assert(offsetof(URK_ModContext, hooks) > offsetof(URK_ModContext, network
 static_assert(offsetof(URK_ModContext, unreal) > offsetof(URK_ModContext, hooks),
               "URK_ModContext unreal API pointer must stay appended.");
 
-/* Required initialization export. Loaders reject a module when it is missing
- * or returns zero. */
+/* Required export; the loader rejects the module when missing or zero. */
 typedef int (*URK_ModInitExFn)(const URK_ModContext *context);
 
 #ifdef __cplusplus

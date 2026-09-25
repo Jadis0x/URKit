@@ -15,7 +15,8 @@ std::string ConfigModule(const ModuleProjectOptions &options) {
         << (options.backendNamespace == "URK::il2cpp" ? "true" : "false") << ";\n";
     for (const std::string &line : options.configExtraLines)
         out << line << "\n";
-    out << "inline bool show_menu = true;\n"
+    out << "// Closed at start, so the game keeps its input; a one-time hint names the key.\n"
+        << "inline bool show_menu = false;\n"
         << "// English is used as the fixed language when localization support is not generated.\n"
         << "inline bool enable_localization = " << (options.enableLocalization ? "true" : "false") << ";\n"
         << "inline constexpr const char* default_language = \"en\";\n"

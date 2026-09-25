@@ -177,9 +177,7 @@ inline void render_language_selector() {
 }
 
 inline void render() {
-    char hotkey[32]{};
-    std::snprintf(hotkey, sizeof(hotkey), "0x%02X", ModConfig::menu_toggle_key);
-    render_controls(hotkey);
+    render_controls(ModUI::Widgets::key_name(ModConfig::menu_toggle_key).c_str());
     if (ModConfig::enable_localization) {
         ImGui::Dummy(ImVec2(0.0f, 12.0f));
         section_label(ModUI::Localization::translate("config.localization"));

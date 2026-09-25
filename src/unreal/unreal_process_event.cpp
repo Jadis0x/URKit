@@ -13,8 +13,7 @@ constexpr std::size_t kMaxBodyBytes = 0x1000;
 constexpr std::size_t kMinBodyBytes = 0x100;
 constexpr std::int32_t kMaxVtableSlots = 256;
 
-// Memory operands carrying this disp32. Only mod=10 encodes a full 32 bits,
-// which is what separates an operand from four coincidental bytes.
+// Memory operands with this disp32; only mod=10 encodes a full 32 bits.
 std::int32_t CountDisplacement(const std::vector<std::uint8_t> &code, std::int32_t displacement) {
     if (displacement == kOffsetNotFound || code.size() < 6)
         return 0;
@@ -99,8 +98,7 @@ std::vector<Address> ReadVtable(const ObjectFinder &finder, std::span<const Scan
     return slots;
 }
 
-// Every known function entry (call targets + UFunction::Func), so a slot's body
-// ends where the next function starts.
+// All known function entries, so a slot's body ends at the next one.
 std::set<Address> KnownFunctionEntries(const ObjectFinder &finder, const StructOffsets &structs,
                                        const FunctionOffsets &functions, std::span<const ScanRegion> code) {
     constexpr std::size_t kChunk = 0x10000;
@@ -185,14 +183,12 @@ std::optional<ProcessEventLocation> FindProcessEvent(const ObjectFinder &finder,
         return std::max(span, kMinBodyBytes);
     };
 
-    // A frame builder reads ParmsSize and ReturnValueOffset; ProcessEvent also checks
-    // FunctionFlags, which UE4's virtual CallFunction does not.
+    // Frame builders read ParmsSize/ReturnValueOffset; ProcessEvent also reads FunctionFlags.
     std::vector<ProcessEventLocation> candidates;
     std::vector<std::uint8_t> body;
     for (std::size_t slot = 0; slot < slots.size(); ++slot) {
         const Address target = slots[slot];
-        // The same function again is an inherited copy, should the bound above
-        // not have ended the walk at the next vtable.
+        // Same function again means an inherited copy.
         if (std::any_of(candidates.begin(), candidates.end(),
                         [target](const ProcessEventLocation &c) { return c.baseImplementation == target; }))
             continue;

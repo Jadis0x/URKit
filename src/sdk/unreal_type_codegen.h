@@ -1,7 +1,6 @@
 #pragma once
 
-// Typed headers from the loader's reflection dump ([Unreal] DumpTypes=1).
-// Names and signatures only: offsets are resolved in the game at runtime.
+// Typed headers from the loader's type dump ([Unreal] DumpTypes=1). No offsets.
 
 #include <filesystem>
 #include <string>

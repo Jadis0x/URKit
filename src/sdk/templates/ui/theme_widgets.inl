@@ -382,6 +382,7 @@ std::string WidgetsModule() {
 #include <cmath>
 #include <cstdio>
 #include <imgui.h>
+#include <string>
 #include <unordered_map>
 
 #include "localization.h"
@@ -862,6 +863,30 @@ inline void tab_indicator(const char *id_text, const ImVec2 &target_min, const I
     ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(anim.x, anim.y), ImVec2(anim.x + anim.w, anim.y + anim.h),
                                               ImGui::GetColorU32(p.accent_a), Theme::radius().pill);
     ImGui::PopID();
+}
+
+// A readable name for a virtual-key code; the code itself when there is none.
+inline std::string key_name(int vk) {
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9'))
+        return std::string(1, static_cast<char>(vk));
+    if (vk >= 0x70 && vk <= 0x87)
+        return "F" + std::to_string(vk - 0x6F);
+    switch (vk) {
+    case 0x09: return "Tab";
+    case 0x13: return "Pause";
+    case 0x21: return "Page Up";
+    case 0x22: return "Page Down";
+    case 0x23: return "End";
+    case 0x24: return "Home";
+    case 0x2D: return "Insert";
+    case 0x2E: return "Delete";
+    case 0x91: return "Scroll Lock";
+    case 0xC0: return "`";
+    default: break;
+    }
+    char code[8]{};
+    std::snprintf(code, sizeof(code), "0x%02X", vk);
+    return code;
 }
 
 inline void key_value(const char *key, const char *value) {

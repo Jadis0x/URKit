@@ -1,7 +1,7 @@
 #pragma once
 
-// Object create/delete via FUObjectArray::AllocateUObjectIndex/FreeUObjectIndex,
-// found by their fatal log strings. May be inlined into ~UObjectBase (5.4).
+// Create/delete via AllocateUObjectIndex/FreeUObjectIndex, found by log strings.
+// May be inlined into ~UObjectBase (5.4).
 
 #include "unreal_module.h"
 #include "unreal_object_array.h"

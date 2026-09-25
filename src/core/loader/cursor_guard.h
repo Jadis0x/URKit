@@ -1,9 +1,7 @@
 #pragma once
 
-// Gives a native menu the system cursor without touching game state. While
-// engaged, the game's ShowCursor/SetCursor/ClipCursor/SetCursorPos calls are
-// recorded instead of applied; Release() applies the game's last request.
-// Calls from URKit and its mods always go through. Game thread only.
+// System cursor for a native menu; game cursor calls are recorded while engaged
+// and the last one is applied on Release(). Game thread only.
 
 #include "mod_sdk.h"
 

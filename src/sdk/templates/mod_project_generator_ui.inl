@@ -1,6 +1,4 @@
-// UI templates are grouped by the generated module they own. Keeping the
-// renderer backends separate makes changes reviewable without touching menu or
-// widget templates.
+// UI templates, grouped by the generated module they own.
 
 #include "ui/theme_widgets.inl"
 #include "ui/localization.inl"

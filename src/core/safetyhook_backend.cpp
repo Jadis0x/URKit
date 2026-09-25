@@ -47,8 +47,7 @@ void CopyContextIn(const safetyhook::Context &ctx, URK_HookRegisters *registers)
     registers->rip = ctx.rip;
 }
 
-// rsp is deliberately not written back: SafetyHook ignores it and the mod is
-// expected to redirect the stack through trampoline_rsp instead.
+// rsp is not written back; mods redirect the stack via trampoline_rsp.
 void CopyContextOut(const URK_HookRegisters &registers, safetyhook::Context *ctx) {
     std::memcpy(&ctx->xmm0, registers.xmm, sizeof(registers.xmm));
     ctx->rflags = registers.rflags;
@@ -119,10 +118,7 @@ void *SafetyHookBackend_CreateInline(void *target, void *detour, void **trampoli
     if (!hook)
         return nullptr;
 
-    // original<void*>() avoids original<uintptr_t>(), which some MSVC toolsets
-    // reject: the library's template body does reinterpret_cast<T>(uintptr_t),
-    // and T=uintptr_t makes that an identity reinterpret_cast that newer MSVC
-    // flags as ill-formed even though it's standard-permitted.
+    // original<uintptr_t>() trips an identity reinterpret_cast error on newer MSVC.
     *trampoline = hook->original<void *>();
     return hook;
 }

@@ -24,7 +24,47 @@ inline void initialize_style() {
     Theme::apply();
 }
 
+// Once per session, until the menu is first opened; drawn without a window, so it takes no input.
+inline void render_menu_hint() {
+    // Time on screen; a frame's share is capped, so a loading stall does not use it up.
+    static float age = 0.0f;
+    static bool done = false;
+    if (done || ModConfig::menu_toggle_key == 0)
+        return;
+    if (ModConfig::show_menu) {
+        done = true;
+        return;
+    }
+    constexpr float kVisible = 8.0f;
+    constexpr float kFade = 1.0f;
+    const float delta = ImGui::GetIO().DeltaTime;
+    age += delta < 0.1f ? delta : 0.1f;
+    if (age >= kVisible) {
+        done = true;
+        return;
+    }
+    const float alpha = age > kVisible - kFade ? (kVisible - age) / kFade : 1.0f;
+    const auto faded = [alpha](ImVec4 color) {
+        color.w *= alpha;
+        return ImGui::GetColorU32(color);
+    };
+    Localization::initialize();
+    const std::string text = Localization::format(
+        "menu.hint", {{"name", ModConfig::display_name}, {"key", Widgets::key_name(ModConfig::menu_toggle_key)}});
+    const Theme::Palette &p = Theme::palette();
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    const float pad = 10.0f * Theme::dpi_scale();
+    const ImVec2 size = ImGui::CalcTextSize(text.c_str());
+    const ImVec2 min(viewport->Pos.x + pad * 2.0f, viewport->Pos.y + pad * 2.0f);
+    const ImVec2 max(min.x + size.x + pad * 2.0f, min.y + size.y + pad * 2.0f);
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    dl->AddRectFilled(min, max, faded(p.bg_overlay), Theme::radius().xl);
+    dl->AddRect(min, max, faded(p.border_subtle), Theme::radius().xl);
+    dl->AddText(ImVec2(min.x + pad, min.y + pad), faded(p.text_primary), text.c_str());
+}
+
 inline void render_menu() {
+    render_menu_hint();
     if (!ModConfig::show_menu)
         return;
     Localization::initialize();

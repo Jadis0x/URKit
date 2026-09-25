@@ -9,18 +9,15 @@
 namespace URK::Unreal {
 namespace {
 
-// Room for a stale array or a second pool without letting a noisy section turn
-// the pairing into a long search.
+// Room for a stale array or a second pool, bounded so noise stays cheap.
 constexpr std::size_t kMaxCandidates = 0x20;
 
-// "None", the first entry of every name table, sits at the head of the first
-// block behind its own short header.
+// "None" opens the first block, behind a short header.
 constexpr std::uint32_t kNoneBytes = 0x656E6F4E;
 constexpr std::size_t kEntryWindow = 0x10;
 constexpr Address kPrefilterSlots = 0x40;
 
-// Names CoreUObject registers before any game content, so a pair that cannot
-// produce one of them is not the pair however well it reads otherwise.
+// CoreUObject names registered before game content; a real pair yields one.
 constexpr std::array kAnchorNames = {"Object", "Class", "Package", "Function", "Field", "Struct"};
 
 constexpr std::int32_t kNameSampleCount = 0x100;
@@ -41,8 +38,7 @@ bool HoldsNoneEntry(std::span<const std::uint8_t> bytes) {
     return false;
 }
 
-// Whether a word reaches "None" in one hop (pool block) or two (entry chunk).
-// One read serves both, and it is asked per word, not per candidate.
+// Reaches "None" in one hop (pool block) or two (entry chunk); asked per word.
 bool ReachesNoneEntry(const MemoryReader &reader, Address value) {
     if (!MemoryReader::PlausiblePointer(value))
         return false;
@@ -81,8 +77,7 @@ bool IsAnchorName(const std::string &name) {
     return false;
 }
 
-// How many sampled objects name themselves through this table, or zero if the
-// sample says the two are unrelated.
+// Sampled objects whose names resolve through this table; zero if unrelated.
 std::int32_t ConfirmNames(const ObjectArray &objects, const NameTable &names, const ObjectOffsets &header) {
     const std::int32_t total = objects.Num();
     const std::int32_t sampleCount = total < kNameSampleCount ? total : kNameSampleCount;
@@ -110,8 +105,7 @@ std::int32_t ConfirmNames(const ObjectArray &objects, const NameTable &names, co
     return plausible;
 }
 
-// A scan reaches a global's aliases first, so ties are settled by taking the
-// last address that still confirms.
+// Aliases come first in a scan; ties go to the last confirming address.
 bool Better(const Runtime &candidate, const Runtime &incumbent) {
     if (candidate.confirmedNames != incumbent.confirmedNames)
         return candidate.confirmedNames > incumbent.confirmedNames;
@@ -122,17 +116,14 @@ bool Better(const Runtime &candidate, const Runtime &incumbent) {
 
 enum class Looking { ObjectArray, NameTable };
 
-// Globals are word aligned; read in chunks, since one call per word was the
-// old bottleneck.
+// Globals are word aligned; read in chunks.
 constexpr std::size_t kChunkWords = 0x8000;
 
-// Words past a chunk's last candidate that the candidate still looks at: the
-// name table's window of slots, or the object array's header.
+// Trailing words a candidate still reads (name window or array header).
 constexpr std::size_t kLookaheadWords =
     std::max(kPrefilterSlots / sizeof(Address), (kObjectArrayHeaderBytes + sizeof(Address) - 1) / sizeof(Address));
 
-// Halve a failing chunk so an unreadable tail costs only itself; unread words
-// stay zero, which no prefilter accepts.
+// Halve failing chunks; unread words stay zero and fail every prefilter.
 void ReadWords(const MemoryReader &reader, Address at, std::span<Address> words) {
     if (words.empty() || reader.Read(at, words.data(), words.size() * sizeof(Address)))
         return;
@@ -145,8 +136,7 @@ void ReadWords(const MemoryReader &reader, Address at, std::span<Address> words)
     ReadWords(reader, at + half * sizeof(Address), words.subspan(half));
 }
 
-// Worth validating? The object array by its header; the name table by whether
-// any slot of its window reached "None".
+// Prefilter: array by header, name table by a slot reaching "None".
 bool Worth(std::span<const Address> words, std::span<const std::uint8_t> facts, std::size_t at, Looking looking) {
     if (looking == Looking::ObjectArray) {
         const auto *bytes = reinterpret_cast<const std::uint8_t *>(words.data() + at);
@@ -245,8 +235,7 @@ std::optional<Runtime> PairCandidates(const MemoryReader &reader, std::span<cons
             continue;
 
         for (const Address tableAddress : tables) {
-            // Resolved per pair: the block width is calibrated against the
-            // array being tried, and a wrong array would leave it raised.
+            // Per pair: block width is calibrated against the array being tried.
             std::optional<NameTable> names = NameTable::Resolve(reader, tableAddress);
             if (!names)
                 continue;

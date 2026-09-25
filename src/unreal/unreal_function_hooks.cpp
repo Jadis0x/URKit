@@ -110,8 +110,7 @@ bool FunctionHooks::Before(Pending &pending, Address object, Address function, v
     {
         const std::shared_lock lock(mutex_);
         auto found = byFunction_.find(function);
-        // A Blueprint override is a UFunction of its own, its SuperStruct the
-        // function it overrides; the call in progress keeps the chain alive.
+        // An override's SuperStruct is the overridden function.
         const std::int32_t super = superOffset_.load(std::memory_order_acquire);
         Address at = function;
         for (int depth = 0; found == byFunction_.end() && super >= 0 && depth < kMaxOverrideDepth; ++depth) {

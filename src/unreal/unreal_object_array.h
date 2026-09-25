@@ -1,7 +1,6 @@
 #pragma once
 
-// GUObjectArray discovery. Field order is not stable across versions, so
-// candidates are validated by the array's own invariants.
+// GUObjectArray discovery; field order varies, so candidates are validated.
 
 #include "unreal_memory.h"
 
@@ -9,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace URK::Unreal {
 
@@ -21,8 +21,7 @@ struct FixedObjectArrayLayout {
     std::int32_t numObjectsOffset = 0;
 };
 
-// A table of chunk pointers, the default since UE4.21. The per-chunk count is
-// not stored and is derived as maxElements / maxChunks.
+// Chunk pointer table (UE4.21+); per-chunk count = maxElements / maxChunks.
 struct ChunkedObjectArrayLayout {
     std::int32_t objectsOffset = 0;
     std::int32_t maxElementsOffset = 0;
@@ -37,8 +36,7 @@ std::span<const ChunkedObjectArrayLayout> KnownChunkedLayouts();
 // Bytes of a candidate that the header-only prefilter looks at.
 inline constexpr std::size_t kObjectArrayHeaderBytes = 0x24;
 
-// Header-only check (counts and their agreement): a cheap reject before a full
-// validation follows pointers.
+// Header-only prefilter before full validation.
 bool HeaderMightBeObjectArray(std::span<const std::uint8_t> header);
 
 // Probed, not assumed: FUObjectItem gained fields over successive versions.
@@ -85,7 +83,28 @@ class ObjectArray {
     // The FUObjectItem holding it.
     Address ItemAt(std::int32_t index) const;
 
+    // Every slot in index order, a block per read; stops when visit returns false.
+    template <typename Visit> void ForEach(Visit &&visit) const {
+        const std::int32_t total = Num();
+        std::vector<Address> block;
+        std::vector<std::uint8_t> bytes;
+        for (std::int32_t first = 0; first < total;) {
+            const std::int32_t count = ReadBlock(first, total, block, bytes);
+            if (count <= 0)
+                return;
+            for (std::int32_t i = 0; i < count; ++i) {
+                if (!visit(first + i, block[i]))
+                    return;
+            }
+            first += count;
+        }
+    }
+
   private:
+    // Object pointers from first on, within one chunk; null where unreadable.
+    std::int32_t ReadBlock(std::int32_t first, std::int32_t total, std::vector<Address> &objects,
+                           std::vector<std::uint8_t> &bytes) const;
+
     const MemoryReader *reader_;
     Address address_;
     ObjectArrayLayout layout_;

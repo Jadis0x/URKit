@@ -1,7 +1,6 @@
 #pragma once
 
-// MemoryReader over another process, read-only. Pages are cached to save
-// syscalls; Forget() drops them when they may be stale.
+// Read-only MemoryReader over another process; page cache, Forget() drops it.
 
 #include "unreal_memory.h"
 
@@ -32,8 +31,7 @@ class RemoteProcess {
     void *Handle() const { return handle_; }
     std::uint32_t Pid() const { return pid_; }
 
-    // The executable's own module, which is where a shipped Unreal title keeps
-    // its globals.
+    // Main executable module; shipped titles keep globals there.
     Address MainModuleBase() const { return moduleBase_; }
     std::uint64_t MainModuleSize() const { return moduleSize_; }
     const std::wstring &Executable() const { return executable_; }

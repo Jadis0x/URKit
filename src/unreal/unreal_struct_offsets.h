@@ -1,7 +1,6 @@
 #pragma once
 
-// UField/UStruct layout: the offset that satisfies every fixed anchor (FColor,
-// FGuid, AActor's cast flag) is the field.
+// UField/UStruct layout: the offset satisfying every anchor (FColor, FGuid, AActor).
 
 #include "unreal_object_finder.h"
 
@@ -11,8 +10,7 @@
 
 namespace URK::Unreal {
 
-// Cast flags the engine assigns to its own classes. Used as anchor values, not
-// as a classification table.
+// Engine class cast flags, used as anchor values.
 inline constexpr std::uint64_t kCastFlagField = 0x1;
 inline constexpr std::uint64_t kCastFlagStruct = 0x8;
 inline constexpr std::uint64_t kCastFlagClass = 0x20;
@@ -34,8 +32,7 @@ template <typename T> struct Anchor {
     T value{};
 };
 
-// The lowest offset at which every anchor holds its value. Anchors whose object
-// was not found make the search fail rather than silently weaken it.
+// Lowest offset where every anchor holds; a missing anchor fails the search.
 template <typename T>
 std::int32_t FindAnchoredOffset(const MemoryReader &reader, const std::vector<Anchor<T>> &anchors,
                                 std::int32_t minOffset, std::int32_t maxOffset, std::int32_t step = 4) {
@@ -64,14 +61,12 @@ std::int32_t FindAnchoredOffset(const MemoryReader &reader, const std::vector<An
 // First offset past the UObject header, which is where UField begins.
 std::int32_t FirstOffsetPastHeader(const ObjectOffsets &offsets);
 
-// Read off the object's class: ClassCastFlags describes a class's instances,
-// and only UClass declares the field at all.
+// Read off the object's class; only UClass declares it.
 std::uint64_t CastFlagsOf(const ObjectFinder &finder, const StructOffsets &structs, Address object);
 
 bool ObjectIs(const ObjectFinder &finder, const StructOffsets &structs, Address object, std::uint64_t flag);
 
-// Before UE4.25 properties were UObjects, so finding one in the object array
-// proves an unsupported engine even when the version resource is stripped.
+// Pre-4.25 properties are UObjects; finding one means unsupported.
 bool UsesFPropertySystem(const ObjectFinder &finder);
 
 std::int32_t FindCastFlagsOffset(const ObjectFinder &finder);

@@ -27,8 +27,7 @@
 #include <vector>
 
 namespace {
-// The object array is built long after a proxy lands; a fallback data scan
-// costs seconds, so this budget covers several of them.
+// The object array appears late and fallback scans take seconds.
 constexpr DWORD kBootstrapTimeoutMs = 60000;
 constexpr DWORD kBootstrapRetryMs = 100;
 constexpr float kIntroWaitingRuntime = 0.24f;
@@ -55,8 +54,13 @@ struct GameLoopState {
     URK::Unreal::Address world = URK::Unreal::kNullAddress;
     bool announced = false;
     DWORD thread = 0;
-    bool dumpTypes = false;
-    bool blueprintsLoaded = false;
+    std::unique_ptr<URK::Unreal::TypeDumper> dumper;
+    // Blueprint classes to load for the dump, a few per frame.
+    bool blueprintsListed = false;
+    std::vector<std::string> blueprints;
+    std::size_t blueprintNext = 0;
+    std::size_t blueprintsLoaded = 0;
+    ULONGLONG blueprintsStarted = 0;
     const URK_UnrealApi *api = nullptr;
     bool boundaryNoted = false;
     // Tick's counter write, found by strings: cross-checks the elected site.
@@ -74,7 +78,22 @@ URK::Unreal::TypeDumpImage MainImage(const URK::Unreal::EngineVersion &version) 
     image.sizeOfImage = nt->OptionalHeader.SizeOfImage;
     image.engine = std::to_string(version.major) + "." + std::to_string(version.minor) + "." +
                    std::to_string(version.patch);
+    HMODULE loader = nullptr;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(&MainImage), &loader)) {
+        const auto *ours = reinterpret_cast<const IMAGE_DOS_HEADER *>(loader);
+        image.loaderStamp = reinterpret_cast<const IMAGE_NT_HEADERS *>(reinterpret_cast<const std::uint8_t *>(ours) +
+                                                                       ours->e_lfanew)
+                                ->FileHeader.TimeDateStamp;
+    }
     return image;
+}
+
+double NowMs() {
+    LARGE_INTEGER now{}, frequency{};
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&frequency);
+    return 1000.0 * static_cast<double>(now.QuadPart) / static_cast<double>(frequency.QuadPart);
 }
 
 std::string PlaceText(const URK_UnrealApi *api, const URK_UnrealPlace &place) {
@@ -82,19 +101,17 @@ std::string PlaceText(const URK_UnrealApi *api, const URK_UnrealPlace &place) {
     return api->place_read_text(&place, text, sizeof(text), nullptr) ? text : std::string();
 }
 
-// Every Blueprint class the asset registry lists, loaded so the dump sees
-// classes no map has loaded yet. UE5.1+ (UAssetRegistryHelpers::GetBlueprintAssets).
-void LoadBlueprintClasses(const URK_UnrealApi *api) {
-    const ULONGLONG started = GetTickCount64();
+// All Blueprint classes from the asset registry (UE5.1+), loaded or not.
+std::vector<std::string> ListBlueprintClasses(const URK_UnrealApi *api) {
+    std::vector<std::string> paths;
     const URK_UnrealObject helpers = api->find_object("AssetRegistryHelpers");
     const URK_UnrealObject kismet = api->find_object("KismetSystemLibrary");
     const URK_UnrealObject list = helpers ? api->find_function(helpers, "GetBlueprintAssets") : 0;
     const URK_UnrealObject load = kismet ? api->find_function(kismet, "LoadClassAsset_Blocking") : 0;
     if (!list || !load) {
         Log("[Unreal] Blueprint classes not preloaded: this engine has no GetBlueprintAssets; only loaded maps are dumped.");
-        return;
+        return paths;
     }
-    std::vector<std::string> paths;
     if (URK_UnrealCallFrame *frame = api->call_frame_create(list)) {
         if (api->call(api->default_object_of(helpers), frame)) {
             URK_UnrealPlace assets{};
@@ -115,47 +132,59 @@ void LoadBlueprintClasses(const URK_UnrealApi *api) {
         }
         api->call_frame_destroy(frame);
     }
-    std::size_t loaded = 0;
-    const URK_UnrealObject library = api->default_object_of(kismet);
-    for (const std::string &path : paths) {
-        URK_UnrealCallFrame *frame = api->call_frame_create(load);
-        if (!frame)
-            break;
-        URK_UnrealPlace soft{};
-        soft.frame = frame;
-        soft.member = "AssetClass";
-        URK_UnrealObject result = 0;
-        if (api->place_write_text(&soft, path.c_str()) && api->call(library, frame) &&
-            api->call_frame_get(frame, "ReturnValue", &result, sizeof(result)) && result)
-            ++loaded;
-        api->call_frame_destroy(frame);
-    }
-    Log("[Unreal] Blueprint classes preloaded for the dump: %zu of %zu listed, in %llums.", loaded, paths.size(),
-        GetTickCount64() - started);
+    return paths;
 }
+
+bool LoadBlueprintClass(const URK_UnrealApi *api, const std::string &path) {
+    const URK_UnrealObject kismet = api->find_object("KismetSystemLibrary");
+    const URK_UnrealObject load = kismet ? api->find_function(kismet, "LoadClassAsset_Blocking") : 0;
+    URK_UnrealCallFrame *frame = load ? api->call_frame_create(load) : nullptr;
+    if (!frame)
+        return false;
+    URK_UnrealPlace soft{};
+    soft.frame = frame;
+    soft.member = "AssetClass";
+    URK_UnrealObject result = 0;
+    const bool loaded = api->place_write_text(&soft, path.c_str()) && api->call(api->default_object_of(kismet), frame) &&
+                        api->call_frame_get(frame, "ReturnValue", &result, sizeof(result)) && result;
+    api->call_frame_destroy(frame);
+    return loaded;
+}
+
+// Per frame, so neither loading nor describing stalls the game.
+constexpr double kBlueprintBudgetMs = 3.0;
+constexpr double kDumpBudgetMs = 2.0;
 
 // Game thread, once per announced world: each map adds its Blueprint classes.
-void DumpTypes(const char *map) {
-    using namespace URK::Unreal;
-    UnrealEngine &engine = UnrealEngine::Instance();
-    if (!g_gameLoop.blueprintsLoaded && g_gameLoop.api) {
-        g_gameLoop.blueprintsLoaded = true;
-        LoadBlueprintClasses(g_gameLoop.api);
+void ScanTypes(const char *map) {
+    if (!g_gameLoop.blueprintsListed && g_gameLoop.api) {
+        g_gameLoop.blueprintsListed = true;
+        g_gameLoop.blueprints = ListBlueprintClasses(g_gameLoop.api);
+        g_gameLoop.blueprintsStarted = GetTickCount64();
     }
-    const ULONGLONG started = GetTickCount64();
-    const TypeDumpBlocks blocks = DumpClasses(engine.Finder(), engine.Structs(), engine.Chain(), engine.Values(),
-                                              engine.Functions(), engine.Types(), UnrealSdk_Enums());
-    const std::string path = Platform_ExeDir() + "URKit_unreal_types.txt";
-    const int added = WriteTypeDump(path, MainImage(engine.Version()), blocks);
-    if (added < 0)
-        Log("[Unreal][ERROR] Could not write %s.", path.c_str());
-    else
-        Log("[Unreal] types of %s dumped in %llums: %zu types, %d new, to %s.", map, GetTickCount64() - started,
-            blocks.size(), added, path.c_str());
+    g_gameLoop.dumper->Scan(map, URK::Unreal::UnrealSdk_Enums());
 }
 
-// A world is announced once it has begun play, so a mod handed the scene can
-// already find its controller and pawn.
+// Game thread, every frame: Blueprint loads first, then queued types.
+void StepTypes() {
+    GameLoopState &state = g_gameLoop;
+    if (state.blueprintNext < state.blueprints.size()) {
+        const double started = NowMs();
+        do {
+            if (LoadBlueprintClass(state.api, state.blueprints[state.blueprintNext++]))
+                ++state.blueprintsLoaded;
+        } while (state.blueprintNext < state.blueprints.size() && NowMs() - started < kBlueprintBudgetMs);
+        if (state.blueprintNext == state.blueprints.size()) {
+            Log("[Unreal] Blueprint classes preloaded for the dump: %zu of %zu listed, in %llums.",
+                state.blueprintsLoaded, state.blueprints.size(), GetTickCount64() - state.blueprintsStarted);
+            state.dumper->Scan("preloaded Blueprints", URK::Unreal::UnrealSdk_Enums());
+        }
+        return;
+    }
+    state.dumper->Step(kDumpBudgetMs);
+}
+
+// Announced after BeginPlay so controller and pawn are findable.
 void OnGameFrame(void *) {
     using namespace URK::Unreal;
     const DWORD thread = GetCurrentThreadId();
@@ -190,9 +219,11 @@ void OnGameFrame(void *) {
         strncpy_s(scene.name, g_gameLoop.loop->MapName(world.world).c_str(), _TRUNCATE);
         // A new world object is a new load, even of the same map.
         RuntimeEvents_ObserveScene(scene, true);
-        if (g_gameLoop.dumpTypes)
-            DumpTypes(scene.name);
+        if (g_gameLoop.dumper)
+            ScanTypes(scene.name);
     }
+    if (g_gameLoop.dumper)
+        StepTypes();
 
     RuntimeEvents_PumpExternal();
     MainThread_Drain();
@@ -308,8 +339,7 @@ std::size_t HookFrameBoundary(URK::Unreal::UnrealEngine &engine, URK::Unreal::Ad
     return hooked;
 }
 
-// Holds the ProcessEvent hook for the loader. The tick itself starts only once
-// mods are loaded, so none misses the first scene.
+// Owns the ProcessEvent hook; the tick starts after mods load.
 bool PrepareGameLoop(URK::Unreal::UnrealEngine &engine, const volatile std::uint64_t **frameCounter) {
     using namespace URK::Unreal;
     if (!UnrealSdk_HoldProcessEventHook()) {
@@ -372,8 +402,7 @@ bool RunUnreal(Config &config) {
     UnrealEngine &engine = UnrealEngine::Instance();
 
     Log(">> UNREAL backend");
-    // The scan costs seconds and reads the whole image; a process with no mods
-    // must not pay for it merely because a proxy was loaded.
+    // The scan is expensive; skip it when there are no mods.
     const NativeModLoadPlan modPlan = config.safeMode ? NativeModLoadPlan{} : NativeMods_Discover(config);
     const bool dumpTypes = config.unrealDumpTypes && !config.safeMode;
     if (!config.safeMode && modPlan.Empty() && !dumpTypes) {
@@ -449,10 +478,16 @@ bool RunUnreal(Config &config) {
     IntroStage(kIntroModsBegin, "Loading Unreal mods...");
     if (!modPlan.Empty())
         NativeMods_Load(modPlan, ModContext_BuildUnreal(config, api, MainModuleBase(), gameLoop));
-    g_gameLoop.dumpTypes = dumpTypes;
     g_gameLoop.api = api;
     if (dumpTypes && !gameLoop)
         Log("[Unreal][ERROR] DumpTypes needs the game loop; nothing will be dumped.");
+    if (dumpTypes && gameLoop) {
+        const TypeDumpSources sources{engine.Finder(), engine.Structs(), engine.Chain(), engine.Values(),
+                                      engine.Functions(), engine.Types()};
+        g_gameLoop.dumper = std::make_unique<TypeDumper>(sources, Platform_ExeDir() + "URKit_unreal_types.txt",
+                                                         MainImage(engine.Version()),
+                                                         [](const std::string &line) { Log("%s", line.c_str()); });
+    }
     if (gameLoop)
         ProcessEventHook::Instance().SetFrameTick(&OnGameFrame, nullptr, frameCounter);
     return true;

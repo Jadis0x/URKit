@@ -1,7 +1,6 @@
 #pragma once
 
-// MemoryReader over this process. Committed ranges are cached, but the game
-// frees memory mid-walk, so the copy itself must survive a stale answer.
+// MemoryReader over this process. Ranges are cached; reads survive stale answers.
 
 #include "unreal_memory.h"
 
@@ -14,8 +13,7 @@ namespace URK::Unreal {
 
 class ProcessMemory : public MemoryReader, public MemoryWriter {
   public:
-    // A cached "no" must expire, or memory committed mid-scan stays invisible.
-    // A "yes" need not: when it goes stale the read simply fails.
+    // Cached "no" expires; a stale "yes" just fails the read.
     static constexpr std::uint64_t kUnreadableLifetime = 0x4000;
 
     explicit ProcessMemory(std::uint64_t unreadableLifetime = kUnreadableLifetime)
@@ -23,6 +21,9 @@ class ProcessMemory : public MemoryReader, public MemoryWriter {
 
     // Never faults, and never returns bytes it did not read in full.
     bool Read(Address address, void *out, std::size_t size) const override;
+
+    // No VirtualQuery: a fault is caught, and a guard page it trips is re-armed.
+    bool ReadTrusted(Address address, void *out, std::size_t size) const override;
 
     // Touches nothing, so a stale yes costs a failed Read, not a fault.
     bool Readable(Address address, std::size_t size) const override;
@@ -35,8 +36,7 @@ class ProcessMemory : public MemoryReader, public MemoryWriter {
     // Only the calling thread's cache; others heal on their next failed read.
     void Forget() const;
 
-    // Kernel queries vs cache hits, summed across threads. A bad ratio means
-    // the scan is living in the kernel.
+    // Kernel queries vs cache hits across threads.
     std::uint64_t Queries() const { return queries_.load(std::memory_order_relaxed); }
     std::uint64_t Hits() const { return hits_.load(std::memory_order_relaxed); }
 

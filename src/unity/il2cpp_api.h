@@ -29,9 +29,7 @@ using Il2CppProfiler = void;
 using Il2CppManagedMemorySnapshot = void;
 using Il2CppAsyncResult = void;
 using Il2CppDelegate = void;
-// Unity's own il2cpp-api-types.h defines this out-parameter struct, and its
-// layout has not moved since 2019. Every other Il2CppDebug* handle below stays
-// opaque because no Unity release has ever exported an accessor for one.
+// Layout from Unity's il2cpp-api-types.h, stable since 2019.
 struct Il2CppDebugMethodInfo {
     void *methodPointer;
     int32_t codeSize;
@@ -56,8 +54,7 @@ using Il2CppStat = int;
 using Il2CppProfileFlags = int;
 using Il2CppRuntimeUnhandledExceptionPolicy = int;
 using il2cpp_array_size_t = uintptr_t;
-// Unity 6 represents GC handles as opaque pointers. Older Unity releases
-// return 32-bit tokens; uintptr_t safely carries both ABIs on Windows x64.
+// Unity 6 handles are pointers, older ones 32-bit tokens; uintptr_t holds both.
 using Il2CppGCHandle = uintptr_t;
 
 #define IL2CPP_FN(ret, name, args) using name##_t = ret(*) args
@@ -211,9 +208,7 @@ IL2CPP_FN(Il2CppString *, il2cpp_string_is_interned, (Il2CppString * str));
 // array
 IL2CPP_FN(Il2CppClass *, il2cpp_array_class_get, (Il2CppClass *, uint32_t));
 IL2CPP_FN(Il2CppClass *, il2cpp_bounded_array_class_get, (Il2CppClass * element_class, uint32_t rank, bool bounded));
-// Unity's public IL2CPP ABI uses il2cpp_array_size_t here. Keeping this
-// pointer-sized prevents truncation on x64 and correctly reflects exported
-// implementations shared with other size_t-returning APIs after ICF.
+// Pointer-sized to avoid truncation on x64.
 IL2CPP_FN(il2cpp_array_size_t, il2cpp_array_length, (Il2CppArray *));
 IL2CPP_FN(uint32_t, il2cpp_array_get_byte_length, (Il2CppArray *));
 IL2CPP_FN(int, il2cpp_array_element_size, (const Il2CppClass *array_class));
@@ -316,9 +311,7 @@ IL2CPP_FN(Il2CppManagedMemorySnapshot *, il2cpp_capture_memory_snapshot, ());
 IL2CPP_FN(void, il2cpp_free_captured_memory_snapshot, (Il2CppManagedMemorySnapshot * snapshot));
 
 // debug
-// Unity exports this as bool(const MethodInfo*, Il2CppMethodDebugInfo* out) in
-// every release since 2019: the caller owns the struct and the return value is
-// only a success flag.
+// bool(const MethodInfo*, Il2CppMethodDebugInfo* out); caller owns the struct.
 IL2CPP_FN(bool, il2cpp_debug_get_method_info, (const Il2CppMethod *method, Il2CppDebugMethodInfo *info));
 
 #undef IL2CPP_FN
@@ -328,12 +321,10 @@ struct Il2CppApi {
     HMODULE unityPlayer = nullptr;
     uintptr_t gameAssemblyBase = 0;
     uintptr_t unityPlayerBase = 0;
-    // Set after all required core exports have been resolved by exact name and
-    // their GameAssembly PE targets have passed validation. Optional capability
-    // exports may remain null on Unity versions that do not provide them.
+    // Core exports resolved and validated; optional ones may be null.
     bool exportsValidated = false;
     bool metadataReady = false;
-    // Defaults to the epoch, which doubles as the "never attempted" sentinel.
+    // Epoch means never attempted.
     std::chrono::steady_clock::time_point metadataRecoveryLastAttempt{};
     Il2CppDomain *cachedDomain = nullptr;
 
@@ -531,8 +522,7 @@ struct Il2CppApi {
     bool WaitForMetadataAccess(std::chrono::milliseconds timeout,
                                std::chrono::milliseconds preDomainDelay = std::chrono::milliseconds(1500));
     bool MetadataAccessReady() const;
-    // Re-probes the runtime after metadata access was taken offline by a burst
-    // of guarded faults. Rate limited internally; safe to call every frame.
+    // Retries after a fault burst; rate limited, safe per frame.
     bool TryRecoverMetadataAccess();
     bool TryAssemblyCount(size_t &count) const;
     const Il2CppImage *FindImage(const char *imageName) const;

@@ -1,7 +1,6 @@
 #pragma once
 
-// UEnum names and values, storage found by content and checked against
-// GetEnumeratorName. Measure on the game thread.
+// UEnum names/values, storage found by content and checked with GetEnumeratorName. Game thread.
 
 #include "unreal_engine_calls.h"
 

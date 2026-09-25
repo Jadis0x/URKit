@@ -1,7 +1,6 @@
 #pragma once
 
-// TArray/TSet/TMap changes the engine's way, via its allocator. Game thread.
-// Each change is a transaction: a failure leaves the container unchanged.
+// TArray/TSet/TMap edits through the engine allocator. Game thread; all or nothing.
 
 #include "unreal_engine_calls.h"
 #include "unreal_property_virtuals.h"
@@ -18,8 +17,7 @@ namespace URK::Unreal {
 
 class OwnedValues;
 
-// FScriptSet: TSparseArray (TArray data, TBitArray with 4 inline words, free
-// list), then the hash (one inline bucket, else a heap array) and its size.
+// FScriptSet: TSparseArray (data, 4-word TBitArray, free list), then the hash and its size.
 namespace SetFields {
 inline constexpr std::int32_t kData = 0;
 inline constexpr std::int32_t kNum = 8;
@@ -61,8 +59,7 @@ class Containers {
     // --- TArray (and a multicast delegate's invocation list) ---
     // count default elements before index; all made, or none.
     bool ArrayInsert(const PropertyInfo &inner, std::uint8_t *array, std::int32_t index, std::int32_t count);
-    // count elements from index, released first; refused whole if any of them
-    // could not be released.
+    // Releases then removes count elements; refused if any can't be released.
     bool ArrayRemove(const PropertyInfo &inner, std::uint8_t *array, std::int32_t index, std::int32_t count);
 
     // --- TSet / TMap ---
@@ -76,8 +73,7 @@ class Containers {
     // The slot's element, or null when it is not occupied.
     static std::uint8_t *Element(const SetLayout &layout, std::uint8_t *set, std::int32_t slot);
     std::int32_t Find(const SetLayout &layout, std::uint8_t *set, const std::uint8_t *key);
-    // Adds key (a constructed value whose ownership moves in when *consumed is
-    // set); an existing equal key returns its slot and consumes nothing.
+    // Adds key, taking ownership when *consumed is set; an equal key returns its slot.
     std::int32_t Add(const SetLayout &layout, std::uint8_t *set, std::uint8_t *key, bool *consumed);
     // Refused, with the set unchanged, if the element could not be released.
     bool Remove(const SetLayout &layout, std::uint8_t *set, std::int32_t slot);
@@ -94,8 +90,7 @@ class Containers {
         bool collapsedNoted = false;
     };
     struct CachedLayout {
-        // What the layout was computed from; a property freed and made again
-        // at the same address must not reuse it.
+        // Layout source; a property reallocated at the same address must not reuse it.
         Address inner = kNullAddress;
         Address valueInner = kNullAddress;
         std::int32_t elementSize = 0;
@@ -104,8 +99,7 @@ class Containers {
     };
     // Every validated container checks the engine's hash against the buckets it stored.
     void Check(const SetLayout &layout, std::uint8_t *set);
-    // The engine's hash of the key; none when it is unavailable or a live
-    // container contradicted it, and the caller links into one bucket.
+    // Engine hash of key; none when unavailable, then everything links into one bucket.
     std::optional<std::uint32_t> KeyHash(const SetLayout &layout, const std::uint8_t *key);
     // The engine's Identical where measured, else the loader's own equality.
     bool KeysEqual(const SetLayout &layout, const std::uint8_t *a, const std::uint8_t *b);

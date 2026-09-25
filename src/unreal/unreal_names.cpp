@@ -3,20 +3,17 @@
 namespace URK::Unreal {
 namespace {
 
-// Both are always in the first block: "None" sizes the entry header, "CoreUObj"
-// confirms it is a name block.
+// Always in the first block: "None" sizes the header, "CoreUObj" confirms the block.
 constexpr std::uint32_t kNoneBytes = 0x656E6F4E;
 constexpr std::uint64_t kCoreUObjectBytes = 0x6A624F5565726F43;
 
-// "Byte", the start of the entry that follows "None". Its known length is what
-// calibrates the shift that separates length from the flag bits below it.
+// "Byte" follows "None"; its known length calibrates the length shift.
 constexpr std::uint32_t kByteBytes = 0x65747942;
 constexpr std::uint32_t kIntPBytes = 0x50746E49;
 constexpr std::uint16_t kBytePropertyLength = 0xC;
 constexpr std::int32_t kNoneLength = 4;
 
-// The wide flag is the lowest header bit in every version; only the width of
-// the length field above it moves.
+// Wide flag is always the lowest header bit; the length width varies.
 constexpr std::uint16_t kWideMask = 0x1;
 
 constexpr std::int32_t kBlockScanLimit = 0x1000;
@@ -31,8 +28,7 @@ std::string NarrowWide(const MemoryReader &reader, Address address, std::int32_t
         const std::optional<std::uint16_t> unit = reader.ReadAs<std::uint16_t>(address + static_cast<Address>(i) * 2);
         if (!unit)
             break;
-        // Engine names are ASCII in practice; anything else is not worth a
-        // UTF-16 decoder here.
+        // Engine names are ASCII in practice.
         text.push_back(*unit < 0x80 ? static_cast<char>(*unit) : '?');
     }
     return text;
@@ -50,8 +46,7 @@ std::string ReadAnsi(const MemoryReader &reader, Address address, std::int32_t l
     return text;
 }
 
-// Locates the block table by the one relation that holds: the block count field
-// is followed by exactly that many plus one non-null block pointers.
+// Block count is followed by count + 1 non-null block pointers.
 bool ResolvePoolHeader(const MemoryReader &reader, Address pool, NamePoolLayout &layout) {
     for (std::int32_t offset = 0; offset < 0x20; offset += 4) {
         const std::optional<std::int32_t> blockCount = reader.ReadInt32(pool + offset);
@@ -88,8 +83,7 @@ bool ResolvePoolHeader(const MemoryReader &reader, Address pool, NamePoolLayout 
     return false;
 }
 
-// The header size is where "None" starts in the first block; "CoreUObj" further
-// in confirms the block. Both are written before any game content.
+// Header size is where "None" starts; "CoreUObj" confirms the block.
 bool ResolveEntryStringOffset(const MemoryReader &reader, Address firstBlock, std::int32_t &stringOffset) {
     std::int32_t found = kOffsetNotFound;
     for (std::int32_t i = 0; i < kBlockScanLimit; ++i) {
@@ -109,8 +103,7 @@ bool ResolveEntryStringOffset(const MemoryReader &reader, Address firstBlock, st
     return false;
 }
 
-// "None", "ByteProperty", "IntProperty" open every pool: where the next two start gives
-// the entry alignment (8 in the UE5.8 editor), and ByteProperty's header the length shift.
+// "None", "ByteProperty", "IntProperty" open every pool: gives alignment and length shift.
 bool ResolveSecondEntry(const MemoryReader &reader, Address firstBlock, NamePoolLayout &layout) {
     const auto aligned = [](std::int32_t at, std::int32_t stride) { return (at + stride - 1) / stride * stride; };
     const auto holds = [&](std::int32_t start, std::uint32_t text) {
@@ -258,8 +251,7 @@ std::optional<std::string> NameTable::ReadFromPool(std::uint32_t comparisonIndex
 
     const std::int32_t length = static_cast<std::int32_t>(*header >> pool.lengthShift);
 
-    // A zero length marks a numbered entry: the payload is a reference to the
-    // base name plus the number to append.
+    // Zero length: numbered entry referencing a base name.
     if (length == 0) {
         const std::int32_t payload = pool.entryStringOffset + (pool.entryStringOffset == 6 ? 2 : 0);
         const std::optional<std::int32_t> baseIndex = reader_->ReadInt32(entry + payload);

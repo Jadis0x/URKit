@@ -31,8 +31,7 @@ std::string ClipToolText(std::string text) {
     return text;
 }
 
-// Many clients render only content[].text, so describe the result there instead
-// of emitting a fixed success string that hides every field.
+// Many clients show only content[].text, so describe the result there.
 std::string RenderToolText(const Json &value) {
     if (!value.is_object())
         return ClipToolText(value.dump(2));

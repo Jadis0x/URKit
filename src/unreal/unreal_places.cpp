@@ -851,8 +851,7 @@ bool Places::BuildKey(const PropertyInfo &key, const URK_UnrealKey &input, bool 
         if (!input.bytes || input.size != bytes->size())
             return Fail("a struct key needs its whole value");
         const auto *proposed = static_cast<const std::uint8_t *>(input.bytes);
-        // With the engine's own construction and copy, a key may carry strings:
-        // the key stored is the engine's copy of them, never the mod's buffer.
+        // Keys may carry strings; the stored key is the engine's copy, not the mod's buffer.
         PropertyVirtuals &virtuals = owned_->Stores().Virtuals();
         const bool engineMade = key.arrayDim == 1 && virtuals.ValueOpsReady();
         if (!StructChangeAllowed(*engine_, key.inner, at, proposed, bytes->size(), 0, &CheckName, &calls, engineMade))
@@ -1006,8 +1005,7 @@ bool Places::Bind(const PlaceTarget &target, Address object, const char *functio
 bool Places::MakeDelegate(Address signature, Address object, const char *function, std::uint8_t *delegate) {
     if (object == kNullAddress || !function || !Live(*engine_, object))
         return Fail("the object is not live");
-    // The function by name on the object's class or a super: what the engine's
-    // FindFunctionChecked will look for when the delegate fires.
+    // Function by name on the class chain, as FindFunctionChecked resolves it.
     const ObjectFinder &finder = engine_->Finder();
     Address found = kNullAddress;
     Address owner = finder.ClassOf(object);

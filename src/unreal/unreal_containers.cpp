@@ -97,8 +97,7 @@ bool Containers::ArrayInsert(const PropertyInfo &inner, std::uint8_t *array, std
         engine_->ReleaseOrLeak(data, "an array's old buffer");
         data = block->data;
     }
-    // The new elements are made past Num, where nothing reads them, and moved
-    // into place only once every one of them exists.
+    // Build new elements past Num, then move them into place.
     std::uint8_t *fresh = data + static_cast<std::size_t>(num) * width;
     std::memset(fresh, 0, static_cast<std::size_t>(count) * width);
     for (std::int32_t i = 0; i < count; ++i) {
@@ -201,8 +200,7 @@ std::optional<SetLayout> Containers::LayoutOf(const PropertyInfo &container) {
     layout.alignment = std::max(element.alignment, 4);
     layout.stride = Align(std::max(setElementSize, 8), layout.alignment);
 
-    // The engine computed the same layout when it linked the property; it must be
-    // there, word for word, after the element properties.
+    // Must match the engine's layout word for word after the element properties.
     const PropertyTailOffsets &tail = values_->Tail();
     const std::int32_t after = layout.isMap ? tail.mapValue : tail.setElement;
     if (after == kOffsetNotFound)
@@ -216,8 +214,7 @@ std::optional<SetLayout> Containers::LayoutOf(const PropertyInfo &container) {
         for (int i = 0; i < 5 && same; ++i)
             same = finder_->Reader().ReadInt32(container.field + at + i * 4).value_or(-1) == expected[i];
         if (same && layout.isMap) {
-            // FScriptMapLayout keeps ValueOffset just before the set layout (after
-            // a zero KeyOffset/ElementOffset in older builds).
+            // ValueOffset precedes the set layout (after zero Key/ElementOffset in older builds).
             same = finder_->Reader().ReadInt32(container.field + at - 4).value_or(-1) == layout.valueOffset ||
                    finder_->Reader().ReadInt32(container.field + at - 8).value_or(-1) == layout.valueOffset;
         }
@@ -321,8 +318,7 @@ bool Containers::Validate(const SetLayout &layout, const std::uint8_t *constSet)
         at = Load<std::int32_t>(link + 4);
     }
 
-    // Every bucket chain: occupied slots stored with that bucket, and every
-    // occupied slot reached exactly once.
+    // Each occupied slot must be in its bucket's chain exactly once.
     const std::int32_t *buckets = Buckets(set);
     std::vector<bool> seen(static_cast<std::size_t>(num), false);
     std::int32_t chained = 0;
@@ -505,8 +501,7 @@ void Containers::Collapse(const SetLayout &layout, std::uint8_t *set) {
     engine_->ReleaseOrLeak(old, "a set's old hash");
 }
 
-// TScriptSparseSet::Rehash into a table already allocated, with hashes already
-// agreed: nothing here can fail.
+// TScriptSparseSet::Rehash into a preallocated table; cannot fail.
 void Containers::Relink(const SetLayout &layout, std::uint8_t *set, std::uint8_t *table, std::int32_t buckets,
                         const std::vector<std::pair<std::int32_t, std::uint32_t>> &hashes) {
     auto *old = Load<std::uint8_t *>(set + SetFields::kHashSecondary);
@@ -544,8 +539,7 @@ std::int32_t Containers::Add(const SetLayout &layout, std::uint8_t *set, std::ui
     std::vector<std::pair<std::int32_t, std::uint32_t>> hashes;
     bool collapse = !keyHash && hashSize > 1;
     if (keyHash) {
-        // The engine's count for the size, unless a build changed its defaults:
-        // any power of two is correct, only the spread differs.
+        // Engine's bucket count; any power of two is still correct.
         const std::int32_t desired = HashBucketsFor(Count(set) + 1);
         if (hashSize < desired) {
             buckets = desired;

@@ -32,8 +32,7 @@ inline std::string NameKey(std::string_view name) {
     return key;
 }
 
-// FNamePool: a block table preceded by the current block index and write
-// cursor. A comparison index splits into a block and a stride-scaled offset.
+// FNamePool: current block and cursor, then the block table.
 struct NamePoolLayout {
     std::int32_t blockCountOffset = kOffsetNotFound;
     std::int32_t byteCursorOffset = kOffsetNotFound;

@@ -16,8 +16,7 @@ namespace URK::Unreal {
 
 struct WorldState {
     Address world = kNullAddress;
-    // GameState->bReplicatedHasBegunPlay; true when the world has no readable
-    // game state, so a map is still announced once.
+    // GameState->bReplicatedHasBegunPlay; true without a readable game state.
     bool begunPlay = false;
 };
 
@@ -27,13 +26,11 @@ class GameLoop {
              const PropertyValues &values)
         : finder_(&finder), types_(&types), chain_(&chain), values_(&values) {}
 
-    // GFrameCounter, read out of GetFrameCount's native thunk. Null if the
-    // function or the load in it is not found.
+    // GFrameCounter from GetFrameCount's thunk, or null.
     static Address FindFrameCounter(const ObjectFinder &finder, const FunctionOffsets &functions,
                                     const FunctionTable &bounds, std::span<const ScanRegion> writable);
 
-    // The host's decoder: the length of the instruction code starts with, 0 if
-    // it does not decode.
+    // Instruction length decoder; 0 when undecodable.
     using InstructionLength = Unreal::InstructionLength;
 
     // GFrameCounter writes, kept only on decoded instruction boundaries.
@@ -44,8 +41,7 @@ class GameLoop {
     // Game thread only: members are resolved lazily and cached per class.
     WorldState CurrentWorld();
 
-    // The world's object name, i.e. the map; its array index tells two loads of
-    // one map apart.
+    // World name (the map); its array index separates reloads of the same map.
     std::string MapName(Address world) const;
     std::int32_t ObjectIndex(Address object) const;
 

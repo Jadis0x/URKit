@@ -23,8 +23,7 @@ class ObjectFinder {
     // Walks every object once and indexes it by name.
     static ObjectFinder Build(const ObjectArray &objects, const NameTable &names, const ObjectOffsets &offsets);
 
-    // The index is a snapshot of a live array: every hit is checked against the
-    // array, and a miss rebuilds the index at most this often.
+    // Hits are rechecked; a miss rebuilds the index at most this often.
     static constexpr std::uint64_t kRefreshIntervalMs = 250;
 
     Address ClassOf(Address object) const;
@@ -34,8 +33,7 @@ class ObjectFinder {
     // First live object carrying this name, or kNullAddress.
     Address Find(std::string_view name) const;
 
-    // First object with this name whose outer carries outerName. Outers are not
-    // unique by name, so this is how a member is addressed.
+    // By name and outer name; outers aren't unique either.
     Address FindInOuter(std::string_view name, std::string_view outerName) const;
 
     // As above, with the outer given as an address (the SDK's find_function).

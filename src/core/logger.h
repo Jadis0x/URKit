@@ -2,12 +2,9 @@
 
 #include <string>
 
-// Initializes logging. If showConsole is true, allocates a console window.
-// When logDirectory is empty, opens URKit_logs.log next to the game executable.
-// Injected sessions pass an external directory so the game folder stays untouched.
+// Opens the log (logDirectory or next to the exe) and optionally a console.
 void Log_Init(bool showConsole, const std::string &logDirectory = std::string());
 void Log_Shutdown();
 
-// printf-style, timestamped, process/thread tagged, written to console (if any)
-// + file + debugger.
+// printf-style; timestamped, written to console, file and debugger.
 void Log(const char *fmt, ...);

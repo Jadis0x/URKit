@@ -1,7 +1,6 @@
 #pragma once
 
-// FProperty virtuals (hash, Identical, value ops) as the engine's set helpers
-// use them. Slots are measured once from function bodies and probes.
+// FProperty virtuals (hash, Identical, value ops); slots measured once.
 
 #include "unreal_property_offsets.h"
 #include "unreal_property_values.h"
@@ -28,19 +27,16 @@ class PropertyVirtuals {
     std::int32_t HashSlot();
     std::int32_t IdenticalSlot();
 
-    // The engine's GetValueTypeHash of the value; none when the property has no
-    // hash (CPF_HasGetValueTypeHash) or the slot is not proven.
+    // Engine GetValueTypeHash; none without CPF_HasGetValueTypeHash or a proven slot.
     std::optional<std::uint32_t> Hash(const PropertyInfo &property, const std::uint8_t *value);
     // The engine's Identical(a, b, 0).
     std::optional<bool> Identical(const PropertyInfo &property, const std::uint8_t *a, const std::uint8_t *b);
 
     // InitializeValue and CopyValues, measured with the hash.
     bool ValueOpsReady();
-    // One value of a property whose ArrayDim is 1, made on zeroed bytes as the
-    // engine makes it: a struct's C++ constructor (its vtable) and defaults included.
+    // Constructs one value (ArrayDim 1) on zeroed bytes, as the engine does.
     bool Initialize(const PropertyInfo &property, std::uint8_t *value);
-    // An initialized dest takes a copy of src as the engine's assignment makes
-    // it; what src points to is copied, never adopted.
+    // Engine assignment into an initialized dest; deep copy.
     bool Copy(const PropertyInfo &property, std::uint8_t *dest, const std::uint8_t *src);
 
   private:

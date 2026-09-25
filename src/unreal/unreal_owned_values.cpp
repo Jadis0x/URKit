@@ -8,8 +8,7 @@ namespace {
 
 constexpr int kMaxDepth = 16;
 constexpr std::int32_t kMaxFields = 4096;
-// FScriptDelegate: a weak object pointer and an FName. Builds with dynamic
-// delegate payloads add a shared pointer, which is not measured here.
+// FScriptDelegate: weak object + FName. Dynamic payload builds aren't handled.
 constexpr std::int32_t kPlainDelegateSize = 16;
 
 Ownership Worst(Ownership a, Ownership b) { return static_cast<int>(a) > static_cast<int>(b) ? a : b; }
@@ -197,8 +196,7 @@ bool OwnedValues::FillNullTexts(const PropertyInfo &info, std::uint8_t *value, b
 std::int32_t OwnedValues::DelegateSize() {
     if (const std::int32_t known = delegateSize_.load(std::memory_order_acquire); known >= 0)
         return known;
-    // Any reflected single-cast delegate names FScriptDelegate's size; the timer
-    // library's has existed since UE4.
+    // Size from any reflected single-cast delegate (the timer library's always exists).
     std::int32_t size = 0;
     const Address library = finder_->FindInOuter("KismetSystemLibrary", "/Script/Engine");
     const Address function =
@@ -369,8 +367,7 @@ bool OwnedValues::Initialize(const PropertyInfo &info, std::uint8_t *value, int 
         return Fail("a value is nested too deeply");
     if (info.kind == PropertyKind::Text)
         return engine_->MakeEmptyText(value) ? true : Fail(engine_->Failure());
-    // A struct as the engine makes one: its C++ constructor (a vtable, native
-    // defaults) and every member, texts included.
+    // Constructed like the engine does: C++ ctor (vtable, defaults) plus every member.
     if (info.kind == PropertyKind::Struct && containers_.Virtuals().Initialize(info, value))
         return true;
     if (info.kind != PropertyKind::Struct || !NeedsInitialize(info, depth))

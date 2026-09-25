@@ -1,7 +1,6 @@
 #pragma once
 
-// Cheap Unreal check before the bootstrap scan: UBT's version resource, else its
-// directory layout. A claim, not proof; also picks which modules to scan.
+// Cheap Unreal check (version resource, else UBT layout); also picks modules to scan.
 
 #include "unreal_memory.h"
 #include "unreal_module.h"
@@ -71,12 +70,10 @@ struct UnrealPresence {
 // Version resource of a mapped image; empty when it carries none.
 std::string ReadModuleVersionString(const MemoryReader &reader, Address moduleBase);
 
-// Handles "++UE5+Release-5.8-CL-56702186" and "5.3.2-29314046+++UE5+Release-5.3";
-// anything else stays in branch with nothing claimed.
+// Parses "++UE5+Release-5.8-CL-..." and "5.3.2-...+++UE5+Release-5.3"; else nothing claimed.
 EngineVersion ParseEngineVersion(const std::string &text);
 
-// From FEngineVersion's constructor stores, for custom branches. X.0 is never
-// claimed: `mov dword [x], 5` is too common.
+// From FEngineVersion constructor stores. X.0 is never claimed (too common).
 EngineVersion FindVersionInCode(const MemoryReader &reader, std::span<const ScanRegion> code, InstructionLength length);
 
 // "<Target>-Core/CoreUObject/Engine.dll": the modules a modular build's reflection lives in.

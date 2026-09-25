@@ -173,8 +173,7 @@ class HookSet {
             URK::log("[hooks][ERROR] HookSet::add rejected: capacity reached (max_entries).");
             return false;
         }
-        // attach()/attach_ex() below already log the specific rejection
-        // reason (null args, missing backend, ABI mismatch, ...).
+        // attach()/attach_ex() already log the reason.
         if (!URK::hooks::attach(original, detour))
             return false;
         entries_[count_++] = {original, detour};

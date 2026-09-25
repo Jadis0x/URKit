@@ -1,5 +1,4 @@
-// mod/ui/highlight.h for Unreal: screen-space overlays only. World projection
-// needs a camera read the Unreal SDK does not offer yet.
+// mod/ui/highlight.h for Unreal: screen-space only (no camera API yet).
 
 std::string UnrealHighlightModule() {
     return R"URK(#pragma once

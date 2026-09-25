@@ -1,7 +1,7 @@
 #pragma once
 
-// Finds GUObjectArray and FNamePool from code anchors or by scanning data. Accepted
-// only as a pair: the array's objects must read back through the pool as names.
+// Finds GUObjectArray and FNamePool from code anchors or a data scan.
+// Accepted only as a pair whose objects name themselves through the pool.
 
 #include "unreal_code_anchors.h"
 #include "unreal_module.h"
@@ -16,16 +16,14 @@
 
 namespace URK::Unreal {
 
-// A calibrated pair plus what was measured through it. The reader must outlive
-// it, as it does for the array and the name table held here.
+// A calibrated pair; the reader must outlive it.
 struct Runtime {
     Address objectArrayAddress;
     Address nameTableAddress;
     ObjectArray objects;
     NameTable names;
     ObjectOffsets header;
-    // Sampled objects whose names read back as engine identifiers; what the
-    // winning pair was chosen by.
+    // Sampled objects whose names resolved; the pair's score.
     std::int32_t confirmedNames;
 };
 
@@ -43,8 +41,7 @@ std::optional<Runtime> BootstrapRuntime(const MemoryReader &reader, std::span<co
 // Pairs candidates found from code; cheap enough to poll until the engine is up.
 std::optional<Runtime> BootstrapAnchored(const MemoryReader &reader, const GlobalCandidates &candidates);
 
-// Why these candidates make no pair: which ones fail to resolve and why, or
-// what the names read as. One finding per line, for a bootstrap that gave up.
+// Why the candidates make no pair, one finding per line.
 std::vector<std::string> ExplainNoPair(const MemoryReader &reader, std::span<const Address> arrays,
                                        std::span<const Address> tables);
 

@@ -10,8 +10,7 @@
 
 #include <windows.h>
 
-// Forced into loader.cpp so native mod DLL loads are registered without
-// widening the public SDK ABI or touching the loader's C ABI table.
+// Forced into loader.cpp to track mod DLL loads without changing the SDK ABI.
 extern "C" HMODULE WINAPI URK_LoadLibraryExA(LPCSTR fileName, HANDLE file, DWORD flags);
 extern "C" BOOL WINAPI URK_FreeLibrary(HMODULE module);
 

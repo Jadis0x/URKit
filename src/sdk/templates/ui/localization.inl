@@ -48,6 +48,7 @@ inline const Dictionary &english() {
         {"widget.enabled", "Enabled"},
         {"widget.disabled", "Disabled"},
         {"example.key_code", "Key code: {code}"},
+        {"menu.hint", "{name}: press {key} for the menu"},
     };
     return values;
 }
@@ -405,7 +406,8 @@ std::string EnglishLocaleModule() {
   "config.language": "Language",
   "widget.enabled": "Enabled",
   "widget.disabled": "Disabled",
-  "example.key_code": "Key code: {code}"
+  "example.key_code": "Key code: {code}",
+  "menu.hint": "{name}: press {key} for the menu"
 }
 )URK";
 }
@@ -422,7 +424,8 @@ std::string TurkishLocaleModule() {
   "config.detached_viewports": "Ayrık pencereler",
   "config.localization": "Yerelleştirme", "config.enable_localization": "Yerelleştirmeyi etkinleştir",
   "widget.enabled": "Açık", "widget.disabled": "Kapalı",
-  "example.key_code": "Tuş kodu: {code}"
+  "example.key_code": "Tuş kodu: {code}",
+  "menu.hint": "{name}: menü için {key} tuşuna bas"
 }
 )URK";
 }
@@ -439,7 +442,8 @@ std::string JapaneseLocaleModule() {
   "config.detached_viewports": "分離ウィンドウ",
   "config.localization": "ローカライゼーション", "config.enable_localization": "ローカライゼーションを有効化",
   "widget.enabled": "有効", "widget.disabled": "無効",
-  "example.key_code": "キーコード: {code}"
+  "example.key_code": "キーコード: {code}",
+  "menu.hint": "{name}: {key} キーでメニューを開く"
 }
 )URK";
 }
@@ -456,7 +460,8 @@ std::string ChineseLocaleModule() {
   "config.detached_viewports": "分离窗口",
   "config.localization": "本地化", "config.enable_localization": "启用本地化",
   "widget.enabled": "已启用", "widget.disabled": "已禁用",
-  "example.key_code": "按键代码: {code}"
+  "example.key_code": "按键代码: {code}",
+  "menu.hint": "{name}: 按 {key} 打开菜单"
 }
 )URK";
 }
@@ -473,7 +478,8 @@ std::string RussianLocaleModule() {
   "config.detached_viewports": "Отдельные окна",
   "config.localization": "Локализация", "config.enable_localization": "Включить локализацию",
   "widget.enabled": "Вкл.", "widget.disabled": "Выкл.",
-  "example.key_code": "Код клавиши: {code}"
+  "example.key_code": "Код клавиши: {code}",
+  "menu.hint": "{name}: нажмите {key}, чтобы открыть меню"
 }
 )URK";
 }
@@ -490,7 +496,8 @@ std::string UkrainianLocaleModule() {
   "config.detached_viewports": "Окремі вікна",
   "config.localization": "Локалізація", "config.enable_localization": "Увімкнути локалізацію",
   "widget.enabled": "Увімк.", "widget.disabled": "Вимк.",
-  "example.key_code": "Код клавіші: {code}"
+  "example.key_code": "Код клавіші: {code}",
+  "menu.hint": "{name}: натисніть {key}, щоб відкрити меню"
 }
 )URK";
 }
@@ -507,7 +514,8 @@ std::string SpanishLocaleModule() {
   "config.detached_viewports": "Ventanas separadas",
   "config.localization": "Localización", "config.enable_localization": "Habilitar localización",
   "widget.enabled": "Activado", "widget.disabled": "Desactivado",
-  "example.key_code": "Código de tecla: {code}"
+  "example.key_code": "Código de tecla: {code}",
+  "menu.hint": "{name}: pulsa {key} para abrir el menú"
 }
 )URK";
 }
@@ -524,7 +532,8 @@ std::string FrenchLocaleModule() {
   "config.detached_viewports": "Fenêtres détachées",
   "config.localization": "Localisation", "config.enable_localization": "Activer la localisation",
   "widget.enabled": "Activé", "widget.disabled": "Désactivé",
-  "example.key_code": "Code de touche : {code}"
+  "example.key_code": "Code de touche : {code}",
+  "menu.hint": "{name} : appuyez sur {key} pour ouvrir le menu"
 }
 )URK";
 }

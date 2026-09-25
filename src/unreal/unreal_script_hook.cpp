@@ -172,8 +172,7 @@ void ScriptCallHook::Observe(Observer observer, void *user) {
     observer_.store(observer, std::memory_order_release);
 }
 
-// FFrame is Node, Object, Code, Locals (4.25-5.8), matched against this thread's
-// ProcessEvent call. Parameters missing from Locals stops measuring for good.
+// FFrame is Node, Object, Code, Locals (4.25-5.8), matched against ProcessEvent's call.
 void ScriptCallHook::Measure(void *context, const std::uint8_t *stack) {
     const ProcessEventHook::Call *call = ProcessEventHook::CurrentCall();
     if (!call || !g_reader)
