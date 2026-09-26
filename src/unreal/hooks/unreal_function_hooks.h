@@ -54,6 +54,10 @@ class FunctionHooks {
     std::uint64_t Add(Address function, Callback before, Callback after, void *user);
     // True once no callback runs again; false on timeout (user must stay alive).
     bool Remove(std::uint64_t id, std::uint32_t timeoutMs = kDefaultRemoveTimeoutMs);
+    // Whether any hook is on exactly this function.
+    bool Hooked(Address function) const;
+    // Inside a Quiet on this thread.
+    static bool QuietHere();
 
     // False when a before callback skips the body. Every Before needs its After.
     bool Before(Pending &pending, Address object, Address function, void *parms, void *result);

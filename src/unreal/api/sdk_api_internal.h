@@ -4,6 +4,7 @@
 
 #include "unreal/unreal_sdk_api.h"
 #include "unreal/hooks/unreal_object_life_hook.h"
+#include "unreal/hooks/unreal_native_call_hook.h"
 #include "unreal/hooks/unreal_script_hook.h"
 #include "unreal/reflection/unreal_enums.h"
 #include "unreal/values/unreal_owned_values.h"
@@ -88,6 +89,7 @@ struct ModFunctionHook {
 inline constexpr const char *kListenerFunction = "ExecuteUbergraph";
 
 extern HookInstaller g_installer;
+extern std::atomic<bool> g_nativeFromBlueprint;
 extern std::atomic<LogSink> g_log;
 extern std::mutex g_hookMutex;
 extern bool g_loaderHold;

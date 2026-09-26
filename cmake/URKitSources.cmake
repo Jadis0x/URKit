@@ -100,6 +100,7 @@ set(URK_UNREAL_SRC
     ${URK_SRC_DIR}/unreal/api/sdk_api_subscriptions.cpp
     ${URK_SRC_DIR}/unreal/api/sdk_api_table.cpp
     ${URK_SRC_DIR}/unreal/unreal_engine.cpp
+    ${URK_SRC_DIR}/unreal/hooks/unreal_native_call_hook.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_containers.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_delegate_virtuals.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_engine_calls.cpp

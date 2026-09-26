@@ -103,6 +103,8 @@ const URK_UnrealApi *UnrealSdkApi(const HookInstaller &installer) {
 
 void UnrealSdk_SetLog(LogSink log) { g_log.store(log, std::memory_order_release); }
 
+void UnrealSdk_SetNativeFromBlueprint(bool enabled) { g_nativeFromBlueprint.store(enabled, std::memory_order_release); }
+
 void UnrealSdk_ReleasePending() {
     if (!UnrealEngine::Instance().Available() || !OnGameThread())
         return;

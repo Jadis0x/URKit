@@ -671,6 +671,7 @@ bool RunUnreal(Config &config) {
     }
 
     UnrealSdk_SetLog(&UnrealSdkLog);
+    UnrealSdk_SetNativeFromBlueprint(config.unrealNativeFromBlueprint && !config.safeMode);
     const URK_UnrealApi *api = UnrealSdkApi(installer);
     const volatile std::uint64_t *frameCounter = nullptr;
     const bool gameLoop = PrepareGameLoop(engine, &frameCounter);

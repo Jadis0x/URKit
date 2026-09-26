@@ -194,6 +194,32 @@ std::mutex g_modHooksMutex;
 
 std::unordered_map<std::uint64_t, std::unique_ptr<ModFunctionHook>> g_modHooks;
 
+std::atomic<bool> g_nativeFromBlueprint{false};
+
+// A native function Blueprint calls directly never passes ProcessEvent: route those calls through it.
+static void RouteNativeCalls(UnrealEngine &engine, const std::shared_ptr<const FunctionInfo> &info) {
+    if (!g_nativeFromBlueprint.load(std::memory_order_acquire) || !info->Native())
+        return;
+    const Address function = info->function;
+    const std::string refusal =
+        NativeCallHook::Refusal(*info, engine.Finder().NameOf(engine.Finder().OuterOf(function)).value_or(""));
+    if (!refusal.empty()) {
+        Report(function, "hooked through ProcessEvent only; its calls from Blueprint are not seen (" + refusal + ")");
+        return;
+    }
+    NativeCallHook &natives = NativeCallHook::Instance();
+    const Address image = MainModuleBase();
+    Containers &stores = Serve().owned.Stores();
+    if (!natives.Prepare(engine.Reader(), ModuleDataRegions(engine.Reader(), image),
+                         ModuleCodeRegions(engine.Reader(), image), engine.ProcessEvent().baseImplementation,
+                         engine.Functions().func, Serve().owned, stores.Virtuals())) {
+        Report(kNullAddress, "native calls from Blueprint are not hooked: " + natives.Failure());
+        return;
+    }
+    if (!natives.Attach(info))
+        Report(function, "its calls from Blueprint could not be routed");
+}
+
 std::uint64_t Unreal_FunctionHookAdd(URK_UnrealObject function, URK_UnrealFunctionHookFn before,
                                      URK_UnrealFunctionHookFn after, void *userData) {
     UnrealEngine &engine = UnrealEngine::Instance();
@@ -220,8 +246,10 @@ std::uint64_t Unreal_FunctionHookAdd(URK_UnrealObject function, URK_UnrealFuncti
     const std::lock_guard lock(g_modHooksMutex);
     const std::uint64_t id = FunctionHooks::Instance().Add(function, before ? &ModHookCallback : nullptr,
                                                            after ? &ModHookCallback : nullptr, hook.get());
-    if (id != 0)
+    if (id != 0) {
+        RouteNativeCalls(engine, hook->info);
         g_modHooks.emplace(id, std::move(hook));
+    }
     return id;
 }
 
@@ -241,6 +269,8 @@ int Unreal_FunctionHookRemove(std::uint64_t id) {
         hook.release();
         return 0;
     }
+    if (!FunctionHooks::Instance().Hooked(hook->function))
+        NativeCallHook::Instance().Detach(hook->function);
     return 1;
 }
 

@@ -10,6 +10,8 @@ struct Config {
     std::string modsDir = "Mods";
     // [Unreal] DumpTypes: write reflected classes for urk-sdk's typed headers.
     bool unrealDumpTypes = false;
+    // Hooks also catch native functions Blueprint calls directly; off until proven in games.
+    bool unrealNativeFromBlueprint = false;
     std::string configPath;
     std::vector<std::string> modPaths;
     std::vector<std::string> warnings;

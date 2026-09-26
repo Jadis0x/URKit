@@ -137,6 +137,9 @@ bool UnrealSdk_HoldProcessEventHook();
 using LogSink = void (*)(const char *message);
 void UnrealSdk_SetLog(LogSink log);
 
+// Hooks on native functions also take their calls straight from Blueprint bytecode.
+void UnrealSdk_SetNativeFromBlueprint(bool enabled);
+
 // Game thread, per frame: releases frames other threads destroyed.
 void UnrealSdk_ReleasePending();
 

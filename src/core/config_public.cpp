@@ -84,6 +84,8 @@ void ReadPublicConfig(const std::string &ini, Config &c) {
     GetPrivateProfileStringA(section.c_str(), "ModsDir", c.modsDir.c_str(), buf, sizeof(buf), ini.c_str());
     c.modsDir = buf;
     c.unrealDumpTypes = GetPrivateProfileIntA("Unreal", "DumpTypes", c.unrealDumpTypes, ini.c_str()) != 0;
+    c.unrealNativeFromBlueprint =
+        GetPrivateProfileIntA("Unreal", "NativeFromBlueprint", c.unrealNativeFromBlueprint, ini.c_str()) != 0;
 }
 
 void NormalizeAndClamp(Config &c) {
