@@ -70,6 +70,8 @@ struct Type {
     std::vector<Member> members;
     std::vector<Function> functions;
     std::string ident;
+    // Under types/, mirroring the package: "Engine", "Game/Blueprints/Player".
+    std::string folder;
 };
 
 using TypeMap = std::map<std::string, Type>;
@@ -79,7 +81,15 @@ bool CompilerMember(const Type &owner, const Member &member) {
     return owner.package.rfind("/Script/", 0) != 0 && !(member.shape.flags & kPropertyBlueprintVisible);
 }
 bool CompilerFunction(const Function &function) {
-    return function.name.rfind("EvaluateGraphExposedInputs_", 0) == 0;
+    const std::string &name = function.name;
+    const auto starts = [&name](const char *prefix) { return name.rfind(prefix, 0) == 0; };
+    const auto ends = [&name](const std::string &suffix) {
+        return name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    // Input and bound-event thunks, timeline callbacks, async-load continuations.
+    return starts("EvaluateGraphExposedInputs_") || name.find("K2Node_") != std::string::npos ||
+           starts("BndEvt__") || starts("OnLoaded_") || ends("__UpdateFunc") || ends("__FinishedFunc") ||
+           ends("__EventFunc");
 }
 
 std::string Key(const std::string &package, const std::string &name) { return package + '\t' + name; }
@@ -243,7 +253,7 @@ const std::unordered_set<std::string> &Reserved() {
         "FALSE", "CONST", "VOID", "TEXT", "PURE", "THIS", "NULL", "errno", "assert", "offsetof",
         "handle", "valid", "name", "klass", "outer", "is_a", "is_child_of", "default_object", "function", "describe",
         "get_int", "get_float", "get_bool", "get_object", "get_name", "get_string", "set_int", "set_float",
-        "set_bool", "set_object", "static_class", "cast", "instances", "class_default", "kName", "kPackage",
+        "set_bool", "set_object", "static_class", "cast", "instances", "class_default", "load_class", "kName", "kPackage",
         "kSize", "kFields", "value", "UrkR", "std", "URK"};
     return words;
 }
@@ -282,7 +292,59 @@ std::string Unique(std::string base, std::set<std::string> &taken, const std::st
     return candidate;
 }
 
-// Classes and structs share one namespace and one folder (case-insensitive).
+// A package path segment as a folder name: kept as spelled where Windows allows it.
+std::string FolderSegment(const std::string &segment) {
+    std::string out;
+    for (const char ch : segment) {
+        const bool keep = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+                          ch == '_' || ch == '-';
+        out += keep ? ch : '_';
+    }
+    static const std::set<std::string> reserved = {"con", "prn", "aux", "nul", "com1", "com2", "com3", "com4",
+                                                   "lpt1", "lpt2", "lpt3", "lpt4"};
+    return reserved.count(Lower(out)) ? out + '_' : out;
+}
+
+// "/Script/Engine" is the Engine module; "/Game/Doors/BP_Door" lives in Game/Doors.
+std::string FolderOf(const std::string &package) {
+    std::vector<std::string> segments;
+    std::string segment;
+    for (const char ch : package + '/') {
+        if (ch != '/') {
+            segment += ch;
+        } else if (!segment.empty()) {
+            segments.push_back(FolderSegment(segment));
+            segment.clear();
+        }
+    }
+    if (segments.size() >= 2 && segments[0] == "Script")
+        return segments[1];
+    if (!segments.empty())
+        segments.pop_back();
+    std::string folder;
+    for (const std::string &part : segments)
+        folder += (folder.empty() ? "" : "/") + part;
+    return folder.empty() ? "Other" : folder;
+}
+
+// One spelling per folder: Windows would merge "Blueprints" and "blueprints" anyway.
+void AssignFolders(TypeMap &types) {
+    std::map<std::string, std::string> spelling;
+    for (auto &[key, entry] : types) {
+        std::string folder = FolderOf(entry.package);
+        std::string canonical;
+        std::size_t start = 0;
+        while (start <= folder.size()) {
+            const std::size_t slash = std::min(folder.find('/', start), folder.size());
+            const std::string prefix = canonical + (canonical.empty() ? "" : "/") + folder.substr(start, slash - start);
+            canonical = spelling.try_emplace(Lower(prefix), prefix).first->second;
+            start = slash + 1;
+        }
+        entry.folder = canonical;
+    }
+}
+
+// Classes and structs share one namespace, and file names stay unique across folders (case-insensitive).
 void AssignIdents(TypeMap &types) {
     std::set<std::string> takenLower;
     for (auto &[key, entry] : types) {
@@ -386,7 +448,10 @@ struct Layout {
 
 class Generator {
   public:
-    explicit Generator(const TypeMap &types) : types_(types) {}
+    explicit Generator(const TypeMap &types) : types_(types) {
+        for (const auto &[key, entry] : types)
+            byIdent_.emplace(entry.ident, &entry);
+    }
 
     Header Emit(const Type &entry) {
         if (entry.isEnum)
@@ -714,6 +779,17 @@ class Generator {
         return layout;
     }
 
+    // Header paths are relative, so they hold wherever the project keeps sdk/.
+    static std::string Include(const Type &from, const std::string &path) {
+        return std::filesystem::path(path).lexically_relative(from.folder).generic_string();
+    }
+    static std::string RuntimeInclude(const Type &from) { return Include(from, "../unreal_runtime.h"); }
+    std::string IncludeOf(const Type &from, const std::string &ident) const {
+        const auto found = byIdent_.find(ident);
+        return Include(from, (found != byIdent_.end() ? found->second->folder : from.folder) + "/" + ident + ".h");
+    }
+    static std::string FileOf(const Type &entry) { return entry.folder + "/" + entry.ident + ".h"; }
+
     static std::string Preamble(const Type &entry, const std::string &what) {
         return "// Generated by urk-sdk from " + std::string(kDumpFileName) + "; regenerated with it, do not edit.\n" +
                "// " + Escape(entry.name) + " in " + Escape(entry.package) + what + "\n#pragma once\n\n";
@@ -724,9 +800,9 @@ class Generator {
         std::ostringstream out;
         out << Preamble(entry, ": a value of " + std::to_string(layout.size) +
                                    " bytes, checked against the running game before any copy.");
-        out << "#include \"../unreal_runtime.h\"\n";
+        out << "#include \"" << RuntimeInclude(entry) << "\"\n";
         for (const std::string &include : layout.includes)
-            out << "#include \"" << include << ".h\"\n";
+            out << "#include \"" << IncludeOf(entry, include) << "\"\n";
         out << "\nnamespace URK::unreal::types {\n";
         for (const std::string &forward : layout.forwards)
             out << "class " << forward << ";\n";
@@ -755,14 +831,14 @@ class Generator {
         for (const std::string &offset : layout.offsets)
             out << "static_assert(offsetof(" << entry.ident << ", " << offset << ");\n";
         out << "} // namespace URK::unreal::types\n";
-        return {entry.ident + ".h", out.str()};
+        return {FileOf(entry), out.str()};
     }
 
     // Names only; resolved in the running game, so renumbering needs no rebuild.
     Header EmitEnum(const Type &entry) {
         std::ostringstream out;
         out << Preamble(entry, ": value names only, each looked up in the running game.");
-        out << "#include \"../unreal_runtime.h\"\n\nnamespace URK::unreal::types {\n\n"
+        out << "#include \"" << RuntimeInclude(entry) << "\"\n\nnamespace URK::unreal::types {\n\n"
             << "struct " << entry.ident << " : " << kRuntime << "Enum<" << entry.ident << "> {\n"
             << "    using Enum::Enum;\n"
             << "    static constexpr const char *kName = \"" << Escape(entry.name) << "\";\n"
@@ -774,7 +850,7 @@ class Generator {
                 << Escape(value) << "\"); }\n";
         }
         out << "};\n} // namespace URK::unreal::types\n";
-        return {entry.ident + ".h", out.str()};
+        return {FileOf(entry), out.str()};
     }
 
     struct ClassContext {
@@ -830,9 +906,9 @@ class Generator {
         const std::string base = super ? kTypes + super->ident : std::string(kRuntime) + "Object";
         std::ostringstream out;
         out << Preamble(entry, "")
-            << "#include \"" << (super ? super->ident + ".h" : std::string("../unreal_runtime.h")) << "\"\n";
+            << "#include \"" << (super ? IncludeOf(entry, super->ident) : RuntimeInclude(entry)) << "\"\n";
         for (const std::string &include : context.includes)
-            out << "#include \"" << include << ".h\"\n";
+            out << "#include \"" << IncludeOf(entry, include) << "\"\n";
         out << "\nnamespace URK::unreal::types {\n";
         for (const std::string &ident : context.forwards) {
             if (ident != entry.ident && (!super || ident != super->ident))
@@ -848,7 +924,7 @@ class Generator {
         if (!skipped.empty())
             out << Wrapped("No typed form yet: ", skipped);
         out << "};\n} // namespace URK::unreal::types\n";
-        return {entry.ident + ".h", out.str()};
+        return {FileOf(entry), out.str()};
     }
 
     bool EmitFunction(const Type &owner, const Function &function, std::set<std::string> &taken,
@@ -979,8 +1055,60 @@ class Generator {
     }
 
     const TypeMap &types_;
+    std::map<std::string, const Type *> byIdent_;
     std::map<const Type *, Layout> layouts_;
 };
+
+// The game's module is named after its project folder: <Project>/Binaries/Win64/<dump>.
+std::string ProjectOf(const std::filesystem::path &dumpPath) {
+    const std::filesystem::path win64 = dumpPath.parent_path();
+    const std::filesystem::path binaries = win64.parent_path();
+    if (Lower(binaries.filename().string()) != "binaries")
+        return {};
+    return binaries.parent_path().filename().string();
+}
+
+// Every folder with the types it holds, the game's own first.
+std::string Index(const TypeMap &types, const std::vector<const Type *> &emitted, const std::string &project) {
+    struct Folder {
+        std::vector<std::string> classes, structs, enums;
+    };
+    std::map<std::string, Folder> game, engine;
+    for (const Type *entry : emitted) {
+        const bool own = entry->package.rfind("/Game/", 0) == 0 ||
+                         (!project.empty() && Lower(entry->package) == Lower("/Script/" + project));
+        Folder &folder = (own ? game : engine)[entry->folder];
+        (entry->isEnum ? folder.enums : entry->isStruct ? folder.structs : folder.classes).push_back(entry->ident);
+    }
+    std::ostringstream out;
+    out << "# Types\n\nGenerated by urk-sdk from `" << kDumpFileName << "`; regenerated with it, do not edit. "
+        << types.size() << " types, " << emitted.size() << " with a header. Folders mirror the package: "
+        << "`/Script/Engine` is `Engine/`, `/Game/Doors/BP_Door` is `Game/Doors/`.\n\n"
+        << "```cpp\n#include \"sdk/unreal/types/Engine/Character.h\"\n```\n";
+    const auto section = [&out](const char *title, const std::map<std::string, Folder> &folders) {
+        if (folders.empty())
+            return;
+        out << "\n## " << title << "\n";
+        for (const auto &[name, folder] : folders) {
+            out << "\n### " << name << "\n";
+            const auto list = [&out](const char *kind, std::vector<std::string> names) {
+                if (names.empty())
+                    return;
+                std::sort(names.begin(), names.end());
+                out << "\n" << kind << " (" << names.size() << "): ";
+                for (std::size_t i = 0; i < names.size(); ++i)
+                    out << (i ? ", " : "") << names[i];
+                out << "\n";
+            };
+            list("Classes", folder.classes);
+            list("Structs", folder.structs);
+            list("Enums", folder.enums);
+        }
+    };
+    section(project.empty() ? "Game" : ("Game: " + project).c_str(), game);
+    section("Engine and plugins", engine);
+    return out.str();
+}
 
 } // namespace
 
@@ -991,14 +1119,19 @@ bool Build(const std::filesystem::path &dumpPath, std::vector<Header> *headers, 
     if (!Parse(dumpPath, &types, &message))
         return false;
     AssignIdents(types);
+    AssignFolders(types);
 
     Generator generator(types);
     headers->clear();
-    headers->reserve(types.size());
+    headers->reserve(types.size() + 1);
+    std::vector<const Type *> emitted;
     for (const auto &[key, entry] : types) {
-        if (generator.Emittable(entry))
-            headers->push_back(generator.Emit(entry));
+        if (!generator.Emittable(entry))
+            continue;
+        headers->push_back(generator.Emit(entry));
+        emitted.push_back(&entry);
     }
+    headers->push_back({"INDEX.md", Index(types, emitted, ProjectOf(dumpPath))});
     return true;
 }
 

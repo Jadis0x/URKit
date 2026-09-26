@@ -35,6 +35,9 @@ struct TypeDumpImage {
     std::uint32_t loaderStamp = 0;
 };
 
+// Monotonic milliseconds (QPC); the loader's frame budgets use the same clock.
+double NowMilliseconds();
+
 struct TypeDumpSources {
     const ObjectFinder &finder;
     const StructOffsets &structs;
@@ -56,8 +59,10 @@ class TypeDumper {
 
     // Game thread, on BeginPlay. Returns the number of types queued.
     std::size_t Scan(const std::string &label, const EnumNames *enums);
-    // Game thread, every frame.
-    void Step(double budgetMs);
+    // Game thread, every frame; more: types are still coming (DescribeNow), so hold the write.
+    void Step(double budgetMs, bool more = false);
+    // Describes one type at once, before a map change can free it (a class just loaded). Game thread.
+    bool DescribeNow(Address object);
     bool Idle() const { return queue_.empty() && ready_.empty(); }
 
   private:
@@ -69,11 +74,14 @@ class TypeDumper {
     };
     struct Seen {
         std::uint64_t name = 0;
+        Address outer = kNullAddress;
         std::uint8_t kind = 0;
         std::string key;
     };
 
     std::uint64_t NameValue(Address object) const;
+    Address OuterValue(Address object) const;
+    void Describe(const Queued &item);
     std::uint8_t KindOf(Address object);
     void Flush();
 

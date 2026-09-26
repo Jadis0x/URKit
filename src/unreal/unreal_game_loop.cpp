@@ -211,6 +211,7 @@ WorldState GameLoop::CurrentWorld() {
         state.begunPlay = !gameState_.info.has_value();
         return state;
     }
+    state.gameState = gameState;
     state.begunPlay = ReadFlag(gameState, begunPlay_, "bReplicatedHasBegunPlay").value_or(true);
     return state;
 }

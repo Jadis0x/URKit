@@ -52,11 +52,14 @@ bool InstallerDetach(void *, void *handle) {
 struct GameLoopState {
     std::unique_ptr<URK::Unreal::GameLoop> loop;
     URK::Unreal::Address world = URK::Unreal::kNullAddress;
+    URK::Unreal::Address gameState = URK::Unreal::kNullAddress;
     bool announced = false;
     DWORD thread = 0;
     std::unique_ptr<URK::Unreal::TypeDumper> dumper;
     // Blueprint classes to load for the dump, a few per frame.
     bool blueprintsListed = false;
+    URK_UnrealObject kismet = 0;
+    URK_UnrealObject loadClass = 0;
     std::vector<std::string> blueprints;
     std::size_t blueprintNext = 0;
     std::size_t blueprintsLoaded = 0;
@@ -87,13 +90,6 @@ URK::Unreal::TypeDumpImage MainImage(const URK::Unreal::EngineVersion &version) 
                                 ->FileHeader.TimeDateStamp;
     }
     return image;
-}
-
-double NowMs() {
-    LARGE_INTEGER now{}, frequency{};
-    QueryPerformanceCounter(&now);
-    QueryPerformanceFrequency(&frequency);
-    return 1000.0 * static_cast<double>(now.QuadPart) / static_cast<double>(frequency.QuadPart);
 }
 
 std::string PlaceText(const URK_UnrealApi *api, const URK_UnrealPlace &place) {
@@ -135,23 +131,24 @@ std::vector<std::string> ListBlueprintClasses(const URK_UnrealApi *api) {
     return paths;
 }
 
-bool LoadBlueprintClass(const URK_UnrealApi *api, const std::string &path) {
-    const URK_UnrealObject kismet = api->find_object("KismetSystemLibrary");
-    const URK_UnrealObject load = kismet ? api->find_function(kismet, "LoadClassAsset_Blocking") : 0;
+URK_UnrealObject LoadBlueprintClass(const URK_UnrealApi *api, URK_UnrealObject kismet, URK_UnrealObject load,
+                                    const std::string &path) {
     URK_UnrealCallFrame *frame = load ? api->call_frame_create(load) : nullptr;
     if (!frame)
-        return false;
+        return 0;
     URK_UnrealPlace soft{};
     soft.frame = frame;
     soft.member = "AssetClass";
     URK_UnrealObject result = 0;
-    const bool loaded = api->place_write_text(&soft, path.c_str()) && api->call(api->default_object_of(kismet), frame) &&
-                        api->call_frame_get(frame, "ReturnValue", &result, sizeof(result)) && result;
+    if (!api->place_write_text(&soft, path.c_str()) || !api->call(api->default_object_of(kismet), frame) ||
+        !api->call_frame_get(frame, "ReturnValue", &result, sizeof(result)))
+        result = 0;
     api->call_frame_destroy(frame);
-    return loaded;
+    return result;
 }
 
-// Per frame, so neither loading nor describing stalls the game.
+// Per frame, so neither loading nor describing stalls the game. One blocking load can run past
+// its budget (the engine loads synchronously); the budget only stops the next one starting.
 constexpr double kBlueprintBudgetMs = 3.0;
 constexpr double kDumpBudgetMs = 2.0;
 
@@ -161,27 +158,35 @@ void ScanTypes(const char *map) {
         g_gameLoop.blueprintsListed = true;
         g_gameLoop.blueprints = ListBlueprintClasses(g_gameLoop.api);
         g_gameLoop.blueprintsStarted = GetTickCount64();
+        g_gameLoop.kismet = g_gameLoop.api->find_object("KismetSystemLibrary");
+        g_gameLoop.loadClass =
+            g_gameLoop.kismet ? g_gameLoop.api->find_function(g_gameLoop.kismet, "LoadClassAsset_Blocking") : 0;
     }
     g_gameLoop.dumper->Scan(map, URK::Unreal::UnrealSdk_Enums());
 }
 
-// Game thread, every frame: Blueprint loads first, then queued types.
+// Game thread, every frame: some Blueprint loads, and some queued types, side by side.
 void StepTypes() {
     GameLoopState &state = g_gameLoop;
     if (state.blueprintNext < state.blueprints.size()) {
-        const double started = NowMs();
+        const double started = URK::Unreal::NowMilliseconds();
         do {
-            if (LoadBlueprintClass(state.api, state.blueprints[state.blueprintNext++]))
+            const URK_UnrealObject loaded =
+                LoadBlueprintClass(state.api, state.kismet, state.loadClass, state.blueprints[state.blueprintNext++]);
+            // Described now: nothing holds it, and a map change would free it before any scan.
+            if (loaded) {
                 ++state.blueprintsLoaded;
-        } while (state.blueprintNext < state.blueprints.size() && NowMs() - started < kBlueprintBudgetMs);
+                state.dumper->DescribeNow(loaded);
+            }
+        } while (state.blueprintNext < state.blueprints.size() && URK::Unreal::NowMilliseconds() - started < kBlueprintBudgetMs);
         if (state.blueprintNext == state.blueprints.size()) {
             Log("[Unreal] Blueprint classes preloaded for the dump: %zu of %zu listed, in %llums.",
                 state.blueprintsLoaded, state.blueprints.size(), GetTickCount64() - state.blueprintsStarted);
+            // Their structs and enums, while the classes still hold them.
             state.dumper->Scan("preloaded Blueprints", URK::Unreal::UnrealSdk_Enums());
         }
-        return;
     }
-    state.dumper->Step(kDumpBudgetMs);
+    state.dumper->Step(kDumpBudgetMs, state.blueprintNext < state.blueprints.size());
 }
 
 // Announced after BeginPlay so controller and pawn are findable.
@@ -206,12 +211,18 @@ void OnGameFrame(void *) {
     }
 
     const WorldState world = g_gameLoop.loop->CurrentWorld();
-    if (world.world != g_gameLoop.world) {
+    // A reload can land the new world where the old one was: a new game state, or play
+    // stopping, still marks it new.
+    const bool replaced = world.gameState != kNullAddress && g_gameLoop.gameState != kNullAddress &&
+                          world.gameState != g_gameLoop.gameState;
+    if (world.world != g_gameLoop.world || replaced || !world.begunPlay) {
         g_gameLoop.world = world.world;
+        g_gameLoop.gameState = kNullAddress;
         g_gameLoop.announced = false;
     }
     if (!g_gameLoop.announced && world.world != kNullAddress && world.begunPlay) {
         g_gameLoop.announced = true;
+        g_gameLoop.gameState = world.gameState;
         URK_SceneInfo scene{};
         scene.size = sizeof(scene);
         scene.buildIndex = -1;

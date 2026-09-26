@@ -1,7 +1,9 @@
 #include "sdk_generator_contract.h"
 
+#include <chrono>
 #include <filesystem>
 #include <system_error>
+#include <thread>
 
 namespace SdkGenerator {
 namespace {
@@ -53,6 +55,18 @@ bool CopyFileToDestination(const fs::path &from, const fs::path &to, std::string
     return true;
 }
 
+// A scanner still reading freshly written files (antivirus, indexer) makes Windows refuse a
+// directory rename for a moment; a few short retries ride it out.
+void RenameWithRetry(const fs::path &from, const fs::path &to, std::error_code &ec) {
+    for (int attempt = 0;; ++attempt) {
+        ec.clear();
+        fs::rename(from, to, ec);
+        if (!ec || attempt == 20)
+            return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+}
+
 bool MoveDirectoryIntoPlace(const fs::path &from, const fs::path &to, std::string *error) {
     const fs::path backup = to.parent_path() / (to.filename().string() + ".previous");
     std::error_code ec;
@@ -63,16 +77,14 @@ bool MoveDirectoryIntoPlace(const fs::path &from, const fs::path &to, std::strin
         return false;
     }
     if (fs::exists(to, ec)) {
-        ec.clear();
-        fs::rename(to, backup, ec);
+        RenameWithRetry(to, backup, ec);
         if (ec) {
             if (error)
                 *error = "cannot stage previous output " + to.string() + ": " + ec.message();
             return false;
         }
     }
-    ec.clear();
-    fs::rename(from, to, ec);
+    RenameWithRetry(from, to, ec);
     if (ec) {
         std::error_code restore;
         if (fs::exists(backup, restore))

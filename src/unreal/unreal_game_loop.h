@@ -16,6 +16,8 @@ namespace URK::Unreal {
 
 struct WorldState {
     Address world = kNullAddress;
+    // A reload may reuse the world's address; its game state is always a new actor.
+    Address gameState = kNullAddress;
     // GameState->bReplicatedHasBegunPlay; true without a readable game state.
     bool begunPlay = false;
 };

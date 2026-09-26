@@ -215,6 +215,8 @@ std::string UnrealTypeDump() {
     dump += row({"C", "Settings", "/Script/PluginB", "Object", "/Script/CoreUObject"});
     dump += row({"C", "BP Door_C", "/Game/Doors/BP Door", "Actor", "/Script/Engine"});
     dump += row({"P", "Open", "bool", "1", "1", "0", "", ""});
+    dump += row({"F", "Slam", "400"});
+    dump += row({"F", "InpActEvt_Jump_K2Node_InputActionEvent_0", "400"});
     // Struct cases: offsets, bitfields, nesting, objects, byte members, inherit-only.
     const auto field = [&](std::string_view name, std::string_view kind, std::string_view size,
                            std::string_view offset, std::string_view inner = "", std::string_view innerPackage = "",
@@ -239,15 +241,27 @@ std::string ReadText(const fs::path &path);
 
 void CheckUnrealTypes(const GeneratedProject &project) {
     const fs::path types = project.root / "sdk/unreal/types";
-    for (const char *file : {"Object.h", "Actor.h", "Pawn.h", "Settings.h", "Settings_PluginB.h", "BP_Door_C.h"})
+    for (const char *file : {"CoreUObject/Object.h", "Engine/Actor.h", "Engine/Pawn.h", "PluginA/Settings.h",
+                             "PluginB/Settings_PluginB.h", "Game/Doors/BP_Door_C.h", "INDEX.md"})
         Check(fs::is_regular_file(types / file), project.label + ": types/" + file + " is generated");
-    const std::string actor = ReadText(types / "Actor.h");
+    const std::string door = ReadText(types / "Game/Doors/BP_Door_C.h");
+    const std::size_t compiled = door.find("// Blueprint compiler output");
+    Check(door.find("#include \"../../Engine/Actor.h\"") != std::string::npos &&
+              door.find("#include \"../../../unreal_runtime.h\"") == std::string::npos,
+          project.label + ": BP_Door_C.h includes its super across folders");
+    Check(compiled != std::string::npos && door.find("InpActEvt_Jump") > compiled && door.find("Slam()") < compiled,
+          project.label + ": BP_Door_C.h puts compiler-made functions after the authored ones");
+    const std::string index = ReadText(types / "INDEX.md");
+    Check(index.find("### Game/Doors") < index.find("## Engine and plugins") &&
+              index.find("### Engine") != std::string::npos && index.find("BP_Door_C") != std::string::npos,
+          project.label + ": INDEX.md lists the game's folders before the engine's");
+    const std::string actor = ReadText(types / "Engine/Actor.h");
     for (const char *expected : {"class_()", "Actor_()", "name_()", "My_Var()", "My_Var_2()",
                                  "Weights(std::int32_t index)", "No typed form yet: Location (struct).",
                                  "::URK::unreal::StructMember<::URK::unreal::types::Vector> Spot()",
                                  "class Pawn;", "\"Actor\", \"/Script/Engine\""})
         Check(actor.find(expected) != std::string::npos, project.label + ": Actor.h has " + expected);
-    const std::string pawn = ReadText(types / "Pawn.h");
+    const std::string pawn = ReadText(types / "Engine/Pawn.h");
     for (const char *expected : {"template <typename UrkR = ::URK::unreal::types::Actor> UrkR GetController()",
                                  "std::optional<bool> GetBounds(float *Radius)",
                                  "static std::optional<std::int32_t> MakeOne(std::uint8_t Mode",
@@ -259,19 +273,19 @@ void CheckUnrealTypes(const GeneratedProject &project) {
         Check(pawn.find(expected) != std::string::npos, project.label + ": Pawn.h has " + expected);
     Check(pawn.find("OnHit") == std::string::npos && pawn.find("ExecuteUbergraph") == std::string::npos,
           project.label + ": Pawn.h leaves out delegate signatures and the ubergraph");
-    const std::string hit = ReadText(types / "HitLike.h");
+    const std::string hit = ReadText(types / "Engine/HitLike.h");
     for (const char *expected : {"struct alignas(8) HitLike", "std::uint8_t urk_bits_0;", "bool bHit() const",
                                  "void set_bStart(bool value)", "::URK::unreal::types::Vector Location;",
                                  "::URK::unreal::StructObject<::URK::unreal::types::Actor> Actor;",
                                  "static_assert(sizeof(HitLike) == HitLike::kSize);",
                                  "static_assert(offsetof(HitLike, Actor) == 32);", "{\"bStart\", 0, 1, 1, 1, 0, 2, 2}"})
         Check(hit.find(expected) != std::string::npos, project.label + ": HitLike.h has " + expected);
-    const std::string tagged = ReadText(types / "Tagged.h");
+    const std::string tagged = ReadText(types / "Engine/Tagged.h");
     Check(tagged.find("std::uint8_t urk_opaque_Tag[8];") != std::string::npos &&
               tagged.find("std::uint8_t urk_opaque_Items[16];") != std::string::npos &&
               tagged.find("std::int32_t Count;") != std::string::npos,
           project.label + ": Tagged.h keeps names and arrays as bytes");
-    Check(ReadText(types / "VectorNet.h").find("double Z;") != std::string::npos,
+    Check(ReadText(types / "Engine/VectorNet.h").find("double Z;") != std::string::npos,
           project.label + ": VectorNet.h carries its super's members");
 }
 
@@ -386,10 +400,10 @@ void CheckLayout(const GeneratedProject &project) {
 // Every Unreal adapter entry plus the runtime source that includes it.
 constexpr std::string_view kUnrealProbeSource = R"PROBE(
 #include "sdk/unreal/unreal_runtime.h"
-#include "sdk/unreal/types/BP_Door_C.h"
-#include "sdk/unreal/types/Pawn.h"
-#include "sdk/unreal/types/Settings_PluginB.h"
-#include "sdk/unreal/types/VectorNet.h"
+#include "sdk/unreal/types/Game/Doors/BP_Door_C.h"
+#include "sdk/unreal/types/Engine/Pawn.h"
+#include "sdk/unreal/types/PluginB/Settings_PluginB.h"
+#include "sdk/unreal/types/Engine/VectorNet.h"
 #include "mod/config/mod_config.h"
 #include "mod/lifecycle/mod_runtime.cpp"
 
@@ -412,6 +426,9 @@ void urk_probe_unreal_types() {
     for (const t::BP_Door_C &door : t::BP_Door_C::instances())
         (void)door.Open().set(true);
     (void)t::Settings_PluginB::class_default().valid();
+    (void)t::BP_Door_C::load_class().valid();
+    (void)URK::unreal::load_class("/Game/Doors/BP_Door");
+    (void)URK::unreal::load_object(std::string("/Game/Items/DA_Stick.DA_Stick"));
     const std::optional<t::Vector> spot = pawn.Spot().get();
     (void)pawn.Spot().set(t::Vector{1, 2, 3});
     (void)pawn.Teleport(spot.value_or(t::Vector{}));

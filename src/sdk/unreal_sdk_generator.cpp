@@ -26,7 +26,10 @@ std::string UnrealSdkReadme(const std::string &details) {
         << "## Typed headers\n\n"
         << "Set `DumpTypes=1` under `[Unreal]` in the game's `URKit_config.ini` and play: every map that loads "
            "adds its classes to `" << UnrealTypeCodegen::kDumpFileName << "` beside the game. Generating or updating "
-           "the project then writes `types/<Name>.h`, one per class and struct.\n\n"
+           "the project then writes `types/<Folder>/<Name>.h`, one per class, struct and enum, in a folder that "
+           "mirrors its package (`/Script/Engine` is `types/Engine/`, `/Game/Doors/BP_Door` is `types/Game/Doors/`). "
+           "`types/INDEX.md` lists every folder, the game's own first. Functions the Blueprint compiler made "
+           "(input and bound-event thunks, timeline callbacks) sit in a separate section at the end of a class.\n\n"
            "- Classes are handles and hold names and signatures, never offsets: each access resolves on the live "
            "class, so a game update needs no rebuild. A member the update removed fails at runtime and `get()` "
            "comes back empty.\n"
@@ -141,13 +144,16 @@ bool GenerateModProject(const std::string &projectRoot, const std::string &unrea
     const fs::path projectTypes = root / profile.sdkSubdirectory / "types";
     if (!fs::equivalent(sdkRoot, root / profile.sdkSubdirectory, ec)) {
         fs::remove_all(projectTypes, ec);
-        for (fs::directory_iterator it(sdkRoot / "types", ec), end; !ec && it != end; it.increment(ec))
-            backendFiles.files.push_back({profile.sdkSubdirectory / "types" / it->path().filename(),
+        for (fs::recursive_directory_iterator it(sdkRoot / "types", ec), end; !ec && it != end; it.increment(ec)) {
+            if (!it->is_regular_file(ec))
+                continue;
+            backendFiles.files.push_back({profile.sdkSubdirectory / "types" / it->path().lexically_relative(sdkRoot / "types"),
                                           it->path(),
                                           {},
                                           mpg::OutputFilePolicy::GeneratedOverwrite,
                                           true,
                                           false});
+        }
     }
     if (!sdk::WriteOutputPlan(backendFiles, nullptr, error))
         return false;

@@ -878,6 +878,38 @@ inline bool destroy_actor(Object actor) {
     return actor && frame.valid() && call(actor, frame);
 }
 
+namespace detail {
+// A bare package path names its main asset: "/Game/Doors/BP_Door" -> ".BP_Door" (+ "_C" for its class).
+inline std::string AssetPath(const std::string &path, const char *suffix) {
+    const std::size_t slash = path.find_last_of('/');
+    if (path.find('.', slash == std::string::npos ? 0 : slash) != std::string::npos)
+        return path;
+    return path + "." + path.substr(slash == std::string::npos ? 0 : slash + 1) + suffix;
+}
+
+// KismetSystemLibrary's blocking loads take a soft reference, written as its path.
+inline Object LoadByPath(const char *function, const char *parameter, const std::string &path) {
+    const Object library = find("KismetSystemLibrary");
+    if (!library || path.empty())
+        return Object();
+    CallFrame frame(library.function(function));
+    if (!frame.valid() || !frame.parameter(parameter).set_text(path) || !call(library.default_object(), frame))
+        return Object();
+    return Object(frame.get<Handle>("ReturnValue").value_or(null_handle));
+}
+} // namespace detail
+
+// The class at a path, loading it if no map has: "/Game/Doors/BP_Door.BP_Door_C", or just
+// "/Game/Doors/BP_Door". Game thread; blocks while it loads; null when there is none.
+inline Object load_class(const std::string &path) {
+    return detail::LoadByPath("LoadClassAsset_Blocking", "AssetClass", detail::AssetPath(path, "_C"));
+}
+
+// Any asset by path, as load_class: "/Game/Items/DA_Stick.DA_Stick" or "/Game/Items/DA_Stick".
+inline Object load_object(const std::string &path) {
+    return detail::LoadByPath("LoadAsset_Blocking", "Asset", detail::AssetPath(path, ""));
+}
+
 // Zero until the hook has seen enough calls to tell which thread is the game's.
 inline std::uint32_t game_thread_id() {
     const auto *a = api();
@@ -1247,6 +1279,10 @@ template <typename T> std::vector<T> typed_instances(Object klass, bool exact) {
     static std::vector<Self> instances(bool exact = false) {                                                           \
         return ::URK::unreal::typed_instances<Self>(static_class(), exact);                                            \
     }                                                                                                                  \
-    static Self class_default() { return Self(static_class().default_object().handle()); }
+    static Self class_default() { return Self(static_class().default_object().handle()); }                            \
+    /* Loads the class when no map has yet (a Blueprint's). Game thread. */                                            \
+    static ::URK::unreal::Object load_class() {                                                                         \
+        return ::URK::unreal::load_class(std::string(Package) + "." + ReflectedName);                                  \
+    }
 )URKUE";
 }

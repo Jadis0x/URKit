@@ -222,14 +222,14 @@ constexpr std::uint8_t kKindClass = 1;
 constexpr std::uint8_t kKindStruct = 2;
 constexpr std::uint8_t kKindEnum = 3;
 
-double MillisecondsSince(const LARGE_INTEGER &start) {
+} // namespace
+
+double NowMilliseconds() {
     LARGE_INTEGER now{}, frequency{};
     QueryPerformanceCounter(&now);
     QueryPerformanceFrequency(&frequency);
-    return 1000.0 * static_cast<double>(now.QuadPart - start.QuadPart) / static_cast<double>(frequency.QuadPart);
+    return 1000.0 * static_cast<double>(now.QuadPart) / static_cast<double>(frequency.QuadPart);
 }
-
-} // namespace
 
 TypeDumper::TypeDumper(const TypeDumpSources &sources, std::string path, const TypeDumpImage &image, Report report)
     : sources_(sources), path_(std::move(path)), image_(image), report_(std::move(report)) {
@@ -238,7 +238,7 @@ TypeDumper::TypeDumper(const TypeDumpSources &sources, std::string path, const T
         known_.insert(entry.first);
 }
 
-// The writer is detached and owns what it uses, so nothing waits here at exit.
+// The writer is detached and owns what it uses; the loader stays loaded for the process, so nothing waits.
 TypeDumper::~TypeDumper() = default;
 
 std::uint64_t TypeDumper::NameValue(Address object) const {
@@ -249,6 +249,14 @@ std::uint64_t TypeDumper::NameValue(Address object) const {
     return name;
 }
 
+Address TypeDumper::OuterValue(Address object) const {
+    Address outer = kNullAddress;
+    const std::int32_t offset = sources_.finder.Offsets().outer;
+    if (offset != kOffsetNotFound)
+        sources_.finder.Reader().ReadTrusted(object + offset, &outer, sizeof(outer));
+    return outer;
+}
+
 // What an object is, judged by its class's cast flags; each class is asked once.
 std::uint8_t TypeDumper::KindOf(Address object) {
     const std::int32_t offset = sources_.finder.Offsets().classPointer;
@@ -256,18 +264,22 @@ std::uint8_t TypeDumper::KindOf(Address object) {
     if (offset == kOffsetNotFound || !sources_.finder.Reader().ReadTrusted(object + offset, &meta, sizeof(meta)) ||
         meta == kNullAddress)
         return 0;
-    const auto [entry, added] = metaclasses_.try_emplace(meta, std::uint8_t{0});
-    if (added) {
-        const std::uint64_t flags =
-            sources_.finder.Reader().ReadAs<std::uint64_t>(meta + sources_.structs.castFlags).value_or(0);
-        if ((flags & kCastFlagClass) == kCastFlagClass)
-            entry->second = kKindClass;
-        else if (sources_.enums && (flags & kCastFlagEnum) == kCastFlagEnum)
-            entry->second = kKindEnum;
-        else if ((flags & kCastFlagScriptStruct) == kCastFlagScriptStruct)
-            entry->second = kKindStruct;
-    }
-    return entry->second;
+    if (const auto known = metaclasses_.find(meta); known != metaclasses_.end())
+        return known->second;
+    // A failed read is no answer; the class is asked again next time.
+    const std::optional<std::uint64_t> flags =
+        sources_.finder.Reader().ReadAs<std::uint64_t>(meta + sources_.structs.castFlags);
+    if (!flags)
+        return 0;
+    std::uint8_t kind = 0;
+    if ((*flags & kCastFlagClass) == kCastFlagClass)
+        kind = kKindClass;
+    else if (sources_.enums && (*flags & kCastFlagEnum) == kCastFlagEnum)
+        kind = kKindEnum;
+    else if ((*flags & kCastFlagScriptStruct) == kCastFlagScriptStruct)
+        kind = kKindStruct;
+    metaclasses_.emplace(meta, kind);
+    return kind;
 }
 
 std::size_t TypeDumper::Scan(const std::string &label, const EnumNames *enums) {
@@ -279,21 +291,22 @@ std::size_t TypeDumper::Scan(const std::string &label, const EnumNames *enums) {
     if (structs.children == kOffsetNotFound || structs.fieldNext == kOffsetNotFound ||
         structs.castFlags == kOffsetNotFound)
         return 0;
-    LARGE_INTEGER started{};
-    QueryPerformanceCounter(&started);
-    const bool wasIdle = queue_.empty();
+    const double started = NowMilliseconds();
+    const bool wasIdle = Idle();
     std::size_t queued = 0;
     sources_.finder.Objects().ForEach([&](std::int32_t, Address object) {
         const std::uint8_t kind = object == kNullAddress ? std::uint8_t{0} : KindOf(object);
         if (kind == 0)
             return true;
         const std::uint64_t name = NameValue(object);
+        const Address outer = OuterValue(object);
         const auto [entry, added] = seen_.try_emplace(object);
         Seen &seen = entry->second;
-        // An address freed and reused by another type carries another name.
-        if (added || seen.name != name || seen.kind != kind) {
+        // An address freed and reused by another type differs in name, package or kind.
+        if (added || seen.name != name || seen.outer != outer || seen.kind != kind) {
             const Named self = NameAndPackage(sources_.finder, object);
-            seen = {name, kind, self.name.empty() || self.package.empty() ? "" : self.package + '\t' + self.name};
+            seen = {name, outer, kind,
+                    self.name.empty() || self.package.empty() ? "" : self.package + '\t' + self.name};
         }
         if (seen.key.empty() || !known_.insert(seen.key).second)
             return true;
@@ -301,7 +314,7 @@ std::size_t TypeDumper::Scan(const std::string &label, const EnumNames *enums) {
         ++queued;
         return true;
     });
-    const double scanMs = MillisecondsSince(started);
+    const double scanMs = NowMilliseconds() - started;
     if (queued == 0) {
         if (wasIdle && ready_.empty()) {
             char line[512];
@@ -321,39 +334,60 @@ std::size_t TypeDumper::Scan(const std::string &label, const EnumNames *enums) {
     return queued;
 }
 
-void TypeDumper::Step(double budgetMs) {
+void TypeDumper::Step(double budgetMs, bool more) {
     if (queue_.empty()) {
-        if (!ready_.empty())
+        if (!ready_.empty() && !more)
             Flush();
         return;
     }
-    LARGE_INTEGER started{};
-    QueryPerformanceCounter(&started);
+    const double started = NowMilliseconds();
     ++frames_;
     double elapsed = 0;
     do {
         const Queued item = std::move(queue_.front());
         queue_.pop_front();
         // Unloaded before its turn: forget it, a later scan may queue it again.
-        if (!IsLiveObject(sources_.finder, item.object) || NameValue(item.object) != item.name) {
+        if (!IsLiveObject(sources_.finder, item.object) || NameValue(item.object) != item.name)
             known_.erase(item.key);
-        } else {
-            const std::size_t tab = item.key.find('\t');
-            const Named self{item.key.substr(tab + 1), item.key.substr(0, tab)};
-            const TypeDumpSources &s = sources_;
-            if (item.kind == kKindClass)
-                ready_[item.key] = DumpClass(s.finder, s.structs, s.chain, s.values, s.functions, s.types,
-                                             item.object, self);
-            else if (item.kind == kKindStruct)
-                ready_[item.key] = DumpStruct(s.finder, s.structs, s.chain, s.values, s.types, item.object, self);
-            else
-                ready_[item.key] = DumpEnum(*s.enums, item.object, self);
-        }
-        elapsed = MillisecondsSince(started);
+        else
+            Describe(item);
+        elapsed = NowMilliseconds() - started;
     } while (!queue_.empty() && elapsed < budgetMs);
     spentMs_ += elapsed;
-    if (queue_.empty())
+    if (queue_.empty() && !more)
         Flush();
+}
+
+void TypeDumper::Describe(const Queued &item) {
+    const std::size_t tab = item.key.find('\t');
+    const Named self{item.key.substr(tab + 1), item.key.substr(0, tab)};
+    const TypeDumpSources &s = sources_;
+    if (item.kind == kKindClass)
+        ready_[item.key] = DumpClass(s.finder, s.structs, s.chain, s.values, s.functions, s.types, item.object, self);
+    else if (item.kind == kKindStruct)
+        ready_[item.key] = DumpStruct(s.finder, s.structs, s.chain, s.values, s.types, item.object, self);
+    else
+        ready_[item.key] = DumpEnum(*s.enums, item.object, self);
+}
+
+bool TypeDumper::DescribeNow(Address object) {
+    const std::uint8_t kind = object == kNullAddress ? std::uint8_t{0} : KindOf(object);
+    if (kind == 0)
+        return false;
+    const Named self = NameAndPackage(sources_.finder, object);
+    const std::string key = self.package + '\t' + self.name;
+    if (self.name.empty() || self.package.empty() || !known_.insert(key).second)
+        return false;
+    if (Idle()) {
+        started_ = GetTickCount64();
+        spentMs_ = 0;
+        frames_ = 0;
+        label_ = "preloaded Blueprints";
+    }
+    const double started = NowMilliseconds();
+    Describe({object, NameValue(object), kind, key});
+    spentMs_ += NowMilliseconds() - started;
+    return true;
 }
 
 // Merging and writing a file of megabytes happens off the game thread.
