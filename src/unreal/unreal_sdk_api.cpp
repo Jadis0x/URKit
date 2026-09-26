@@ -1,9 +1,9 @@
-#include "unreal_sdk_api.h"
-#include "unreal_enums.h"
-#include "unreal_owned_values.h"
-#include "unreal_places.h"
-#include "unreal_object_life_hook.h"
-#include "unreal_script_hook.h"
+#include "unreal/unreal_sdk_api.h"
+#include "unreal/hooks/unreal_object_life_hook.h"
+#include "unreal/hooks/unreal_script_hook.h"
+#include "unreal/reflection/unreal_enums.h"
+#include "unreal/values/unreal_owned_values.h"
+#include "unreal/values/unreal_places.h"
 
 #include <windows.h>
 #include <psapi.h>

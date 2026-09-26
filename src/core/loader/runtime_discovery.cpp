@@ -1,6 +1,6 @@
 #include "runtime_discovery.h"
 
-#include "unreal_sdk_api.h"
+#include "unreal/unreal_sdk_api.h"
 
 #include <windows.h>
 

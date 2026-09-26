@@ -429,6 +429,11 @@ void urk_probe_unreal_types() {
     (void)t::BP_Door_C::load_class().valid();
     (void)URK::unreal::load_class("/Game/Doors/BP_Door");
     (void)URK::unreal::load_object(std::string("/Game/Items/DA_Stick.DA_Stick"));
+    (void)t::Actor::cast(URK::unreal::player_pawn()).valid();
+    (void)URK::unreal::player_controller(1).valid();
+    (void)(URK::unreal::world() == URK::unreal::game_instance());
+    (void)URK::unreal::game_state().valid();
+    (void)URK::unreal::game_mode().valid();
     const std::optional<t::Vector> spot = pawn.Spot().get();
     (void)pawn.Spot().set(t::Vector{1, 2, 3});
     (void)pawn.Teleport(spot.value_or(t::Vector{}));

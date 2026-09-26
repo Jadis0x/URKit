@@ -3,13 +3,13 @@
 // URK_UnrealApi over the live calibration; opaque handles, process-wide singleton.
 
 #include "mod_sdk.h"
-#include "unreal_bootstrap.h"
-#include "unreal_engine_detect.h"
-#include "unreal_functions.h"
-#include "unreal_process_event_hook.h"
-#include "unreal_process_memory.h"
-#include "unreal_struct_offsets.h"
-#include "unreal_type_queries.h"
+#include "unreal/detect/unreal_bootstrap.h"
+#include "unreal/detect/unreal_engine_detect.h"
+#include "unreal/hooks/unreal_process_event_hook.h"
+#include "unreal/layout/unreal_struct_offsets.h"
+#include "unreal/memory/unreal_process_memory.h"
+#include "unreal/reflection/unreal_functions.h"
+#include "unreal/reflection/unreal_type_queries.h"
 
 #include <atomic>
 #include <memory>

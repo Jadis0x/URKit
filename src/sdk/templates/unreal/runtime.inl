@@ -910,6 +910,41 @@ inline Object load_object(const std::string &path) {
     return detail::LoadByPath("LoadAsset_Blocking", "Asset", detail::AssetPath(path, ""));
 }
 
+// --- The player and its world ---------------------------------------------------
+// Plain member reads: any thread, cheap per frame. Null before a map loads or between maps.
+
+// The running engine (GEngine). Found once, with one walk of the object array.
+inline Object engine() {
+    static std::atomic<Handle> cached{null_handle};
+    const Object known(cached.load());
+    if (known && known.klass())
+        return known;
+    // A game may subclass either; the class itself is never the running engine.
+    for (const char *name : {"GameEngine", "Engine"}) {
+        const std::vector<Object> found = instances_of(find(name));
+        if (!found.empty()) {
+            cached.store(found.front().handle());
+            return found.front();
+        }
+    }
+    return Object();
+}
+
+// The world being played: the game viewport's.
+inline Object world() { return engine().get_object("GameViewport").get_object("World"); }
+inline Object game_instance() { return world().get_object("OwningGameInstance"); }
+inline Object game_state() { return world().get_object("GameState"); }
+// Only where this process is the server (single player too); null on a client.
+inline Object game_mode() { return world().get_object("AuthorityGameMode"); }
+
+// Split screen has more than one; index 0 is the first.
+inline Object local_player(std::int32_t index = 0) {
+    return Object(Place(game_instance(), "LocalPlayers").element(index).get_object());
+}
+inline Object player_controller(std::int32_t index = 0) { return local_player(index).get_object("PlayerController"); }
+// Null while the controller possesses nothing (menus, respawns).
+inline Object player_pawn(std::int32_t index = 0) { return player_controller(index).get_object("Pawn"); }
+
 // Zero until the hook has seen enough calls to tell which thread is the game's.
 inline std::uint32_t game_thread_id() {
     const auto *a = api();

@@ -16,7 +16,6 @@ set(URK_INCLUDE_DIRS
     ${URK_SRC_DIR}/core
     ${URK_SRC_DIR}/core/loader
     ${URK_SRC_DIR}/unity
-    ${URK_SRC_DIR}/unreal
     ${URK_SRC_DIR}/ui
     ${URK_SRC_DIR}/sdk
     ${URK_SRC_DIR}/proxy
@@ -71,42 +70,42 @@ set(URK_UNITY_SRC
 # unreal_remote_memory.cpp is deliberately absent: the out-of-process reader
 # belongs to the probe tooling, not to a loader that runs inside the game.
 set(URK_UNREAL_SRC
-    ${URK_SRC_DIR}/unreal/unreal_bootstrap.cpp
-    ${URK_SRC_DIR}/unreal/unreal_code_anchors.cpp
-    ${URK_SRC_DIR}/unreal/unreal_engine_detect.cpp
-    ${URK_SRC_DIR}/unreal/unreal_functions.cpp
-    ${URK_SRC_DIR}/unreal/unreal_game_loop.cpp
-    ${URK_SRC_DIR}/unreal/unreal_type_dump.cpp
-    ${URK_SRC_DIR}/unreal/unreal_owned_values.cpp
-    ${URK_SRC_DIR}/unreal/unreal_engine_calls.cpp
-    ${URK_SRC_DIR}/unreal/unreal_containers.cpp
-    ${URK_SRC_DIR}/unreal/unreal_property_virtuals.cpp
-    ${URK_SRC_DIR}/unreal/unreal_delegate_virtuals.cpp
-    ${URK_SRC_DIR}/unreal/unreal_script_hook.cpp
-    ${URK_SRC_DIR}/unreal/unreal_object_life_hook.cpp
-    ${URK_SRC_DIR}/unreal/unreal_enums.cpp
-    ${URK_SRC_DIR}/unreal/unreal_places.cpp
-    ${URK_SRC_DIR}/unreal/unreal_module.cpp
-    ${URK_SRC_DIR}/unreal/unreal_names.cpp
-    ${URK_SRC_DIR}/unreal/unreal_object_array.cpp
-    ${URK_SRC_DIR}/unreal/unreal_object_finder.cpp
-    ${URK_SRC_DIR}/unreal/unreal_offsets.cpp
-    ${URK_SRC_DIR}/unreal/unreal_process_event.cpp
-    ${URK_SRC_DIR}/unreal/unreal_function_hooks.cpp
-    ${URK_SRC_DIR}/unreal/unreal_process_event_hook.cpp
-    ${URK_SRC_DIR}/unreal/unreal_process_memory.cpp
-    ${URK_SRC_DIR}/unreal/unreal_property_offsets.cpp
-    ${URK_SRC_DIR}/unreal/unreal_property_values.cpp
+    ${URK_SRC_DIR}/unreal/detect/unreal_bootstrap.cpp
+    ${URK_SRC_DIR}/unreal/detect/unreal_code_anchors.cpp
+    ${URK_SRC_DIR}/unreal/detect/unreal_engine_detect.cpp
+    ${URK_SRC_DIR}/unreal/game/unreal_game_loop.cpp
+    ${URK_SRC_DIR}/unreal/game/unreal_world.cpp
+    ${URK_SRC_DIR}/unreal/hooks/unreal_function_hooks.cpp
+    ${URK_SRC_DIR}/unreal/hooks/unreal_object_life_hook.cpp
+    ${URK_SRC_DIR}/unreal/hooks/unreal_process_event.cpp
+    ${URK_SRC_DIR}/unreal/hooks/unreal_process_event_hook.cpp
+    ${URK_SRC_DIR}/unreal/hooks/unreal_script_hook.cpp
+    ${URK_SRC_DIR}/unreal/layout/unreal_offsets.cpp
+    ${URK_SRC_DIR}/unreal/layout/unreal_property_offsets.cpp
+    ${URK_SRC_DIR}/unreal/layout/unreal_struct_offsets.cpp
+    ${URK_SRC_DIR}/unreal/memory/unreal_module.cpp
+    ${URK_SRC_DIR}/unreal/memory/unreal_process_memory.cpp
+    ${URK_SRC_DIR}/unreal/reflection/unreal_enums.cpp
+    ${URK_SRC_DIR}/unreal/reflection/unreal_functions.cpp
+    ${URK_SRC_DIR}/unreal/reflection/unreal_names.cpp
+    ${URK_SRC_DIR}/unreal/reflection/unreal_object_array.cpp
+    ${URK_SRC_DIR}/unreal/reflection/unreal_object_finder.cpp
+    ${URK_SRC_DIR}/unreal/reflection/unreal_type_dump.cpp
+    ${URK_SRC_DIR}/unreal/reflection/unreal_type_queries.cpp
     ${URK_SRC_DIR}/unreal/unreal_sdk_api.cpp
-    ${URK_SRC_DIR}/unreal/unreal_struct_offsets.cpp
-    ${URK_SRC_DIR}/unreal/unreal_type_queries.cpp
-    ${URK_SRC_DIR}/unreal/unreal_world.cpp
+    ${URK_SRC_DIR}/unreal/values/unreal_containers.cpp
+    ${URK_SRC_DIR}/unreal/values/unreal_delegate_virtuals.cpp
+    ${URK_SRC_DIR}/unreal/values/unreal_engine_calls.cpp
+    ${URK_SRC_DIR}/unreal/values/unreal_owned_values.cpp
+    ${URK_SRC_DIR}/unreal/values/unreal_places.cpp
+    ${URK_SRC_DIR}/unreal/values/unreal_property_values.cpp
+    ${URK_SRC_DIR}/unreal/values/unreal_property_virtuals.cpp
 )
 
 # clang ignores __try for asynchronous faults unless asked; the reader's SEH
 # guard is what keeps a scan over stale pages from killing the game.
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set_source_files_properties(${URK_SRC_DIR}/unreal/unreal_process_memory.cpp
+    set_source_files_properties(${URK_SRC_DIR}/unreal/memory/unreal_process_memory.cpp
         PROPERTIES COMPILE_OPTIONS "-fasync-exceptions")
 endif()
 

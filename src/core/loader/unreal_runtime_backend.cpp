@@ -1,8 +1,8 @@
 #include "runtime_backend.h"
 
-#include "intro.h"
 #include "cursor_guard.h"
 #include "hooks.h"
+#include "intro.h"
 #include "loader_lifecycle.h"
 #include "logger.h"
 #include "main_thread_dispatcher.h"
@@ -11,11 +11,11 @@
 #include "platform_paths.h"
 #include "runtime_events.h"
 #include "safetyhook_backend.h"
-#include "unreal_code_anchors.h"
-#include "unreal_game_loop.h"
-#include "unreal_process_memory.h"
-#include "unreal_sdk_api.h"
-#include "unreal_type_dump.h"
+#include "unreal/detect/unreal_code_anchors.h"
+#include "unreal/game/unreal_game_loop.h"
+#include "unreal/memory/unreal_process_memory.h"
+#include "unreal/reflection/unreal_type_dump.h"
+#include "unreal/unreal_sdk_api.h"
 
 #include <windows.h>
 
