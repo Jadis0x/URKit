@@ -20,7 +20,7 @@
 namespace URK::Unreal {
 
 // Format the generator reads. Bump on any change to the line layout.
-inline constexpr int kTypeDumpVersion = 3;
+inline constexpr int kTypeDumpVersion = 4;
 inline constexpr const char *kTypeDumpMagic = "URKIT-UNREAL-TYPES";
 
 // One block per class ("package<TAB>name") so dumps from different maps merge.

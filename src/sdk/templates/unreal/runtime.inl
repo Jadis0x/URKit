@@ -730,14 +730,26 @@ class FunctionHook {
         if (id_ == 0)
             state_.reset();
     }
+    // Each broadcast of a multicast delegate, as a binding would get it (see subscribe()).
+    FunctionHook(const Place &delegate, After on_broadcast) : delegate_(true) {
+        const auto *a = api();
+        if (!a || !on_broadcast || !delegate.valid())
+            return;
+        state_ = std::make_unique<State>();
+        state_->after = std::move(on_broadcast);
+        id_ = a->delegate_subscribe(delegate.raw(), &RunAfter, state_.get());
+        if (id_ == 0)
+            state_.reset();
+    }
     ~FunctionHook() { remove(); }
     FunctionHook(FunctionHook &&other) noexcept
-        : state_(std::move(other.state_)), id_(std::exchange(other.id_, 0)) {}
+        : state_(std::move(other.state_)), id_(std::exchange(other.id_, 0)), delegate_(other.delegate_) {}
     FunctionHook &operator=(FunctionHook &&other) noexcept {
         if (this != &other) {
             remove();
             state_ = std::move(other.state_);
             id_ = std::exchange(other.id_, 0);
+            delegate_ = other.delegate_;
         }
         return *this;
     }
@@ -750,7 +762,7 @@ class FunctionHook {
         if (id_ == 0)
             return true;
         const auto *a = api();
-        const bool removed = a && a->function_hook_remove(id_) != 0;
+        const bool removed = a && (delegate_ ? a->delegate_unsubscribe(id_) : a->function_hook_remove(id_)) != 0;
         id_ = 0;
         // Removed from inside its own callback: that call frees it on return.
         if (removed && state_->running.load(std::memory_order_acquire) > 0)
@@ -802,12 +814,51 @@ class FunctionHook {
 
     std::unique_ptr<State> state_;
     std::uint64_t id_ = 0;
+    bool delegate_ = false;
 };
+using Subscription = FunctionHook;
 
 // By the function's name on a class or an instance's class.
 inline FunctionHook hook(Object owner, const char *function, FunctionHook::Before before,
                          FunctionHook::After after = {}) {
     return FunctionHook(owner.function(function), std::move(before), std::move(after));
+}
+
+// A multicast delegate's broadcasts until the Subscription goes away. The call's object is the
+// delegate's owner; parameters read by name. Starts on the game thread. `unreal::subscribe(
+// health.OnDamaged().place(), [](unreal::HookedCall &call) { call.get<float>("Damage"); })`
+inline Subscription subscribe(const Place &delegate, FunctionHook::After on_broadcast) {
+    return Subscription(delegate, std::move(on_broadcast));
+}
+
+// A hooked call seen through its owner's type; the generated <Function>_Call adds the parameters.
+template <typename Owner> class TypedCall : public HookedCall {
+  public:
+    explicit TypedCall(const HookedCall &call) : HookedCall(call) {}
+    template <typename U = Owner> U self() const { return U(object().handle()); }
+};
+
+// For the generated hook_<Function>: before may return nothing (the body runs) or false to skip it.
+template <typename View, typename Before, typename After>
+FunctionHook typed_hook(Object function, Before before, After after) {
+    FunctionHook::Before first;
+    FunctionHook::After second;
+    if constexpr (!std::is_null_pointer_v<Before>)
+        first = [run = std::move(before)](HookedCall &call) mutable {
+            View view(call);
+            if constexpr (std::is_void_v<std::invoke_result_t<Before &, View &>>) {
+                run(view);
+                return true;
+            } else {
+                return static_cast<bool>(run(view));
+            }
+        };
+    if constexpr (!std::is_null_pointer_v<After>)
+        second = [run = std::move(after)](HookedCall &call) mutable {
+            View view(call);
+            run(view);
+        };
+    return FunctionHook(function, std::move(first), std::move(second));
 }
 
 // --- Spawning -------------------------------------------------------------------
@@ -945,6 +996,30 @@ inline Object player_controller(std::int32_t index = 0) { return local_player(in
 // Null while the controller possesses nothing (menus, respawns).
 inline Object player_pawn(std::int32_t index = 0) { return player_controller(index).get_object("Pawn"); }
 
+// An actor's first component of a class, as Blueprint's GetComponentByClass. Game thread.
+inline Object component(Object actor, Object klass) {
+    CallFrame frame(actor.function("GetComponentByClass"));
+    if (!klass || !frame.set<Handle>("ComponentClass", klass.handle()) || !call(actor, frame))
+        return Object();
+    return Object(frame.get<Handle>("ReturnValue").value_or(null_handle));
+}
+// Typed: `component<types::HealthComponent>(player)`.
+template <typename T> T component(Object actor) { return T::cast(component(actor, T::static_class())); }
+
+// Every component of a class (subclasses included). Game thread.
+inline std::vector<Object> components(Object actor, Object klass) {
+    CallFrame frame(actor.function("K2_GetComponentsByClass"));
+    if (!klass || !frame.set<Handle>("ComponentClass", klass.handle()) || !call(actor, frame))
+        return {};
+    return frame.get_value<std::vector<Object>>("ReturnValue").value_or(std::vector<Object>{});
+}
+template <typename T> std::vector<T> components(Object actor) {
+    std::vector<T> typed;
+    for (const Object &found : components(actor, T::static_class()))
+        typed.push_back(T::cast(found));
+    return typed;
+}
+
 // Zero until the hook has seen enough calls to tell which thread is the game's.
 inline std::uint32_t game_thread_id() {
     const auto *a = api();
@@ -955,6 +1030,40 @@ inline bool post_to_game_thread(URK_UnrealPostedWorkFn work, void *user = nullpt
     const auto *a = api();
     return a && work && a->post_to_game_thread(work, user) != 0;
 }
+
+// Runs work on the game thread before the next frame: menus draw on the render thread, where
+// calls and engine-memory writes are refused. `on_game_thread([] { player.Jump(); });`
+inline bool on_game_thread(std::function<void()> work) {
+    if (!work)
+        return false;
+    auto *queued = new std::function<void()>(std::move(work));
+    const bool posted = post_to_game_thread(
+        [](void *user) {
+            const std::unique_ptr<std::function<void()>> run(static_cast<std::function<void()> *>(user));
+            // An exception must not unwind into engine frames.
+            try {
+                (*run)();
+            } catch (...) {
+            }
+        },
+        queued);
+    if (!posted)
+        delete queued;
+    return posted;
+}
+
+// --- Keys ------------------------------------------------------------------------
+// Windows virtual-key codes ('K', VK_F5, VK_LBUTTON) while the game has focus, sampled once per
+// frame: `if (unreal::key_pressed(VK_F5))` in update() fires once per press. Any thread.
+#define URK_UNREAL_KEY(field, key)                                                                                    \
+    (::URK::runtime_api_has_field(offsetof(::URK::RuntimeApi, field) + sizeof(void *)) &&                             \
+     ::URK::context()->runtime->field && ::URK::context()->runtime->field(key) != 0)
+inline bool key_held(int key) { return URK_UNREAL_KEY(input_get_key, key); }
+// Went down this frame.
+inline bool key_pressed(int key) { return URK_UNREAL_KEY(input_get_key_down, key); }
+// Went up this frame.
+inline bool key_released(int key) { return URK_UNREAL_KEY(input_get_key_up, key); }
+#undef URK_UNREAL_KEY
 
 // --- Typed access, used by the generated headers in types/ -------------------
 // Members are resolved by name on the live class, so offset changes need no rebuild.
@@ -1022,6 +1131,18 @@ template <typename T> class Arg {
 
   private:
     Handle handle_ = null_handle;
+};
+
+// An object reached through a place (a hooked call's parameter), typed as T.
+template <typename T> class ObjectPlace {
+  public:
+    ObjectPlace(const Place &place) : place_(place) {}
+    template <typename U = T> U get() const { return U(place_.get_object()); }
+    bool set(Arg<T> value) const { return place_.set_object(value.handle()); }
+    const Place &place() const { return place_; }
+
+  private:
+    Place place_;
 };
 
 // An object member typed as T. The loader also refuses a value of the wrong class.
@@ -1275,6 +1396,10 @@ class MulticastMember {
         const std::int32_t found = index_of(object, function);
         return found >= 0 && place_.remove(found, 1);
     }
+    // A C++ callback on each broadcast, until the Subscription goes away. Game thread.
+    Subscription subscribe(FunctionHook::After on_broadcast) const {
+        return Subscription(place_, std::move(on_broadcast));
+    }
     bool clear() const { return place_.clear(); }
     const Place &place() const { return place_; }
 
@@ -1290,6 +1415,19 @@ class MulticastMember {
         return -1;
     }
     Place place_;
+};
+
+// A multicast delegate whose broadcasts arrive as View: `health.OnDamaged().subscribe(
+// [](HealthComponent::Damaged_Event &event) { event.Damage().get(); })`. Game thread.
+template <typename View> class EventMember : public MulticastMember {
+  public:
+    using MulticastMember::MulticastMember;
+    template <typename F> Subscription subscribe(F on_broadcast) const {
+        return Subscription(place(), [run = std::move(on_broadcast)](HookedCall &call) mutable {
+            View view(call);
+            run(view);
+        });
+    }
 };
 
 template <typename T> std::vector<T> typed_instances(Object klass, bool exact) {
@@ -1318,6 +1456,13 @@ template <typename T> std::vector<T> typed_instances(Object klass, bool exact) {
     /* Loads the class when no map has yet (a Blueprint's). Game thread. */                                            \
     static ::URK::unreal::Object load_class() {                                                                         \
         return ::URK::unreal::load_class(std::string(Package) + "." + ReflectedName);                                  \
+    }
+
+// hook_<Function>(before, after) in a generated class; View is the call's typed view.
+#define URK_UNREAL_HOOK(View, Hook, Function)                                                                          \
+    template <typename Before, typename After = std::nullptr_t>                                                        \
+    static ::URK::unreal::FunctionHook Hook(Before before, After after = nullptr) {                                    \
+        return ::URK::unreal::typed_hook<View>(static_class().function(Function), std::move(before), std::move(after)); \
     }
 )URKUE";
 }

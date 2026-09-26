@@ -5,7 +5,9 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <set>
 #include <thread>
+#include <vector>
 
 namespace URK::Unreal {
 namespace {
@@ -86,6 +88,7 @@ std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, 
     const Named super = NameAndPackage(finder, types.SuperOf(classObject));
     out << "C\t" << self.name << '\t' << self.package << '\t' << super.name << '\t' << super.package << '\n';
 
+    std::vector<PropertyInfo> delegates;
     Address field = chain.First(classObject);
     for (std::int32_t step = 0; field != kNullAddress && step < kMaxFields; ++step, field = chain.Next(field)) {
         const std::optional<PropertyInfo> info = values.Describe(field);
@@ -94,6 +97,9 @@ std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, 
             continue;
         out << "P\t" << Clean(*name);
         WriteShape(out, finder, values, *info);
+        if (info->kind == PropertyKind::Delegate || info->kind == PropertyKind::MulticastDelegate ||
+            info->kind == PropertyKind::SparseDelegate)
+            delegates.push_back(*info);
     }
 
     // UFunctions hang off Children as UFields.
@@ -108,6 +114,22 @@ std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, 
             continue;
         out << "F\t" << Clean(*name) << '\t' << Hex(function->flags) << '\n';
         for (const FunctionParameter &parameter : function->parameters) {
+            out << "A\t" << Clean(parameter.name);
+            WriteShape(out, finder, values, parameter.info);
+        }
+    }
+
+    // Delegate signatures, named as the members name them: typed event parameters.
+    std::set<Address> written;
+    for (const PropertyInfo &info : delegates) {
+        if (info.typeObject == kNullAddress || !written.insert(info.typeObject).second)
+            continue;
+        const std::optional<FunctionInfo> signature = DescribeFunction(chain, values, functions, info.typeObject);
+        const Named named = TypeOf(finder, info);
+        if (!signature || named.name.empty())
+            continue;
+        out << "G\t" << named.name << '\t' << named.package << '\n';
+        for (const FunctionParameter &parameter : signature->parameters) {
             out << "A\t" << Clean(parameter.name);
             WriteShape(out, finder, values, parameter.info);
         }

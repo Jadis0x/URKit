@@ -53,15 +53,26 @@ void RearmGuardPage(ULONG_PTR address) {
 
 } // namespace
 
+bool ProcessMemory::Range::Expired(std::uint64_t probes) const {
+    return expires != 0 && (probes >= expires || GetTickCount64() >= expiresAtMs);
+}
+
 ProcessMemory::Cache &ProcessMemory::ThreadCache() {
     thread_local Cache cache;
     return cache;
 }
 
+// The last hit first: scans read one range many times in a row.
 const ProcessMemory::Range *ProcessMemory::Remembered(Cache &cache, Address address) const {
-    for (const Range &range : cache.ranges) {
-        if (range.Holds(address) && !range.Expired(cache.probes))
+    const Range &last = cache.ranges[cache.last];
+    if (last.Holds(address) && !last.Expired(cache.probes))
+        return &last;
+    for (std::size_t i = 0; i < kRememberedRanges; ++i) {
+        const Range &range = cache.ranges[i];
+        if (range.Holds(address) && !range.Expired(cache.probes)) {
+            cache.last = i;
             return &range;
+        }
     }
     return nullptr;
 }
@@ -101,8 +112,10 @@ const ProcessMemory::Range &ProcessMemory::Resolve(Address address) const {
         resolved.readable = false;
     }
 
-    if (!resolved.readable)
+    if (!resolved.readable) {
         resolved.expires = cache.probes + unreadableLifetime_;
+        resolved.expiresAtMs = GetTickCount64() + kUnreadableMs;
+    }
 
     Range &slot = SlotFor(cache, address);
     slot = resolved;
@@ -113,6 +126,7 @@ void ProcessMemory::Forget() const {
     Cache &cache = ThreadCache();
     cache.ranges = {};
     cache.next = 0;
+    cache.last = 0;
 }
 
 // Continue into adjacent commits with the same permission.

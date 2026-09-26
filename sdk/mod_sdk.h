@@ -12,7 +12,7 @@ extern "C" {
 #define URK_IL2CPP_API_VERSION 7
 #define URK_NETWORK_API_VERSION 1
 #define URK_HOOK_API_VERSION 1
-#define URK_UNREAL_API_VERSION 5
+#define URK_UNREAL_API_VERSION 6
 
 #define URK_SCENE_NAME_MAX 128
 #define URK_OBJECT_NAME_MAX 128
@@ -897,6 +897,13 @@ typedef struct URK_UnrealApi {
                                   URK_UnrealFunctionHookFn after, void *user_data);
     /* Non-zero once no callback will run again. Zero on timeout: stay loaded. */
     int (*function_hook_remove)(uint64_t id);
+
+    /* Version 6 */
+    /* Calls back on each broadcast of a multicast delegate (inline or sparse), as a binding would:
+     * the call's object is the delegate's owner, its frame the broadcast's parameters. Game thread. */
+    uint64_t (*delegate_subscribe)(const URK_UnrealPlace *place, URK_UnrealFunctionHookFn callback, void *user_data);
+    /* Non-zero once the callback will not run again. Zero on timeout: stay loaded. */
+    int (*delegate_unsubscribe)(uint64_t id);
 } URK_UnrealApi;
 
 #ifdef __cplusplus

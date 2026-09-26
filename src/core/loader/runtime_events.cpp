@@ -3483,6 +3483,42 @@ void RuntimeEvents_ConfigureExternal(const char *name, uint64_t capabilities, co
     g_cursorProvider = cursor;
 }
 
+namespace {
+
+// External engines take Win32 virtual-key codes. A key is watched from its first query and
+// sampled once per game frame, so a press reads as down for that whole frame, as in Unity.
+// Bits: 0 held now, 1 held last frame, 2 watched.
+std::atomic<std::uint8_t> g_externalKeys[256]{};
+
+void SampleExternalKeys() {
+    DWORD process = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &process);
+    const bool focused = process == GetCurrentProcessId();
+    for (int key = 1; key < 256; ++key) {
+        const std::uint8_t state = g_externalKeys[key].load(std::memory_order_relaxed);
+        if ((state & 4) == 0)
+            continue;
+        const std::uint8_t now = focused && (GetAsyncKeyState(key) & 0x8000) != 0 ? 1 : 0;
+        g_externalKeys[key].store(static_cast<std::uint8_t>(4 | (state & 1) << 1 | now), std::memory_order_relaxed);
+    }
+}
+
+// kind: 0 held, 1 went down this frame, 2 went up this frame.
+int ExternalKey(int32_t key, int kind) {
+    if (key <= 0 || key > 255)
+        return 0;
+    const std::uint8_t state = g_externalKeys[key].fetch_or(4, std::memory_order_relaxed) & 3;
+    return (kind == 0 && (state & 1) != 0) || (kind == 1 && state == 1) || (kind == 2 && state == 2) ? 1 : 0;
+}
+
+// Mouse buttons 0-2 as their virtual keys.
+int ExternalMouseButton(int32_t button, int kind) {
+    static constexpr int32_t kKeys[] = {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON};
+    return button >= 0 && button < 3 ? ExternalKey(kKeys[button], kind) : 0;
+}
+
+} // namespace
+
 void RuntimeEvents_PumpExternal() {
     if (ModLifecycle_ShutdownStarted())
         return;
@@ -3495,6 +3531,8 @@ void RuntimeEvents_PumpExternal() {
     }
     if ((capabilities & URK_RUNTIME_CAP_CURSOR_CONTROL) != 0)
         PumpCursorControl();
+    if ((capabilities & URK_RUNTIME_CAP_INPUT) != 0)
+        SampleExternalKeys();
 }
 
 int RuntimeEvents_CurrentScene(URK_SceneInfo *scene) {
@@ -3667,6 +3705,8 @@ int RuntimeEvents_InputGetKey(int32_t keyCode) {
             Il2CppRuntimeThreadScope scope(*il2cpp);
             return scope.IsAttached() && ReadInputStateByKind(keyCode, 0) ? 1 : 0;
         }
+        case RuntimeEventsBackend::External:
+            return ExternalKey(keyCode, 0);
         default:
             return 0;
     }
@@ -3695,6 +3735,8 @@ int RuntimeEvents_InputGetKeyDown(int32_t keyCode) {
             Il2CppRuntimeThreadScope scope(*il2cpp);
             return scope.IsAttached() && ReadInputStateByKind(keyCode, 1) ? 1 : 0;
         }
+        case RuntimeEventsBackend::External:
+            return ExternalKey(keyCode, 1);
         default:
             return 0;
     }
@@ -3723,6 +3765,8 @@ int RuntimeEvents_InputGetKeyUp(int32_t keyCode) {
             Il2CppRuntimeThreadScope scope(*il2cpp);
             return scope.IsAttached() && ReadInputStateByKind(keyCode, 2) ? 1 : 0;
         }
+        case RuntimeEventsBackend::External:
+            return ExternalKey(keyCode, 2);
         default:
             return 0;
     }
@@ -3751,6 +3795,8 @@ int RuntimeEvents_InputGetMouseButton(int32_t button) {
             Il2CppRuntimeThreadScope scope(*il2cpp);
             return scope.IsAttached() && ReadInputStateByKind(button, 3) ? 1 : 0;
         }
+        case RuntimeEventsBackend::External:
+            return ExternalMouseButton(button, 0);
         default:
             return 0;
     }
@@ -3779,6 +3825,8 @@ int RuntimeEvents_InputGetMouseButtonDown(int32_t button) {
             Il2CppRuntimeThreadScope scope(*il2cpp);
             return scope.IsAttached() && ReadInputStateByKind(button, 4) ? 1 : 0;
         }
+        case RuntimeEventsBackend::External:
+            return ExternalMouseButton(button, 1);
         default:
             return 0;
     }
@@ -3807,6 +3855,8 @@ int RuntimeEvents_InputGetMouseButtonUp(int32_t button) {
             Il2CppRuntimeThreadScope scope(*il2cpp);
             return scope.IsAttached() && ReadInputStateByKind(button, 5) ? 1 : 0;
         }
+        case RuntimeEventsBackend::External:
+            return ExternalMouseButton(button, 2);
         default:
             return 0;
     }

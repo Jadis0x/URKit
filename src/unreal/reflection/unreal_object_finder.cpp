@@ -86,6 +86,12 @@ std::optional<std::string> ObjectFinder::BaseName(std::uint32_t comparisonIndex)
     return name;
 }
 
+std::optional<std::uint64_t> ObjectFinder::NameKeyOf(Address object) const {
+    if (object == kNullAddress || offsets_.name == kOffsetNotFound)
+        return std::nullopt;
+    return Reader().ReadAs<std::uint64_t>(object + offsets_.name);
+}
+
 std::optional<std::string> ObjectFinder::NameOf(Address object) const {
     if (object == kNullAddress || offsets_.name == kOffsetNotFound)
         return std::nullopt;

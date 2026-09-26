@@ -187,6 +187,10 @@ std::string UnrealTypeDump() {
     dump += row({"P", "Spot", "struct", "24", "1", "0", "Vector", "/Script/CoreUObject"});
     dump += row({"P", "Tag", "name", "8", "1", "0", "", ""});
     dump += row({"P", "Label", "string", "16", "1", "0", "", ""});
+    dump += row({"P", "Damaged", "multicast delegate", "16", "1", "0", "ActorDamaged__DelegateSignature", "/Script/Engine"});
+    dump += row({"G", "ActorDamaged__DelegateSignature", "/Script/Engine"});
+    dump += row({"A", "Amount", "float", "4", "1", "80", "", ""});
+    dump += row({"A", "Causer", "object", "8", "1", "80", "Actor", "/Script/Engine"});
     dump += row({"C", "Pawn", "/Script/Engine", "Actor", "/Script/Engine"});
     dump += row({"F", "GetController", "400", ""});
     dump += row({"A", "ReturnValue", "object", "8", "1", "580", "Actor", "/Script/Engine"});
@@ -259,7 +263,10 @@ void CheckUnrealTypes(const GeneratedProject &project) {
     for (const char *expected : {"class_()", "Actor_()", "name_()", "My_Var()", "My_Var_2()",
                                  "Weights(std::int32_t index)", "No typed form yet: Location (struct).",
                                  "::URK::unreal::StructMember<::URK::unreal::types::Vector> Spot()",
-                                 "class Pawn;", "\"Actor\", \"/Script/Engine\""})
+                                 "class Pawn;", "\"Actor\", \"/Script/Engine\"",
+                                 "struct ActorDamaged_Event : ::URK::unreal::TypedCall<Actor> {",
+                                 "::URK::unreal::Member<float> Amount() const { return parameter(\"Amount\"); }",
+                                 "::URK::unreal::EventMember<ActorDamaged_Event> Damaged() const"})
         Check(actor.find(expected) != std::string::npos, project.label + ": Actor.h has " + expected);
     const std::string pawn = ReadText(types / "Engine/Pawn.h");
     for (const char *expected : {"template <typename UrkR = ::URK::unreal::types::Actor> UrkR GetController()",
@@ -269,7 +276,13 @@ void CheckUnrealTypes(const GeneratedProject &project) {
                                  "std::optional<::URK::unreal::types::Vector> GetSpot()",
                                  "std::optional<bool> Sweep(::URK::unreal::types::HitLike *Hit)",
                                  "std::optional<::URK::unreal::types::Labelled> GetLabel()",
-                                 "No typed form yet: Blocked()."})
+                                 "No typed form yet: Blocked().",
+                                 "struct Teleport_Call : ::URK::unreal::TypedCall<Pawn> {",
+                                 "::URK::unreal::Member<::URK::unreal::types::Vector> Where() const { return parameter(\"Where\"); }",
+                                 "::URK::unreal::Member<float> Radius() const",
+                                 "::URK::unreal::ObjectPlace<::URK::unreal::types::Actor> ReturnValue() const",
+                                 "::URK::unreal::Place Where() const { return parameter(\"Where\"); }",
+                                 "URK_UNREAL_HOOK(Blocked_Call, hook_Blocked, \"Blocked\")"})
         Check(pawn.find(expected) != std::string::npos, project.label + ": Pawn.h has " + expected);
     Check(pawn.find("OnHit") == std::string::npos && pawn.find("ExecuteUbergraph") == std::string::npos,
           project.label + ": Pawn.h leaves out delegate signatures and the ubergraph");
@@ -434,6 +447,35 @@ void urk_probe_unreal_types() {
     (void)(URK::unreal::world() == URK::unreal::game_instance());
     (void)URK::unreal::game_state().valid();
     (void)URK::unreal::game_mode().valid();
+    {
+        const URK::unreal::FunctionHook teleport = t::Pawn::hook_Teleport([](t::Pawn::Teleport_Call &call) {
+            const std::optional<t::Vector> where = call.Where().get();
+            (void)call.Where().set(where.value_or(t::Vector{}));
+            (void)call.self().GetSpot();
+        });
+        const URK::unreal::FunctionHook bounds = t::Pawn::hook_GetBounds(nullptr, [](auto &call) {
+            (void)call.Radius().set(2.f);
+            (void)call.ReturnValue().get();
+        });
+        const URK::unreal::FunctionHook controller = t::Pawn::hook_GetController([](auto &call) {
+            (void)call.ReturnValue().get().valid();
+            return !call.skipped();
+        });
+        (void)t::Pawn::hook_Blocked([](t::Pawn::Blocked_Call &call) { (void)call.Where().describe(); }).active();
+        URK::unreal::Subscription hit = URK::unreal::subscribe(
+            URK::unreal::Place(pawn, "OnHit"), [](URK::unreal::HookedCall &call) { (void)call.get<float>("Damage"); });
+        (void)URK::unreal::MulticastMember(pawn, "OnHit").subscribe([](URK::unreal::HookedCall &) {}).remove();
+        hit = {};
+        const URK::unreal::Subscription damaged = pawn.Damaged().subscribe([](t::Actor::ActorDamaged_Event &event) {
+            (void)event.Amount().set(event.Amount().get().value_or(0) * 2);
+            (void)event.Causer().get().valid();
+            (void)event.self().Owner().get();
+        });
+    }
+    (void)URK::unreal::component<t::Pawn>(pawn).valid();
+    (void)URK::unreal::components<t::Actor>(pawn).size();
+    (void)URK::unreal::on_game_thread([pawn] { (void)pawn.GetSpot(); });
+    (void)(URK::unreal::key_pressed(0x74) || URK::unreal::key_held('K') || URK::unreal::key_released(1));
     const std::optional<t::Vector> spot = pawn.Spot().get();
     (void)pawn.Spot().set(t::Vector{1, 2, 3});
     (void)pawn.Teleport(spot.value_or(t::Vector{}));
@@ -528,7 +570,7 @@ void CheckUnrealLayout(const GeneratedProject &project) {
 void CheckBackendSurface(const GeneratedProject &project, bool unreal) {
     std::vector<std::string_view> forbidden = {"//@unity", "//@unreal"};
     if (unreal) {
-        forbidden.insert(forbidden.end(), {"input_get_", "graphics_device_type", "cursor_state_set", "has_input",
+        forbidden.insert(forbidden.end(), {"bool input_get_", "graphics_device_type", "cursor_state_set", "has_input",
                                            "OnObjectDestroyRequested", "on_object_destroy_requested",
                                            "has_mono_api", "has_il2cpp_api", "runtime_backend_mono"});
     } else {

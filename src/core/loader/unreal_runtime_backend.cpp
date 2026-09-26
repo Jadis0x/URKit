@@ -375,7 +375,8 @@ bool PrepareGameLoop(URK::Unreal::UnrealEngine &engine, const volatile std::uint
     RuntimeCursorProvider cursor{};
     cursor.read = &CursorGuard::GameState;
     cursor.setMenuOpen = &UnrealMenuCursor;
-    RuntimeEvents_ConfigureExternal("Unreal", URK_RUNTIME_CAP_SCENE_EVENTS | URK_RUNTIME_CAP_CURSOR_CONTROL, cursor);
+    RuntimeEvents_ConfigureExternal(
+        "Unreal", URK_RUNTIME_CAP_SCENE_EVENTS | URK_RUNTIME_CAP_CURSOR_CONTROL | URK_RUNTIME_CAP_INPUT, cursor);
     MainThread_SetDispatchTargetAvailable(true);
     return true;
 }

@@ -29,6 +29,8 @@ class ObjectFinder {
     Address ClassOf(Address object) const;
     Address OuterOf(Address object) const;
     std::optional<std::string> NameOf(Address object) const;
+    // The raw FName bytes: tells objects apart without decoding the name.
+    std::optional<std::uint64_t> NameKeyOf(Address object) const;
 
     // First live object carrying this name, or kNullAddress.
     Address Find(std::string_view name) const;

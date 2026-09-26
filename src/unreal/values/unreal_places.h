@@ -71,7 +71,9 @@ class Places {
     bool Clear(const PlaceTarget &target, bool gameThread);
     std::int32_t Find(const PlaceTarget &target, const URK_UnrealKey &key, bool gameThread);
     std::int32_t Add(const PlaceTarget &target, const URK_UnrealKey &key, bool gameThread);
-    bool Bind(const PlaceTarget &target, Address object, const char *function, bool gameThread);
+    // checkSignature false: only for the loader's own listeners, whose function is never run.
+    bool Bind(const PlaceTarget &target, Address object, const char *function, bool gameThread,
+              bool checkSignature = true);
 
   private:
     bool Fail(std::string why);
@@ -84,7 +86,8 @@ class Places {
                   std::u16string *text);
     bool SignatureCompatible(Address signature, Address function);
     // An FScriptDelegate for object's function, checked against signature.
-    bool MakeDelegate(Address signature, Address object, const char *function, std::uint8_t *delegate);
+    bool MakeDelegate(Address signature, Address object, const char *function, std::uint8_t *delegate,
+                      bool checkSignature = true);
     // A sparse delegate's bindings list in engine storage; null when unbound.
     const std::uint8_t *SparseList(const PlaceTarget &target, bool gameThread);
 

@@ -15,6 +15,8 @@ class ProcessMemory : public MemoryReader, public MemoryWriter {
   public:
     // Cached "no" expires; a stale "yes" just fails the read.
     static constexpr std::uint64_t kUnreadableLifetime = 0x4000;
+    // A quiet thread probes rarely: without this its "no" outlived the allocation made there.
+    static constexpr std::uint64_t kUnreadableMs = 20;
 
     explicit ProcessMemory(std::uint64_t unreadableLifetime = kUnreadableLifetime)
         : unreadableLifetime_(unreadableLifetime) {}
@@ -46,20 +48,22 @@ class ProcessMemory : public MemoryReader, public MemoryWriter {
         Address end = kNullAddress;
         bool readable = false;
         bool writable = false;
-        // The probe count this range stops answering at; zero never expires.
+        // The probe count and tick this range stops answering at; zero never expires.
         std::uint64_t expires = 0;
+        std::uint64_t expiresAtMs = 0;
 
         bool Holds(Address address) const { return start != end && address >= start && address < end; }
-        bool Expired(std::uint64_t probes) const { return expires != 0 && probes >= expires; }
+        bool Expired(std::uint64_t probes) const;
     };
 
-    // Probes walk forward, so a handful of recent ranges covers most of them.
-    static constexpr std::size_t kRememberedRanges = 8;
+    // One member read touches a dozen allocations; fewer slots thrashed into VirtualQuery.
+    static constexpr std::size_t kRememberedRanges = 32;
 
     // Per thread: a shared cache raced and thrashed, and a lock is too slow here.
     struct Cache {
         std::array<Range, kRememberedRanges> ranges{};
         std::size_t next = 0;
+        std::size_t last = 0;
         std::uint64_t probes = 0;
     };
 

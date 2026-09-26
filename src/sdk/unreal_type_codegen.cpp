@@ -1,6 +1,7 @@
 #include "unreal_type_codegen.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -15,7 +16,7 @@ namespace {
 
 // Must match src/unreal/unreal_type_dump.h.
 constexpr const char *kMagic = "URKIT-UNREAL-TYPES";
-constexpr int kVersion = 3;
+constexpr int kVersion = 4;
 
 // Engine flag values (EPropertyFlags, EFunctionFlags).
 constexpr std::uint64_t kConstParm = 0x2;
@@ -54,6 +55,8 @@ struct Function {
     std::string name;
     std::uint32_t flags = 0;
     std::vector<Member> parameters;
+    // Delegate signatures only: the package the members name it by.
+    std::string package;
 };
 
 struct Type {
@@ -69,6 +72,8 @@ struct Type {
     int alignment = 0;
     std::vector<Member> members;
     std::vector<Function> functions;
+    // Signatures of the class's delegate members (format 4).
+    std::vector<Function> signatures;
     std::string ident;
     // Under types/, mirroring the package: "Engine", "Game/Blueprints/Player".
     std::string folder;
@@ -161,7 +166,8 @@ bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error
         *error = path.string() + " is not a URKit Unreal type dump";
         return false;
     }
-    if (magic[1] != "1" && magic[1] != "2" && magic[1] != std::to_string(kVersion)) {
+    const int format = std::atoi(magic[1].c_str());
+    if (format < 1 || format > kVersion) {
         *error = path.string() + " has dump format " + magic[1] + "; this urk-sdk reads formats 1-" +
                  std::to_string(kVersion) + ". Use the urk-sdk that matches the loader.";
         return false;
@@ -211,6 +217,9 @@ bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error
                 current->functions.push_back(
                     {fields[1], static_cast<std::uint32_t>(std::stoul(fields[2], nullptr, 16)), {}});
                 function = &current->functions.back();
+            } else if (tag == "G" && current && !current->isStruct && !current->isEnum && fields.size() >= 3) {
+                current->signatures.push_back({fields[1], 0, {}, fields[2]});
+                function = &current->signatures.back();
             } else if (tag == "A" && function) {
                 const std::optional<Shape> shape = ParseShape(fields, 8);
                 ok = shape.has_value();
@@ -856,9 +865,14 @@ class Generator {
     struct ClassContext {
         std::set<std::string> forwards;
         std::set<std::string> includes;
+        // Delegate signature key to its generated event view.
+        std::map<std::string, std::string> events;
     };
 
     std::optional<std::string> PropertyType(const Shape &shape, ClassContext &context) {
+        if (const auto event = context.events.find(Key(shape.innerPackage, shape.inner));
+            event != context.events.end() && (shape.kind == "multicast delegate" || shape.kind == "sparse delegate"))
+            return std::string(kRuntime) + "EventMember<" + event->second + ">";
         // Enums (and bytes naming one) are typed by their generated enum first.
         if (EnumOf(shape, context.includes))
             return PlaceMemberType(shape, context.includes, context.forwards);
@@ -878,6 +892,24 @@ class Generator {
         std::set<std::string> taken;
         std::vector<std::string> skipped;
 
+        // Views of each multicast delegate's broadcast, before the members that name them.
+        std::ostringstream events;
+        for (const Member &property : entry.members) {
+            const Shape &shape = property.shape;
+            if (shape.kind != "multicast delegate" && shape.kind != "sparse delegate")
+                continue;
+            const std::string key = Key(shape.innerPackage, shape.inner);
+            const auto signature = std::find_if(entry.signatures.begin(), entry.signatures.end(),
+                                                [&](const Function &f) { return Key(f.package, f.name) == key; });
+            if (signature == entry.signatures.end() || context.events.count(key))
+                continue;
+            std::string base = shape.inner;
+            if (const std::size_t tail = base.rfind("__DelegateSignature"); tail != std::string::npos)
+                base.erase(tail);
+            const std::string view = Unique(Identifier(base) + "_Event", taken, entry.ident);
+            context.events[key] = view;
+            EmitView(entry, view, signature->parameters, context, events);
+        }
         for (const Member &property : entry.members) {
             const std::optional<std::string> type = PropertyType(property.shape, context);
             if (!type) {
@@ -893,12 +925,18 @@ class Generator {
                 to << "    " << *type << ' ' << ident << "() const { return {*this, \"" << Escape(property.name)
                    << "\"}; }\n";
         }
+        std::vector<const Function *> hooked;
         for (const Function &function : entry.functions) {
             if ((function.flags & kFunctionDelegate) || function.name.rfind("ExecuteUbergraph", 0) == 0)
                 continue;
+            hooked.push_back(&function);
             if (!EmitFunction(entry, function, taken, context, CompilerFunction(function) ? compiler : body))
                 skipped.push_back(function.name + "()");
         }
+        // After every function has its name, so a hook never takes one.
+        std::ostringstream hooks;
+        for (const Function *function : hooked)
+            EmitHook(entry, *function, taken, context, CompilerFunction(*function) ? compiler : hooks);
 
         const Type *super = Find(entry.superPackage, entry.superName);
         if (super && super->isStruct)
@@ -917,14 +955,62 @@ class Generator {
         out << "\nclass " << entry.ident << " : public " << base << " {\n  public:\n"
             << "    URK_UNREAL_TYPE(" << entry.ident << ", " << base << ", \"" << Escape(entry.name) << "\", \""
             << Escape(entry.package) << "\")\n";
+        if (!events.str().empty())
+            out << "\n    // What a broadcast carries: Member().subscribe([](View &event) { ... }).\n" << events.str();
         if (!body.str().empty())
             out << '\n' << body.str();
+        if (!hooks.str().empty())
+            out << "\n    // hook_<Function>(before, after): the callbacks get a typed view of the call.\n" << hooks.str();
         if (!compiler.str().empty())
             out << "\n    // Blueprint compiler output, not authored in the Blueprint.\n" << compiler.str();
         if (!skipped.empty())
             out << Wrapped("No typed form yet: ", skipped);
         out << "};\n} // namespace URK::unreal::types\n";
         return {FileOf(entry), out.str()};
+    }
+
+    // A hooked call's parameter, reached in place; any kind falls back to a raw Place.
+    std::string HookParameterType(const Shape &shape, ClassContext &context) {
+        if (shape.dim != 1)
+            return std::string(kRuntime) + "Place";
+        if (EnumOf(shape, context.includes))
+            return *PlaceMemberType(shape, context.includes, context.forwards);
+        if (const std::optional<std::string> value = ValueType(shape))
+            return std::string(kRuntime) + "Member<" + *value + ">";
+        if (shape.kind == "bool")
+            return std::string(kRuntime) + "Member<bool>";
+        if (shape.kind == "object" || shape.kind == "class")
+            return std::string(kRuntime) + "ObjectPlace<" + ObjectType(shape, context.forwards) + ">";
+        if (const Type *value = StructValue(shape, context.includes))
+            return std::string(kRuntime) + "Member<" + kTypes + value->ident + ">";
+        return PlaceMemberType(shape, context.includes, context.forwards).value_or(std::string(kRuntime) + "Place");
+    }
+
+    // <Function>_Call, a view of one hooked call, and hook_<Function>(before, after).
+    void EmitHook(const Type &owner, const Function &function, std::set<std::string> &taken, ClassContext &context,
+                  std::ostringstream &body) {
+        const std::string base = Identifier(function.name);
+        const std::string view = Unique(base + "_Call", taken, owner.ident);
+        const std::string hook = Unique("hook_" + base, taken, owner.ident);
+        EmitView(owner, view, function.parameters, context, body);
+        body << "    URK_UNREAL_HOOK(" << view << ", " << hook << ", \"" << Escape(function.name) << "\")\n";
+    }
+
+    // A TypedCall with one accessor per parameter, for a hooked call or a broadcast.
+    void EmitView(const Type &owner, const std::string &view, const std::vector<Member> &parameters,
+                  ClassContext &context, std::ostringstream &body) {
+        // What HookedCall itself names.
+        std::set<std::string> names = {"self",     "object",     "function",   "after",     "skipped",   "valid",
+                                       "raw",      "set",        "get",        "set_struct", "get_struct", "parameter",
+                                       "set_value", "get_value", "TypedCall", "HookedCall", "FrameView"};
+        body << "    struct " << view << " : " << kRuntime << "TypedCall<" << owner.ident << "> {"
+             << (parameters.empty() ? " " : "\n        ") << "using TypedCall::TypedCall;";
+        for (const Member &parameter : parameters) {
+            const std::string ident = Unique(Identifier(parameter.name), names, view);
+            body << "\n        " << HookParameterType(parameter.shape, context) << ' ' << ident
+                 << "() const { return parameter(\"" << Escape(parameter.name) << "\"); }";
+        }
+        body << (parameters.empty() ? " };\n" : "\n    };\n");
     }
 
     bool EmitFunction(const Type &owner, const Function &function, std::set<std::string> &taken,

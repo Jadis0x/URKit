@@ -176,7 +176,7 @@ bool Places::Fail(std::string why) {
 }
 
 bool Places::NeedGameThread(bool gameThread) {
-    return gameThread ? true : Fail("changing engine memory needs the game thread");
+    return gameThread ? true : Fail("changing engine memory needs the game thread (from a menu, use on_game_thread)");
 }
 
 bool Places::ArrayHeader(const std::uint8_t *value, std::int32_t elementSize, std::int32_t *num) {
@@ -973,11 +973,12 @@ const std::uint8_t *Places::SparseList(const PlaceTarget &target, bool gameThrea
     return delegates_.List(target.info, target.value);
 }
 
-bool Places::Bind(const PlaceTarget &target, Address object, const char *function, bool gameThread) {
+bool Places::Bind(const PlaceTarget &target, Address object, const char *function, bool gameThread,
+                  bool checkSignature) {
     const PropertyInfo &info = target.info;
     if (target.value && info.kind == PropertyKind::SparseDelegate) {
         std::uint8_t delegate[32]{};
-        if (!NeedGameThread(gameThread) || !MakeDelegate(info.typeObject, object, function, delegate))
+        if (!NeedGameThread(gameThread) || !MakeDelegate(info.typeObject, object, function, delegate, checkSignature))
             return false;
         if (target.owner == kNullAddress)
             return Fail("a sparse delegate is bound on the object that has it");
@@ -996,13 +997,14 @@ bool Places::Bind(const PlaceTarget &target, Address object, const char *functio
         return true;
     }
     std::uint8_t delegate[16]{};
-    if (!MakeDelegate(info.typeObject, object, function, delegate))
+    if (!MakeDelegate(info.typeObject, object, function, delegate, checkSignature))
         return false;
     std::memcpy(target.value, delegate, sizeof(delegate));
     return true;
 }
 
-bool Places::MakeDelegate(Address signature, Address object, const char *function, std::uint8_t *delegate) {
+bool Places::MakeDelegate(Address signature, Address object, const char *function, std::uint8_t *delegate,
+                          bool checkSignature) {
     if (object == kNullAddress || !function || !Live(*engine_, object))
         return Fail("the object is not live");
     // Function by name on the class chain, as FindFunctionChecked resolves it.
@@ -1017,7 +1019,8 @@ bool Places::MakeDelegate(Address signature, Address object, const char *functio
     }
     if (found == kNullAddress)
         return Fail(std::string("the object has no function ") + function);
-    if (signature == kNullAddress || !IsStruct(*engine_, signature) || !SignatureCompatible(signature, found))
+    if (checkSignature &&
+        (signature == kNullAddress || !IsStruct(*engine_, signature) || !SignatureCompatible(signature, found)))
         return Fail(std::string(function) + " does not match the delegate's signature");
     EngineCalls &calls = owned_->Engine();
     if (!calls.MakeWeak(object, delegate))
