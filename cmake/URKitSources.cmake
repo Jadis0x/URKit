@@ -92,7 +92,14 @@ set(URK_UNREAL_SRC
     ${URK_SRC_DIR}/unreal/reflection/unreal_object_finder.cpp
     ${URK_SRC_DIR}/unreal/reflection/unreal_type_dump.cpp
     ${URK_SRC_DIR}/unreal/reflection/unreal_type_queries.cpp
-    ${URK_SRC_DIR}/unreal/unreal_sdk_api.cpp
+    ${URK_SRC_DIR}/unreal/api/sdk_api_calls.cpp
+    ${URK_SRC_DIR}/unreal/api/sdk_api_core.cpp
+    ${URK_SRC_DIR}/unreal/api/sdk_api_hooks.cpp
+    ${URK_SRC_DIR}/unreal/api/sdk_api_members.cpp
+    ${URK_SRC_DIR}/unreal/api/sdk_api_places.cpp
+    ${URK_SRC_DIR}/unreal/api/sdk_api_subscriptions.cpp
+    ${URK_SRC_DIR}/unreal/api/sdk_api_table.cpp
+    ${URK_SRC_DIR}/unreal/unreal_engine.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_containers.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_delegate_virtuals.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_engine_calls.cpp

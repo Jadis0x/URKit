@@ -117,7 +117,7 @@ std::string SanitizeProjectName(const std::string &projectName, const std::strin
 bool HasUsableOutput(const std::string &directory) {
     std::error_code ec;
     const fs::path root(directory);
-    for (const fs::path &file : {root / "unreal_runtime.h", root / "README.md"}) {
+    for (const fs::path &file : {root / "unreal_runtime.h", root / "runtime/typed.h", root / "README.md"}) {
         if (!fs::is_regular_file(file, ec) || fs::file_size(file, ec) == 0 || ec)
             return false;
     }
@@ -136,6 +136,8 @@ bool Generate(const std::string &directory, const std::string &reportDetails, co
         {"unreal_runtime.h", {}, UnrealRuntimeModule(), mpg::OutputFilePolicy::GeneratedOverwrite, true, true},
         {"README.md", {}, UnrealSdkReadme(reportDetails), mpg::OutputFilePolicy::GeneratedOverwrite, true, false},
     };
+    for (const UnrealRuntimePiece &piece : kUnrealRuntimePieces)
+        plan.files.push_back({piece.file, {}, piece.text(), mpg::OutputFilePolicy::GeneratedOverwrite, true, true});
     std::error_code ec;
     if (!typeDumpPath.empty() && fs::is_regular_file(typeDumpPath, ec)) {
         std::vector<UnrealTypeCodegen::Header> headers;
@@ -176,6 +178,13 @@ bool GenerateModProject(const std::string &projectRoot, const std::string &unrea
          true,
          true},
     };
+    for (const UnrealRuntimePiece &piece : kUnrealRuntimePieces)
+        backendFiles.files.push_back({profile.sdkSubdirectory / piece.file,
+                                      sdkRoot / piece.file,
+                                      {},
+                                      mpg::OutputFilePolicy::GeneratedOverwrite,
+                                      true,
+                                      true});
     // types/ is copied whole when the SDK was staged elsewhere; stale headers go.
     std::error_code ec;
     const fs::path projectTypes = root / profile.sdkSubdirectory / "types";

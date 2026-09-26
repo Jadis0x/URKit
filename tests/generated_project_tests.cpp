@@ -542,6 +542,8 @@ void CheckUnrealLayout(const GeneratedProject &project) {
         "sdk/mod_sdk.h",
         "sdk/runtime_api.h",
         "sdk/unreal/unreal_runtime.h",
+        "sdk/unreal/runtime/core.h",
+        "sdk/unreal/runtime/typed.h",
         "mod/config/mod_config.h",
         "mod/ui/highlight.h",
         "mod/hooks/render_imgui_hook.cpp",

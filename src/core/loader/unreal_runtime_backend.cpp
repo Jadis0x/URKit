@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -69,6 +71,8 @@ struct GameLoopState {
     // Tick's counter write, found by strings: cross-checks the elected site.
     std::int32_t tickSite = -1;
     bool tickFound = false;
+    // Blueprint mods: Content/Paks/LogicMods/<Name>.pak, spawned in every world.
+    std::vector<std::string> logicMods;
 };
 GameLoopState g_gameLoop;
 
@@ -97,37 +101,82 @@ std::string PlaceText(const URK_UnrealApi *api, const URK_UnrealPlace &place) {
     return api->place_read_text(&place, text, sizeof(text), nullptr) ? text : std::string();
 }
 
-// All Blueprint classes from the asset registry (UE5.1+), loaded or not.
+// Class paths of a call's OutAssetData; a Blueprint asset "X" makes class "X_C".
+void AddAssetClasses(const URK_UnrealApi *api, URK_UnrealCallFrame *frame, std::vector<std::string> &paths,
+                     std::set<std::string> &seen) {
+    URK_UnrealPlace assets{};
+    assets.frame = frame;
+    assets.member = "OutAssetData";
+    const std::int32_t count = api->place_count(&assets);
+    for (std::int32_t i = 0; i < count; ++i) {
+        URK_UnrealPlace field = assets;
+        field.step_count = 2;
+        field.steps[0] = {URK_UNREAL_STEP_ELEMENT, i, nullptr};
+        field.steps[1] = {URK_UNREAL_STEP_MEMBER, 0, "PackageName"};
+        const std::string package = PlaceText(api, field);
+        field.steps[1].name = "AssetName";
+        std::string asset = PlaceText(api, field);
+        if (package.empty() || asset.empty())
+            continue;
+        if (asset.size() < 2 || asset.compare(asset.size() - 2, 2, "_C") != 0)
+            asset += "_C";
+        if (seen.insert(package + "." + asset).second)
+            paths.push_back(package + "." + asset);
+    }
+}
+
+// UE4 has no GetBlueprintAssets: the registry is asked per class name (a cooked game knows no editor subclasses).
+void ListByClassName(const URK_UnrealApi *api, std::vector<std::string> &paths, std::set<std::string> &seen) {
+    const URK_UnrealObject helpers = api->find_object("AssetRegistryHelpers");
+    const URK_UnrealObject registryClass = api->find_object("AssetRegistry");
+    const URK_UnrealObject getRegistry = helpers ? api->find_function(helpers, "GetAssetRegistry") : 0;
+    const URK_UnrealObject byClass = registryClass ? api->find_function(registryClass, "GetAssetsByClass") : 0;
+    URK_UnrealObject registry = 0;
+    if (URK_UnrealCallFrame *frame = getRegistry && byClass ? api->call_frame_create(getRegistry) : nullptr) {
+        URK_UnrealPlace result{};
+        result.frame = frame;
+        result.member = "ReturnValue";
+        if (api->call(api->default_object_of(helpers), frame))
+            registry = api->place_read_object(&result);
+        api->call_frame_destroy(frame);
+    }
+    if (!registry)
+        return;
+    for (const char *name : {"Blueprint", "WidgetBlueprint", "AnimBlueprint", "BlueprintGeneratedClass",
+                             "WidgetBlueprintGeneratedClass", "AnimBlueprintGeneratedClass"}) {
+        URK_UnrealCallFrame *frame = api->call_frame_create(byClass);
+        if (!frame)
+            return;
+        URK_UnrealPlace className{};
+        className.frame = frame;
+        className.member = "ClassName";
+        if (api->place_write_text(&className, name) && api->call(registry, frame))
+            AddAssetClasses(api, frame, paths, seen);
+        api->call_frame_destroy(frame);
+    }
+}
+
+// All Blueprint classes from the asset registry, loaded or not.
 std::vector<std::string> ListBlueprintClasses(const URK_UnrealApi *api) {
     std::vector<std::string> paths;
+    std::set<std::string> seen;
     const URK_UnrealObject helpers = api->find_object("AssetRegistryHelpers");
     const URK_UnrealObject kismet = api->find_object("KismetSystemLibrary");
     const URK_UnrealObject list = helpers ? api->find_function(helpers, "GetBlueprintAssets") : 0;
     const URK_UnrealObject load = kismet ? api->find_function(kismet, "LoadClassAsset_Blocking") : 0;
-    if (!list || !load) {
-        Log("[Unreal] Blueprint classes not preloaded: this engine has no GetBlueprintAssets; only loaded maps are dumped.");
+    if (!load) {
+        Log("[Unreal] Blueprint classes not preloaded: no LoadClassAsset_Blocking; only loaded maps are dumped.");
         return paths;
     }
-    if (URK_UnrealCallFrame *frame = api->call_frame_create(list)) {
-        if (api->call(api->default_object_of(helpers), frame)) {
-            URK_UnrealPlace assets{};
-            assets.frame = frame;
-            assets.member = "OutAssetData";
-            const std::int32_t count = api->place_count(&assets);
-            for (std::int32_t i = 0; i < count; ++i) {
-                URK_UnrealPlace field = assets;
-                field.step_count = 2;
-                field.steps[0] = {URK_UNREAL_STEP_ELEMENT, i, nullptr};
-                field.steps[1] = {URK_UNREAL_STEP_MEMBER, 0, "PackageName"};
-                const std::string package = PlaceText(api, field);
-                field.steps[1].name = "AssetName";
-                const std::string asset = PlaceText(api, field);
-                if (!package.empty() && !asset.empty())
-                    paths.push_back(package + "." + asset + "_C");
-            }
-        }
+    if (URK_UnrealCallFrame *frame = list ? api->call_frame_create(list) : nullptr) {
+        if (api->call(api->default_object_of(helpers), frame))
+            AddAssetClasses(api, frame, paths, seen);
         api->call_frame_destroy(frame);
+    } else {
+        ListByClassName(api, paths, seen);
     }
+    if (paths.empty())
+        Log("[Unreal] Blueprint classes not preloaded: the asset registry lists none; only loaded maps are dumped.");
     return paths;
 }
 
@@ -189,6 +238,145 @@ void StepTypes() {
     state.dumper->Step(kDumpBudgetMs, state.blueprintNext < state.blueprints.size());
 }
 
+// --- Blueprint mods (UE4SS LogicMods layout) ---------------------------------------------
+// The engine mounts every pak under Content/Paks itself; each mod's /Game/Mods/<Name>/ModActor is
+// spawned in each world, with PreBeginPlay before its BeginPlay and PostBeginPlay after, as UE4SS does.
+
+std::vector<std::string> FindLogicMods() {
+    std::vector<std::string> names;
+    const std::string folder = Platform_ExeDir() + "../../Content/Paks/LogicMods/";
+    WIN32_FIND_DATAA found{};
+    const HANDLE search = FindFirstFileA((folder + "*.pak").c_str(), &found);
+    if (search == INVALID_HANDLE_VALUE)
+        return names;
+    do {
+        const std::string file = found.cFileName;
+        names.push_back(file.substr(0, file.size() - 4));
+    } while (FindNextFileA(search, &found));
+    FindClose(search);
+    return names;
+}
+
+URK_UnrealPlace FramePlace(URK_UnrealCallFrame *frame, const char *member, const char *first = nullptr,
+                           const char *second = nullptr) {
+    URK_UnrealPlace place{};
+    place.frame = frame;
+    place.member = member;
+    for (const char *step : {first, second}) {
+        if (step)
+            place.steps[place.step_count++] = {URK_UNREAL_STEP_MEMBER, 0, step};
+    }
+    return place;
+}
+
+// Identity transform: a zeroed one has no rotation and no scale.
+bool SetIdentity(const URK_UnrealApi *api, URK_UnrealCallFrame *frame) {
+    bool ok = true;
+    for (const char *axis : {"X", "Y", "Z"}) {
+        const URK_UnrealPlace scale = FramePlace(frame, "SpawnTransform", "Scale3D", axis);
+        ok = ok && api->place_write_floating(&scale, 1.0);
+    }
+    const URK_UnrealPlace w = FramePlace(frame, "SpawnTransform", "Rotation", "W");
+    const URK_UnrealPlace method = FramePlace(frame, "TransformScaleMethod");
+    URK_UnrealPropertyInfo info{};
+    info.size = sizeof(info);
+    return ok && api->place_write_floating(&w, 1.0) &&
+           (!api->place_describe(&method, &info) || api->place_write_text(&method, "MultiplyWithRoot"));
+}
+
+bool CallIfPresent(const URK_UnrealApi *api, URK_UnrealObject object, const char *name) {
+    const URK_UnrealObject function = api->find_function(object, name);
+    URK_UnrealCallFrame *frame = function ? api->call_frame_create(function) : nullptr;
+    const bool called = frame && api->call(object, frame);
+    if (frame)
+        api->call_frame_destroy(frame);
+    return called;
+}
+
+URK_UnrealObject SpawnModActor(const URK_UnrealApi *api, URK_UnrealObject world, URK_UnrealObject klass) {
+    const URK_UnrealObject statics = api->find_object("GameplayStatics");
+    const URK_UnrealObject begin = statics ? api->find_function(statics, "BeginDeferredActorSpawnFromClass") : 0;
+    const URK_UnrealObject finish = statics ? api->find_function(statics, "FinishSpawningActor") : 0;
+    URK_UnrealObject actor = 0;
+    if (URK_UnrealCallFrame *frame = begin && finish ? api->call_frame_create(begin) : nullptr) {
+        if (!api->call_frame_set(frame, "WorldContextObject", &world, sizeof(world)) ||
+            !api->call_frame_set(frame, "ActorClass", &klass, sizeof(klass)) || !SetIdentity(api, frame) ||
+            !api->call(api->default_object_of(statics), frame) ||
+            !api->call_frame_get(frame, "ReturnValue", &actor, sizeof(actor)))
+            actor = 0;
+        api->call_frame_destroy(frame);
+    }
+    if (!actor)
+        return 0;
+    CallIfPresent(api, actor, "PreBeginPlay");
+    URK_UnrealObject spawned = 0;
+    if (URK_UnrealCallFrame *frame = api->call_frame_create(finish)) {
+        if (!api->call_frame_set(frame, "Actor", &actor, sizeof(actor)) || !SetIdentity(api, frame) ||
+            !api->call(api->default_object_of(statics), frame) ||
+            !api->call_frame_get(frame, "ReturnValue", &spawned, sizeof(spawned)))
+            spawned = 0;
+        api->call_frame_destroy(frame);
+    }
+    if (spawned)
+        CallIfPresent(api, spawned, "PostBeginPlay");
+    return spawned;
+}
+
+// A mod's PrintToModLoader(Message) goes to the log, as UE4SS prints it; the parameter is taken by position.
+struct ModPrint {
+    std::string mod;
+    std::string parameter;
+};
+
+int PrintToLog(void *user, const URK_UnrealHookedCall *call) {
+    const auto *print = static_cast<const ModPrint *>(user);
+    URK_UnrealPlace message{};
+    message.frame = call->frame;
+    message.member = print->parameter.c_str();
+    char text[1024] = {};
+    if (g_gameLoop.api->place_read_text(&message, text, sizeof(text), nullptr))
+        Log("[LogicMods][%s] %s", print->mod.c_str(), text);
+    return 1;
+}
+
+// Once per function object: a class loaded again later is a new function.
+void HookModPrint(const std::string &mod, URK_UnrealObject klass) {
+    static std::set<URK_UnrealObject> hooked;
+    const URK_UnrealApi *api = g_gameLoop.api;
+    const URK_UnrealObject function = api->find_function(klass, "PrintToModLoader");
+    if (!function || !hooked.insert(function).second)
+        return;
+    URK::Unreal::UnrealEngine &engine = URK::Unreal::UnrealEngine::Instance();
+    const std::optional<URK::Unreal::FunctionInfo> info = URK::Unreal::DescribeFunction(
+        engine.Chain(), engine.Values(), engine.Functions(), static_cast<URK::Unreal::Address>(function));
+    if (!info || info->parameters.empty() || info->parameters.front().returned)
+        return;
+    // Lives as long as the hook, which is the process.
+    auto *print = new ModPrint{mod, info->parameters.front().name};
+    if (!api->function_hook_add(function, &PrintToLog, nullptr, print))
+        delete print;
+}
+
+// Game thread, once per announced world.
+void SpawnLogicMods(URK_UnrealObject world) {
+    const URK_UnrealApi *api = g_gameLoop.api;
+    const URK_UnrealObject kismet = api->find_object("KismetSystemLibrary");
+    const URK_UnrealObject load = kismet ? api->find_function(kismet, "LoadClassAsset_Blocking") : 0;
+    for (const std::string &name : g_gameLoop.logicMods) {
+        const std::string path = "/Game/Mods/" + name + "/ModActor.ModActor_C";
+        const URK_UnrealObject klass = LoadBlueprintClass(api, kismet, load, path);
+        if (!klass) {
+            Log("[Unreal][WARNING] LogicMods: %s has no %s (is the pak mounted, and cooked for this game?).",
+                name.c_str(), path.c_str());
+            continue;
+        }
+        HookModPrint(name, klass);
+        const URK_UnrealObject actor = SpawnModActor(api, world, klass);
+        Log(actor ? "[Unreal] LogicMods: %s spawned." : "[Unreal][WARNING] LogicMods: %s could not be spawned.",
+            name.c_str());
+    }
+}
+
 // Announced after BeginPlay so controller and pawn are findable.
 void OnGameFrame(void *) {
     using namespace URK::Unreal;
@@ -230,6 +418,8 @@ void OnGameFrame(void *) {
         strncpy_s(scene.name, g_gameLoop.loop->MapName(world.world).c_str(), _TRUNCATE);
         // A new world object is a new load, even of the same map.
         RuntimeEvents_ObserveScene(scene, true);
+        if (!g_gameLoop.logicMods.empty())
+            SpawnLogicMods(static_cast<URK_UnrealObject>(world.world));
         if (g_gameLoop.dumper)
             ScanTypes(scene.name);
     }
@@ -491,6 +681,10 @@ bool RunUnreal(Config &config) {
     if (!modPlan.Empty())
         NativeMods_Load(modPlan, ModContext_BuildUnreal(config, api, MainModuleBase(), gameLoop));
     g_gameLoop.api = api;
+    g_gameLoop.logicMods = FindLogicMods();
+    if (!g_gameLoop.logicMods.empty())
+        Log("[Unreal] LogicMods: %zu Blueprint mod(s) in Content/Paks/LogicMods%s.", g_gameLoop.logicMods.size(),
+            gameLoop ? "" : ", but without the game loop none will be spawned");
     if (dumpTypes && !gameLoop)
         Log("[Unreal][ERROR] DumpTypes needs the game loop; nothing will be dumped.");
     if (dumpTypes && gameLoop) {

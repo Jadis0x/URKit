@@ -151,6 +151,15 @@ if (BUILD_TESTING)
     urk_disable_vs_vcpkg_integration(urk_unity_name_matching_tests)
     add_test(NAME urkit_unity_name_matching COMMAND urk_unity_name_matching_tests)
 
+    # The Unreal reader's range cache against memory the test reserves and frees; no game needed.
+    add_executable(urk_unreal_process_memory_tests tests/unreal_process_memory_tests.cpp
+        ${URK_SRC_DIR}/unreal/memory/unreal_process_memory.cpp)
+    target_include_directories(urk_unreal_process_memory_tests PRIVATE . src)
+    target_compile_features(urk_unreal_process_memory_tests PRIVATE cxx_std_20)
+    target_compile_definitions(urk_unreal_process_memory_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    urk_disable_vs_vcpkg_integration(urk_unreal_process_memory_tests)
+    add_test(NAME urkit_unreal_process_memory COMMAND urk_unreal_process_memory_tests)
+
 endif()
 
 if (URK_BUILD_SDK_TOOL)

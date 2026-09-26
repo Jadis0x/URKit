@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace URK::Unreal {
@@ -113,6 +114,11 @@ const ProcessMemory::Range &ProcessMemory::Resolve(Address address) const {
     }
 
     if (!resolved.readable) {
+        // Only the 64 KB granule asked about: a free region spans gigabytes, and new allocations land in it.
+        constexpr Address kGranule = 0x10000;
+        const Address granule = address & ~(kGranule - 1);
+        resolved.start = std::max(resolved.start, granule);
+        resolved.end = std::min(resolved.end, granule + kGranule);
         resolved.expires = cache.probes + unreadableLifetime_;
         resolved.expiresAtMs = GetTickCount64() + kUnreadableMs;
     }
