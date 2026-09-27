@@ -242,6 +242,10 @@ const char *PropertyKindName(PropertyKind kind) {
         return "utf8 string";
     case PropertyKind::AnsiString:
         return "ansi string";
+    case PropertyKind::FieldPath:
+        return "field path";
+    case PropertyKind::Optional:
+        return "optional";
     case PropertyKind::Unknown:
         break;
     }
@@ -273,6 +277,8 @@ PropertyKind ClassifyProperty(std::uint64_t castFlags) {
         Mapping{kCastFlagUtf8StrProperty, PropertyKind::Utf8String},
         Mapping{kCastFlagAnsiStrProperty, PropertyKind::AnsiString},
         Mapping{kCastFlagTextProperty, PropertyKind::Text},
+        Mapping{kCastFlagFieldPathProperty, PropertyKind::FieldPath},
+        Mapping{kCastFlagOptionalProperty, PropertyKind::Optional},
         Mapping{kCastFlagDelegateProperty, PropertyKind::Delegate},
         Mapping{kCastFlagMulticastSparseDelegateProperty, PropertyKind::SparseDelegate},
         Mapping{kCastFlagMulticastDelegateProperty, PropertyKind::MulticastDelegate},
@@ -439,6 +445,10 @@ std::optional<PropertyInfo> PropertyValues::Describe(Address field) const {
         info.inner = pointerAt(tail_.mapKey);
         info.valueInner = pointerAt(tail_.mapValue);
         break;
+    case PropertyKind::Optional:
+        // FOptionalPropertyLayout::ValueProperty, right after FProperty (5.4's PDB).
+        info.inner = pointerAt(tail_.firstPointer());
+        break;
     default:
         break;
     }
@@ -483,6 +493,7 @@ std::int32_t PropertyValues::AlignmentOf(const PropertyInfo &info) const {
         return alignment > 0 && alignment <= 256 && (alignment & (alignment - 1)) == 0 ? alignment : 0;
     }
     case PropertyKind::Unknown:
+    case PropertyKind::Optional:
         return 0;
     default:
         return 8;

@@ -59,6 +59,8 @@ template <typename T> class Member {
 using NameValue = Member<std::string>;
 using StringValue = Member<std::string>;
 using TextValue = Member<std::string>;
+// A TFieldPath member as "/Script/Engine.Actor:bHidden"; read only.
+using FieldPathValue = Member<std::string>;
 // An enum member typed by its generated enum: E::Name() values resolve by name.
 template <typename E> using EnumMember = Member<E>;
 
@@ -274,6 +276,28 @@ template <typename T> class SoftMember {
     template <typename U = T> U get() const { return U(place_.get_object()); }
     bool set(Arg<T> value) const { return place_.set_object(value.handle()); }
     bool clear() const { return place_.clear(); }
+    const Place &place() const { return place_; }
+
+  private:
+    Place place_;
+};
+
+// A TOptional member (UE 5.3+): empty, or one value. Changes run on the game thread.
+template <typename T> class OptionalMember {
+  public:
+    OptionalMember(const Place &place) : place_(place) {}
+    OptionalMember(const Object &owner, const char *member, std::int32_t index = 0) : place_(owner, member, index) {}
+    bool has_value() const { return place_.count() > 0; }
+    std::optional<T> get() const { return has_value() ? Traits<T>::get(place_.element(0)) : std::nullopt; }
+    // Makes a default value first when empty, then writes this one.
+    bool set(const T &value) const {
+        if (!has_value() && !place_.insert(0, 1))
+            return false;
+        return Traits<T>::set(place_.element(0), value);
+    }
+    bool reset() const { return place_.clear(); }
+    // The value's place while set, to reach into a struct value.
+    Place value() const { return place_.element(0); }
     const Place &place() const { return place_; }
 
   private:

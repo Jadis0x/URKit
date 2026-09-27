@@ -150,7 +150,8 @@ std::string NativeCallHook::Refusal(const FunctionInfo &info, const std::string 
             return "its thunk reads its own arguments";
     }
     for (const FunctionParameter &parameter : info.parameters) {
-        if (!parameter.info.Resolved() || parameter.info.kind == PropertyKind::Unknown)
+        if (!parameter.info.Resolved() || parameter.info.kind == PropertyKind::Unknown ||
+            parameter.info.kind == PropertyKind::FieldPath || parameter.info.kind == PropertyKind::Optional)
             return "parameter " + parameter.name + " has no known type";
     }
     return {};

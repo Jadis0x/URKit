@@ -161,13 +161,68 @@ std::int32_t FindInterfacesOffset(const ObjectFinder &finder, const StructOffset
     return found;
 }
 
+constexpr std::uint32_t kClassAbstract = 0x1;
+constexpr std::uint32_t kClassNative = 0x80;
+constexpr std::uint32_t kClassInterface = 0x4000;
+constexpr std::uint32_t kClassCompiledFromBlueprint = 0x40000;
+
+// 4 bytes before ClassCastFlags (UE4, 5.4's PDB), or 8 with a padded bitfield; told apart by known classes.
+std::int32_t FindClassFlagsOffset(const ObjectFinder &finder, const StructOffsets &structs) {
+    if (structs.castFlags == kOffsetNotFound)
+        return kOffsetNotFound;
+    const Address interfaceBase = finder.Find("Interface");
+    std::vector<Address> natives;
+    for (const char *name : {"Object", "Actor", "Pawn", "ActorComponent", "PlayerController", "GameplayStatics"}) {
+        const Address type = finder.Find(name);
+        if (type != kNullAddress && ObjectIs(finder, structs, type, kCastFlagClass))
+            natives.push_back(type);
+    }
+    if (interfaceBase == kNullAddress || natives.size() < 3)
+        return kOffsetNotFound;
+    for (const std::int32_t back : {4, 8, 12}) {
+        const std::int32_t offset = structs.castFlags - back;
+        const auto flags = [&](Address type) { return finder.Reader().ReadUInt32(type + offset).value_or(0); };
+        // UInterface is native, abstract and an interface; the others native, from C++, not interfaces.
+        const std::uint32_t base = flags(interfaceBase);
+        bool ok = (base & (kClassNative | kClassInterface | kClassAbstract)) ==
+                  (kClassNative | kClassInterface | kClassAbstract);
+        for (const Address type : natives) {
+            const std::uint32_t value = flags(type);
+            ok = ok && (value & kClassNative) && !(value & (kClassInterface | kClassCompiledFromBlueprint));
+        }
+        if (ok)
+            return offset;
+    }
+    return kOffsetNotFound;
+}
+
 } // namespace
 
 ClassOffsets FindClassOffsets(const ObjectFinder &finder, const StructOffsets &structs) {
     ClassOffsets offsets;
     offsets.classDefaultObject = FindClassDefaultObjectOffset(finder, structs);
     offsets.interfaces = FindInterfacesOffset(finder, structs);
+    offsets.classFlags = FindClassFlagsOffset(finder, structs);
     return offsets;
+}
+
+std::optional<std::vector<Address>> TypeQueries::InterfacesOf(Address classObject) const {
+    const Address interfaceBase = finder_->Find("Interface");
+    if (classObject == kNullAddress || classes_.interfaces == kOffsetNotFound || interfaceBase == kNullAddress)
+        return std::nullopt;
+    const auto interfaces = ReadInterfaces(*finder_, structs_, classObject, classes_.interfaces, interfaceBase);
+    if (!interfaces)
+        return std::nullopt;
+    std::vector<Address> out;
+    for (const ImplementedInterface &entry : *interfaces)
+        out.push_back(entry.interfaceClass);
+    return out;
+}
+
+std::optional<std::uint32_t> TypeQueries::ClassFlagsOf(Address classObject) const {
+    if (classObject == kNullAddress || classes_.classFlags == kOffsetNotFound)
+        return std::nullopt;
+    return finder_->Reader().ReadUInt32(classObject + classes_.classFlags);
 }
 
 std::optional<Address> TypeQueries::InterfaceAddress(Address object, Address interfaceClass) const {

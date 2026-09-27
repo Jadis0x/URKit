@@ -13,12 +13,15 @@ namespace UnrealTypeCodegen {
 inline constexpr const char *kDumpFileName = "URKit_unreal_types.txt";
 
 struct Header {
-    // Relative to types/: "Engine/Actor.h", or "INDEX.md".
+    // Relative to folder: "Engine/Actor.h", or "INDEX.md".
     std::string fileName;
     std::string contents;
+    // Under sdk/unreal/: "types", or "re" for the reverse-engineering exports.
+    std::string folder = "types";
 };
 
-// One header per class in its package's folder, plus INDEX.md. Fails on a missing, foreign or newer dump.
+// One header per class in its package's folder, plus INDEX.md, pseudo-code and the re/ exports.
+// Fails on a missing, foreign or newer dump.
 bool Build(const std::filesystem::path &dumpPath, std::vector<Header> *headers, std::string *error);
 
 } // namespace UnrealTypeCodegen

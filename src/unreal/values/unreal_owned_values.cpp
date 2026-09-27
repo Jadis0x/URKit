@@ -80,6 +80,16 @@ Ownership OwnedValues::Classify(const PropertyInfo &info, int depth) const {
     case PropertyKind::Text:
     case PropertyKind::SoftObject:
         return Ownership::Owned;
+    case PropertyKind::FieldPath:
+        // Field, weak owner, then the path's names in an engine array.
+        return info.elementSize == kFieldPathSize ? Ownership::Owned : Ownership::Unreleasable;
+    case PropertyKind::Optional: {
+        // Owns what its value owns; an intrusive unset state is not understood here.
+        const std::optional<PropertyInfo> value = values_->Describe(info.inner);
+        if (!value || value->elementSize <= 0 || value->arrayDim != 1 || value->elementSize >= info.elementSize)
+            return Ownership::Unreleasable;
+        return Classify(*value, depth + 1);
+    }
     case PropertyKind::Array: {
         const std::optional<PropertyInfo> inner = values_->Describe(info.inner);
         if (!inner || info.elementSize != kArrayHeaderSize)
@@ -290,6 +300,26 @@ bool OwnedValues::Release(const PropertyInfo &info, std::uint8_t *value, int dep
             pathInfo.inner = path;
             pathInfo.elementSize = info.elementSize - at;
             if (!nested(pathInfo, value + at))
+                return false;
+            break;
+        }
+        case PropertyKind::Optional: {
+            const std::optional<PropertyInfo> inner = values_->Describe(info.inner);
+            if (!inner)
+                return Fail("an optional's value did not resolve");
+            // The set flag follows the value; only a set value is released.
+            if (value[inner->elementSize] != 0 && !nested(*inner, value))
+                return false;
+            break;
+        }
+        case PropertyKind::FieldPath: {
+            // Its names own nothing; only the path array's buffer goes back.
+            std::uint8_t *path = value + kFieldPathArray;
+            const std::int32_t num = Load<std::int32_t>(path + 8);
+            const std::int32_t max = Load<std::int32_t>(path + 12);
+            if (num < 0 || max < num || num > kMaxContainerElements || (num > 0 && !Load<void *>(path)))
+                return Fail("a field path is not in a state it can be released from");
+            if (!step(freeable(path), engine_->Failure()))
                 return false;
             break;
         }

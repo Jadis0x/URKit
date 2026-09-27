@@ -7,25 +7,51 @@
 namespace URK::Unreal {
 namespace {
 
-constexpr int kMaxDepth = 6;
-constexpr std::int32_t kMaxElements = 16;
-constexpr std::int32_t kMaxNodes = 512;
-constexpr std::size_t kMaxText = 160;
-constexpr std::size_t kMaxLines = 600;
+// Guards against runaway data only; real defaults stay far below them.
+constexpr int kMaxDepth = 16;
+constexpr std::int32_t kMaxElements = 65536;
+constexpr std::int32_t kMaxNodes = 4096;
+constexpr std::size_t kMaxLines = 20000;
 constexpr std::int32_t kMaxFields = 4096;
 constexpr std::uint64_t kPropertyEdit = 0x1;
 constexpr std::uint64_t kPropertyBlueprintVisible = 0x4;
 constexpr std::uint64_t kPropertyTransient = 0x2000;
 constexpr std::uint64_t kPropertyDeprecated = 0x20000000;
 
+// A record holds one line: tabs and line breaks become spaces.
 std::string Clean(std::string text) {
     for (char &ch : text) {
         if (ch == '\t' || ch == '\n' || ch == '\r')
             ch = ' ';
     }
-    if (text.size() > kMaxText)
-        text = text.substr(0, kMaxText) + "...";
     return text;
+}
+
+// A string in full, quoted and escaped as C++ writes it.
+std::string Quoted(const std::string &text) {
+    std::string out = "\"";
+    for (const char ch : text) {
+        switch (ch) {
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            out += ch;
+        }
+    }
+    return out + '"';
 }
 
 // Fixed notation where it stays readable (300000, not 3e+05), shortest digits that read back the same.
@@ -248,9 +274,10 @@ std::optional<std::string> ClassDefaults::Render(const PlaceTarget &value, int d
     case PropertyKind::AnsiString:
     case PropertyKind::Text: {
         const std::optional<std::string> text = places_->ReadText(value, true);
-        return text ? std::optional<std::string>('"' + Clean(*text) + '"') : std::nullopt;
+        return text ? std::optional<std::string>(Quoted(*text)) : std::nullopt;
     }
-    case PropertyKind::SoftObject: {
+    case PropertyKind::SoftObject:
+    case PropertyKind::FieldPath: {
         const std::optional<std::string> path = places_->ReadText(value, true);
         return path ? std::optional<std::string>(path->empty() ? "None" : *path) : std::nullopt;
     }
@@ -273,6 +300,13 @@ std::optional<std::string> ClassDefaults::Render(const PlaceTarget &value, int d
             }
         }
         return text + ')';
+    }
+    case PropertyKind::Optional: {
+        const std::int32_t set = places_->Count(value, true);
+        if (set <= 0)
+            return set == 0 ? std::optional<std::string>("unset") : std::nullopt;
+        const std::optional<PlaceTarget> inner = Step(value, URK_UNREAL_STEP_ELEMENT, 0);
+        return inner ? Render(*inner, depth + 1, scope) : std::nullopt;
     }
     case PropertyKind::Array:
     case PropertyKind::Set:

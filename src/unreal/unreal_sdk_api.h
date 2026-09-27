@@ -87,6 +87,9 @@ class UnrealEngine {
     // Exact function bounds from the engine image's exception table.
     const FunctionTable &Bounds() const { return functionTable_; }
 
+    // Engine globals by name (GUObjectArray's objects, the name pool, ProcessEvent, UObject's vtable).
+    std::vector<std::pair<std::string, Address>> Globals() const;
+
     const ProcessEventLocation &ProcessEvent() const { return processEvent_; }
     bool ProcessEventResolved() const { return processEvent_.Resolved(); }
     const std::string &ProcessEventFailure() const { return processEventFailure_; }
@@ -150,5 +153,7 @@ const EnumNames *UnrealSdk_Enums();
 
 // A class's default values that differ from its parent's, as type dump lines. Game thread.
 std::string UnrealSdk_DescribeDefaults(Address classObject);
+// Dump lines of a function's Blueprint bytecode; state 0 none, 1 whole, 2 partly decoded. Game thread.
+std::string UnrealSdk_DescribeScript(Address function, int &state);
 
 } // namespace URK::Unreal

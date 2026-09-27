@@ -68,7 +68,8 @@ std::string ElementShape(const ObjectFinder &finder, const PropertyValues &value
 // Closes a shape line: element shapes of an array or set (one) or a map (two).
 void WriteElements(std::ostringstream &out, const ObjectFinder &finder, const PropertyValues &values,
                    const PropertyInfo &info) {
-    if (info.kind == PropertyKind::Array || info.kind == PropertyKind::Set || info.kind == PropertyKind::Map)
+    if (info.kind == PropertyKind::Array || info.kind == PropertyKind::Set || info.kind == PropertyKind::Map ||
+        info.kind == PropertyKind::Optional)
         out << '\t' << ElementShape(finder, values, info.inner);
     if (info.kind == PropertyKind::Map)
         out << '\t' << ElementShape(finder, values, info.valueInner);
@@ -81,12 +82,74 @@ void WriteShape(std::ostringstream &out, const ObjectFinder &finder, const Prope
     WriteElements(out, finder, values, info);
 }
 
-std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, const PropertyChain &chain,
-                      const PropertyValues &values, const FunctionOffsets &functions, const TypeQueries &types,
-                      Address classObject, const Named &self) {
+// A member with its place: offset (-1 unknown), then a bool's byte, byte mask and field mask.
+void WriteMember(std::ostringstream &out, const ObjectFinder &finder, const PropertyValues &values,
+                 const PropertyInfo &info) {
+    WriteShapeOpen(out, finder, info);
+    out << '\t' << (info.Resolved() ? info.offset : -1) << '\t' << static_cast<int>(info.boolLayout.byteOffset)
+        << '\t' << static_cast<int>(info.boolLayout.byteMask) << '\t' << static_cast<int>(info.boolLayout.fieldMask);
+    WriteElements(out, finder, values, info);
+}
+
+// PropertiesSize and MinAlignment; zero when unknown.
+std::pair<std::int32_t, std::int32_t> SizeOf(const MemoryReader &reader, const StructOffsets &structs,
+                                             Address structObject) {
+    const std::int32_t size = structs.propertiesSize == kOffsetNotFound
+                                  ? 0
+                                  : reader.ReadInt32(structObject + structs.propertiesSize).value_or(0);
+    // int16 since UE5.x (int32 before; the low half is the same value).
+    const std::int32_t alignment = structs.minAlignment == kOffsetNotFound
+                                       ? 0
+                                       : reader.ReadAs<std::int16_t>(structObject + structs.minAlignment).value_or(0);
+    return {size, alignment};
+}
+
+// Offset into the main image, or empty when outside it.
+std::string Rva(const TypeDumpSources &sources, Address address) {
+    if (address == kNullAddress || address < sources.imageBase || address - sources.imageBase >= sources.imageSize)
+        return {};
+    return Hex(address - sources.imageBase);
+}
+
+// A script function's own locals (non-parameters), then its bytecode.
+void WriteScript(std::ostringstream &out, const ObjectFinder &finder, const PropertyChain &chain,
+                 const PropertyValues &values, const TypeDumpSources &sources, Address function, int counts[2]) {
+    int state = 0;
+    const std::string lines = sources.script ? sources.script(function, state) : std::string();
+    if (state == 0)
+        return;
+    ++counts[state == 1 ? 0 : 1];
+    Address field = chain.First(function);
+    for (std::int32_t step = 0; field != kNullAddress && step < kMaxFields; ++step, field = chain.Next(field)) {
+        const std::optional<PropertyInfo> info = values.Describe(field);
+        const std::optional<std::string> name = chain.NameOf(field);
+        if (!info || !name || (info->propertyFlags & kPropertyFlagParm) != 0)
+            continue;
+        out << "L\t" << Clean(*name);
+        WriteShape(out, finder, values, *info);
+    }
+    out << lines;
+}
+
+std::string DumpClass(const TypeDumpSources &sources, Address classObject, const Named &self, int scripts[2]) {
+    const ObjectFinder &finder = sources.finder;
+    const StructOffsets &structs = sources.structs;
+    const PropertyChain &chain = sources.chain;
+    const PropertyValues &values = sources.values;
+    const FunctionOffsets &functions = sources.functions;
+    const TypeQueries &types = sources.types;
     std::ostringstream out;
     const Named super = NameAndPackage(finder, types.SuperOf(classObject));
-    out << "C\t" << self.name << '\t' << self.package << '\t' << super.name << '\t' << super.package << '\n';
+    const auto [size, alignment] = SizeOf(finder.Reader(), structs, classObject);
+    const std::optional<std::uint32_t> flags = types.ClassFlagsOf(classObject);
+    out << "C\t" << self.name << '\t' << self.package << '\t' << super.name << '\t' << super.package << '\t' << size
+        << '\t' << alignment << '\t' << (flags ? Hex(*flags) : std::string()) << '\n';
+    if (const std::optional<std::vector<Address>> interfaces = types.InterfacesOf(classObject)) {
+        for (const Address type : *interfaces) {
+            const Named named = NameAndPackage(finder, type);
+            out << "I\t" << named.name << '\t' << named.package << '\n';
+        }
+    }
 
     std::vector<PropertyInfo> delegates;
     Address field = chain.First(classObject);
@@ -96,7 +159,7 @@ std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, 
         if (!info || !name)
             continue;
         out << "P\t" << Clean(*name);
-        WriteShape(out, finder, values, *info);
+        WriteMember(out, finder, values, *info);
         if (info->kind == PropertyKind::Delegate || info->kind == PropertyKind::MulticastDelegate ||
             info->kind == PropertyKind::SparseDelegate)
             delegates.push_back(*info);
@@ -112,11 +175,13 @@ std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, 
         const std::optional<std::string> name = finder.NameOf(*child);
         if (!function || !name)
             continue;
-        out << "F\t" << Clean(*name) << '\t' << Hex(function->flags) << '\n';
+        out << "F\t" << Clean(*name) << '\t' << Hex(function->flags) << '\t'
+            << Rva(sources, function->Native() ? function->nativeEntry : kNullAddress) << '\n';
         for (const FunctionParameter &parameter : function->parameters) {
             out << "A\t" << Clean(parameter.name);
             WriteShape(out, finder, values, parameter.info);
         }
+        WriteScript(out, finder, chain, values, sources, *child, scripts);
     }
 
     // Delegate signatures, named as the members name them: typed event parameters.
@@ -141,14 +206,7 @@ std::string DumpClass(const ObjectFinder &finder, const StructOffsets &structs, 
 std::string DumpStruct(const ObjectFinder &finder, const StructOffsets &structs, const PropertyChain &chain,
                        const PropertyValues &values, const TypeQueries &types, Address structObject,
                        const Named &self) {
-    const MemoryReader &reader = finder.Reader();
-    const std::int32_t size = structs.propertiesSize == kOffsetNotFound
-                                  ? 0
-                                  : reader.ReadInt32(structObject + structs.propertiesSize).value_or(0);
-    // int16 since UE5.x (int32 before; the low half is the same value).
-    const std::int32_t alignment = structs.minAlignment == kOffsetNotFound
-                                       ? 0
-                                       : reader.ReadAs<std::int16_t>(structObject + structs.minAlignment).value_or(0);
+    const auto [size, alignment] = SizeOf(finder.Reader(), structs, structObject);
     std::ostringstream out;
     const Named super = NameAndPackage(finder, types.SuperOf(structObject));
     out << "S\t" << self.name << '\t' << self.package << '\t' << super.name << '\t' << super.package << '\t' << size
@@ -161,10 +219,7 @@ std::string DumpStruct(const ObjectFinder &finder, const StructOffsets &structs,
         if (!info || !info->Resolved() || !name)
             continue;
         out << "M\t" << Clean(*name);
-        WriteShapeOpen(out, finder, *info);
-        out << '\t' << info->offset << '\t' << static_cast<int>(info->boolLayout.byteOffset) << '\t'
-            << static_cast<int>(info->boolLayout.byteMask) << '\t' << static_cast<int>(info->boolLayout.fieldMask);
-        WriteElements(out, finder, values, *info);
+        WriteMember(out, finder, values, *info);
     }
     return out.str();
 }
@@ -179,6 +234,9 @@ std::string DumpEnum(const EnumNames &enums, Address enumObject, const Named &se
     }
     return out.str();
 }
+
+// Globals sort after every package path.
+std::string GlobalKey(const std::string &name) { return "~\t" + name; }
 
 // "C|S|E<TAB>name<TAB>package..." to the block key "package<TAB>name".
 std::string KeyOf(const std::string &recordLine) {
@@ -217,6 +275,8 @@ TypeDumpBlocks ReadExisting(const std::string &path, const TypeDumpImage &image)
     while (std::getline(in, line)) {
         if (line.rfind("C\t", 0) == 0 || line.rfind("S\t", 0) == 0 || line.rfind("E\t", 0) == 0)
             key = KeyOf(line);
+        else if (line.rfind("Z\t", 0) == 0)
+            key = GlobalKey(line.substr(2, line.find('\t', 2) - 2));
         if (!key.empty())
             blocks[key] += line + '\n';
     }
@@ -258,6 +318,18 @@ TypeDumper::TypeDumper(const TypeDumpSources &sources, std::string path, const T
     *file_ = ReadExisting(path_, image_);
     for (const auto &entry : *file_)
         known_.insert(entry.first);
+    // "Z<TAB>name<TAB>rva": written with the next batch when missing or moved.
+    for (const auto &[name, address] : sources_.globals) {
+        const std::string rva = Rva(sources_, address);
+        const std::string line = "Z\t" + Clean(name) + '\t' + rva + '\n';
+        const auto found = file_->find(GlobalKey(name));
+        if (!rva.empty() && (found == file_->end() || found->second != line))
+            ready_[GlobalKey(name)] = line;
+    }
+    if (!ready_.empty()) {
+        started_ = GetTickCount64();
+        label_ = "engine globals";
+    }
 }
 
 // The writer is detached and owns what it uses; the loader stays loaded for the process, so nothing waits.
@@ -393,13 +465,16 @@ void TypeDumper::Describe(const Queued &item) {
     const std::size_t tab = item.key.find('\t');
     const Named self{item.key.substr(tab + 1), item.key.substr(0, tab)};
     const TypeDumpSources &s = sources_;
+    int scripts[2] = {0, 0};
     if (item.kind == kKindClass)
-        ready_[item.key] = DumpClass(s.finder, s.structs, s.chain, s.values, s.functions, s.types, item.object, self) +
+        ready_[item.key] = DumpClass(s, item.object, self, scripts) +
                            (s.defaults ? s.defaults(item.object) : std::string());
     else if (item.kind == kKindStruct)
         ready_[item.key] = DumpStruct(s.finder, s.structs, s.chain, s.values, s.types, item.object, self);
     else
         ready_[item.key] = DumpEnum(*s.enums, item.object, self);
+    scripts_ += scripts[0];
+    partialScripts_ += scripts[1];
 }
 
 bool TypeDumper::DescribeNow(Address object) {
@@ -429,8 +504,12 @@ void TypeDumper::Flush() {
     busy_->store(true, std::memory_order_release);
     char summary[512];
     std::snprintf(summary, sizeof(summary),
-                  "[Unreal] types of %s dumped: %zu new over %d frames, %.0fms on the game thread, %llums in all",
-                  label_.c_str(), ready_.size(), frames_, spentMs_, GetTickCount64() - started_);
+                  "[Unreal] types of %s dumped: %zu new over %d frames, %.0fms on the game thread, %llums in all; "
+                  "%d Blueprint scripts decoded, %d only in part",
+                  label_.c_str(), ready_.size(), frames_, spentMs_, GetTickCount64() - started_, scripts_,
+                  partialScripts_);
+    scripts_ = 0;
+    partialScripts_ = 0;
     std::thread([file = file_, busy = busy_, blocks = std::move(ready_), path = path_, image = image_,
                  report = report_, summary = std::string(summary)]() mutable {
         for (auto &[key, block] : blocks)

@@ -441,7 +441,8 @@ ChangeKind ClassifyCandidateChange(const Inspection &inspection, const fs::path 
         return PathExists(existing) ? ChangeKind::Modified : ChangeKind::Added;
     // Typed headers and the SDK readme belong to the generator; never edited in place.
     const std::string generic = relativePath.generic_string();
-    if (generic.starts_with("sdk/unreal/types/") || generic == "sdk/unreal/README.md")
+    if (generic.starts_with("sdk/unreal/types/") || generic.starts_with("sdk/unreal/re/") ||
+        generic == "sdk/unreal/README.md")
         return PathExists(existing) ? ChangeKind::Modified : ChangeKind::Added;
     if (!inspection.hasGeneratedFileLedger)
         return ChangeKind::Conflict;

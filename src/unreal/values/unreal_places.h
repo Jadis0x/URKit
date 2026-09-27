@@ -31,6 +31,12 @@ bool Assignable(const UnrealEngine &engine, const PropertyInfo &info, Address va
 using NameCheck = bool (*)(void *context, const std::uint8_t *name, std::size_t size);
 
 // Whether proposed may replace current: owned or unverifiable bytes must match.
+// TOptional's value when its set flag follows it; an intrusive unset state gives nothing.
+std::optional<PropertyInfo> OptionalValue(const UnrealEngine &engine, const PropertyInfo &info);
+
+// A NameCheck (context: EngineCalls): the name is one the engine made. Game thread.
+bool CheckName(void *context, const std::uint8_t *name, std::size_t size);
+
 bool StructChangeAllowed(const UnrealEngine &engine, Address structObject, const std::uint8_t *current,
                          const std::uint8_t *proposed, std::size_t size, int depth = 0, NameCheck names = nullptr,
                          void *namesContext = nullptr, bool strings = false);
@@ -90,6 +96,8 @@ class Places {
                       bool checkSignature = true);
     // A sparse delegate's bindings list in engine storage; null when unbound.
     const std::uint8_t *SparseList(const PlaceTarget &target, bool gameThread);
+    bool OptionalEmplace(const PlaceTarget &target);
+    bool OptionalReset(const PlaceTarget &target);
 
     UnrealEngine *engine_;
     OwnedValues *owned_;

@@ -650,7 +650,12 @@ typedef enum URK_UnrealPropertyKind {
     URK_UNREAL_PROPERTY_LAZY_OBJECT = 28,
     /* FUtf8String / FAnsiString: read and written as text like FString. */
     URK_UNREAL_PROPERTY_UTF8_STRING = 29,
-    URK_UNREAL_PROPERTY_ANSI_STRING = 30
+    URK_UNREAL_PROPERTY_ANSI_STRING = 30,
+    /* TFieldPath: read as text ("/Script/Engine.Actor:bHidden"), not written. */
+    URK_UNREAL_PROPERTY_FIELD_PATH = 31,
+    /* TOptional (5.3+): count 0 or 1, element 0 is the value, insert(0, 1) sets a default, clear unsets.
+       Only where the set flag follows the value; an intrusive unset state is refused. */
+    URK_UNREAL_PROPERTY_OPTIONAL = 32
 } URK_UnrealPropertyKind;
 
 /* A member's shape. size is per element; fixed C arrays have array_dim > 1. */
@@ -660,7 +665,7 @@ typedef struct URK_UnrealPropertyInfo {
     int32_t element_size;
     int32_t array_dim;
     /* Object/Class: required UClass. Struct: UScriptStruct. Array: element property.
-     * Enum: underlying numeric property. */
+     * Enum: underlying numeric property. Optional: value property. */
     URK_UnrealObject inner;
     /* v2. Bools: byte and bit mask; 0xFF means a whole bool. */
     uint8_t bool_byte_offset;

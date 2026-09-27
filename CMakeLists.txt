@@ -244,6 +244,10 @@ if (BUILD_TESTING)
         URK_TEST_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
         URK_TEST_SDK_DIR="${URK_SDK_DIR}"
     )
+    if (MSVC)
+        # Same as the tools: the generator catches exceptions per class.
+        target_compile_options(urk_generated_project_tests PRIVATE /EHsc /utf-8)
+    endif()
     urk_disable_vs_vcpkg_integration(urk_generated_project_tests)
     add_test(NAME urkit_generated_project COMMAND urk_generated_project_tests)
     set_tests_properties(urkit_generated_project PROPERTIES TIMEOUT 600)

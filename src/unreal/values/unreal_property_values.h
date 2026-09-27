@@ -42,6 +42,9 @@ inline constexpr std::uint64_t kCastFlagSetProperty = 0x800000000000;
 inline constexpr std::uint64_t kCastFlagEnumProperty = 0x1000000000000;
 inline constexpr std::uint64_t kCastFlagMulticastInlineDelegateProperty = 0x4000000000000;
 inline constexpr std::uint64_t kCastFlagMulticastSparseDelegateProperty = 0x8000000000000;
+inline constexpr std::uint64_t kCastFlagFieldPathProperty = 0x10000000000000;
+// 5.3+.
+inline constexpr std::uint64_t kCastFlagOptionalProperty = 0x100000000000000;
 inline constexpr std::uint64_t kCastFlagUtf8StrProperty = 0x1000000000000000;
 inline constexpr std::uint64_t kCastFlagAnsiStrProperty = 0x2000000000000000;
 
@@ -78,6 +81,9 @@ enum class PropertyKind {
     LazyObject,
     Utf8String,
     AnsiString,
+    // A field path reads as text; an optional is a container of 0 or 1 values.
+    FieldPath,
+    Optional,
 };
 
 const char *PropertyKindName(PropertyKind kind);

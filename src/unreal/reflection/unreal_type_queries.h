@@ -18,6 +18,8 @@ struct ClassOffsets {
     std::int32_t classDefaultObject = kOffsetNotFound;
     // UClass::Interfaces: TArray<FImplementedInterface{UClass*, PointerOffset, bImplementedByK2}>.
     std::int32_t interfaces = kOffsetNotFound;
+    // UClass::ClassFlags (EClassFlags), just before ClassCastFlags.
+    std::int32_t classFlags = kOffsetNotFound;
 
     bool Resolved() const { return classDefaultObject != kOffsetNotFound; }
 };
@@ -63,6 +65,12 @@ class TypeQueries {
 
     // Interface address as UObject::GetInterfaceAddress returns it; nothing if not implemented.
     std::optional<Address> InterfaceAddress(Address object, Address interfaceClass) const;
+
+    // Interfaces this class itself declares (not its supers'); nothing when unreadable.
+    std::optional<std::vector<Address>> InterfacesOf(Address classObject) const;
+
+    // EClassFlags; nothing when the offset is unknown.
+    std::optional<std::uint32_t> ClassFlagsOf(Address classObject) const;
 
   private:
     // For objects from the array: no range query per read.

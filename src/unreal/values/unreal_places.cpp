@@ -61,24 +61,49 @@ bool SoftClass(const PropertyInfo &info) { return (info.castFlags & kCastFlagSof
 // Engine flag values (EPropertyFlags) that make two signatures differ.
 constexpr std::uint64_t kSignatureFlags = kPropertyFlagParm | kPropertyFlagOutParm | kPropertyFlagReturnParm;
 
-bool CheckName(void *context, const std::uint8_t *name, std::size_t size) {
-    return static_cast<EngineCalls *>(context)->ValidName(name, size);
+// A field path the engine can copy from: its names readable (they own nothing).
+bool CopyableFieldPath(const UnrealEngine &engine, const std::uint8_t *value) {
+    const auto data = reinterpret_cast<Address>(Load<const std::uint8_t *>(value + kFieldPathArray));
+    const std::int32_t num = Load<std::int32_t>(value + kFieldPathArray + 8);
+    const std::int32_t max = Load<std::int32_t>(value + kFieldPathArray + 12);
+    if (num == 0)
+        return true;
+    const std::size_t bytes = static_cast<std::size_t>(num) * static_cast<std::size_t>(engine.Finder().Names().Layout().size);
+    return num > 0 && max >= num && num <= 64 && data != kNullAddress && engine.Reader().Readable(data, bytes) &&
+           engine.Finder().Names().ReadFName(data).has_value();
 }
 
 // An FString the engine can copy from: its characters readable and terminated.
-bool CopyableString(const UnrealEngine &engine, const std::uint8_t *header) {
+// unit: 2 for FString, 1 for FUtf8String and FAnsiString (5.8's FSoftObjectPath holds one).
+bool CopyableString(const UnrealEngine &engine, const std::uint8_t *header, std::size_t unit) {
     const auto data = reinterpret_cast<Address>(Load<const std::uint8_t *>(header));
     const std::int32_t num = Load<std::int32_t>(header + 8);
     const std::int32_t max = Load<std::int32_t>(header + 12);
     if (num == 0)
         return true;
-    const std::size_t bytes = static_cast<std::size_t>(num) * sizeof(char16_t);
-    return num > 0 && max >= num && num <= kMaxContainerElements && data != kNullAddress &&
-           engine.Reader().Readable(data, bytes) &&
-           engine.Reader().ReadAs<std::uint16_t>(data + bytes - sizeof(char16_t)) == 0;
+    const std::size_t bytes = static_cast<std::size_t>(num) * unit;
+    if (num <= 0 || max < num || num > kMaxContainerElements || data == kNullAddress ||
+        !engine.Reader().Readable(data, bytes))
+        return false;
+    return unit == 1 ? engine.Reader().ReadAs<std::uint8_t>(data + bytes - 1) == 0
+                     : engine.Reader().ReadAs<std::uint16_t>(data + bytes - 2) == 0;
 }
 
 } // namespace
+
+std::optional<PropertyInfo> OptionalValue(const UnrealEngine &engine, const PropertyInfo &info) {
+    if (info.kind != PropertyKind::Optional || info.inner == kNullAddress)
+        return std::nullopt;
+    std::optional<PropertyInfo> value = engine.Values().Describe(info.inner);
+    if (!value || value->elementSize <= 0 || value->arrayDim != 1 || value->elementSize >= info.elementSize)
+        return std::nullopt;
+    value->offset = 0;
+    return value;
+}
+
+bool CheckName(void *context, const std::uint8_t *name, std::size_t size) {
+    return static_cast<EngineCalls *>(context)->ValidName(name, size);
+}
 
 bool Assignable(const UnrealEngine &engine, const PropertyInfo &info, Address value) {
     if (value == kNullAddress)
@@ -123,8 +148,11 @@ bool StructChangeAllowed(const UnrealEngine &engine, Address structObject, const
                 } else if (info->kind == PropertyKind::Name) {
                     if (!names || !names(namesContext, proposed + at, width))
                         return false;
-                } else if (info->kind == PropertyKind::String && strings) {
-                    if (!CopyableString(engine, proposed + at))
+                } else if (StringKind(info->kind) && strings) {
+                    if (!CopyableString(engine, proposed + at, info->kind == PropertyKind::String ? 2 : 1))
+                        return false;
+                } else if (info->kind == PropertyKind::FieldPath && strings) {
+                    if (width != static_cast<std::size_t>(kFieldPathSize) || !CopyableFieldPath(engine, proposed + at))
                         return false;
                 } else if (info->kind != PropertyKind::Struct ||
                            !StructChangeAllowed(engine, info->inner, current + at, proposed + at, width, depth + 1,
@@ -244,6 +272,25 @@ std::optional<PlaceTarget> Places::Walk(std::uint8_t *root, const PropertyInfo &
             break;
         }
         case URK_UNREAL_STEP_ELEMENT: {
+            if (info.kind == PropertyKind::Optional) {
+                // Element 0 is the value, there while the optional is set.
+                const std::optional<PropertyInfo> value = OptionalValue(*engine_, info);
+                if (!value) {
+                    Fail("this optional keeps its unset state inside the value");
+                    return std::nullopt;
+                }
+                std::uint8_t *at = nullptr;
+                if (target.value && !(describe && step.index == -1)) {
+                    if (step.index != 0 || target.value[value->elementSize] == 0) {
+                        Fail("the optional holds no value");
+                        return std::nullopt;
+                    }
+                    at = target.value;
+                }
+                target.value = at;
+                target.info = *value;
+                break;
+            }
             if (info.kind == PropertyKind::Set) {
                 const std::optional<SetLayout> layout = owned_->Stores().LayoutOf(info);
                 if (!layout) {
@@ -551,6 +598,37 @@ std::optional<std::string> Places::ReadText(const PlaceTarget &target, bool game
             return path;
         Fail(calls.Failure());
         return std::nullopt;
+    case PropertyKind::FieldPath: {
+        // FFieldPath: field, weak owner, then TArray<FName> Path with the field's own name first.
+        constexpr std::int32_t kMaxPath = 64;
+        const MemoryReader &reader = engine_->Reader();
+        const Address at = reinterpret_cast<Address>(target.value);
+        const std::optional<Address> data = reader.ReadPointer(at + kFieldPathArray);
+        const std::optional<std::int32_t> count = reader.ReadInt32(at + kFieldPathArray + 8);
+        if (info.elementSize != kFieldPathSize || !data || !count || *count < 0 || *count > kMaxPath ||
+            (*count > 0 && *data == kNullAddress)) {
+            Fail("the field path is not the shipping layout");
+            return std::nullopt;
+        }
+        const NameTable &names = engine_->Finder().Names();
+        std::vector<std::string> parts;
+        for (std::int32_t i = 0; i < *count; ++i) {
+            std::optional<std::string> name =
+                names.ReadFName(*data + static_cast<Address>(i) * static_cast<Address>(names.Layout().size));
+            if (!name) {
+                Fail("a field path name is unreadable");
+                return std::nullopt;
+            }
+            parts.push_back(std::move(*name));
+        }
+        // Outermost first, as FFieldPath::ToString writes it: "/Script/Engine.Actor:bHidden".
+        std::string text;
+        for (std::int32_t i = *count - 1; i >= 1; --i)
+            text += (text.empty() ? "" : ".") + parts[static_cast<std::size_t>(i)];
+        if (!parts.empty())
+            text += (text.empty() ? "" : ":") + parts.front();
+        return text;
+    }
     case PropertyKind::Enum:
     case PropertyKind::Byte: {
         if (info.typeObject == kNullAddress) {
@@ -680,9 +758,44 @@ std::int32_t Places::Count(const PlaceTarget &target, bool gameThread) {
         const std::int32_t free = Load<std::int32_t>(target.value + SetFields::kNumFree);
         return num >= 0 && free >= 0 && free <= num ? num - free : -1;
     }
+    if (info.kind == PropertyKind::Optional) {
+        const std::optional<PropertyInfo> value = OptionalValue(*engine_, info);
+        return value ? (target.value[value->elementSize] != 0 ? 1 : 0)
+                     : (Fail("this optional keeps its unset state inside the value"), -1);
+    }
     const std::optional<PropertyInfo> element = ElementOf(info);
     std::int32_t num = 0;
     return element && ArrayHeader(target.value, element->elementSize, &num) ? num : -1;
+}
+
+// Sets an unset optional to a default value, as the engine constructs one.
+bool Places::OptionalEmplace(const PlaceTarget &target) {
+    const std::optional<PropertyInfo> value = OptionalValue(*engine_, target.info);
+    if (!value)
+        return Fail("this optional keeps its unset state inside the value");
+    if (target.value[value->elementSize] != 0)
+        return Fail("the optional already holds a value");
+    std::memset(target.value, 0, static_cast<std::size_t>(value->elementSize));
+    PropertyVirtuals &virtuals = owned_->Stores().Virtuals();
+    const bool made = virtuals.ValueOpsReady() ? virtuals.Initialize(*value, target.value)
+                                               : owned_->Initialize(*value, target.value);
+    if (!made)
+        return Fail("the optional's value could not be made");
+    target.value[value->elementSize] = 1;
+    return true;
+}
+
+// Releases an optional's value and marks it unset.
+bool Places::OptionalReset(const PlaceTarget &target) {
+    const std::optional<PropertyInfo> value = OptionalValue(*engine_, target.info);
+    if (!value)
+        return Fail("this optional keeps its unset state inside the value");
+    if (target.value[value->elementSize] == 0)
+        return true;
+    if (!owned_->Destroy(*value, target.value))
+        return Fail(owned_->Failure());
+    target.value[value->elementSize] = 0;
+    return true;
 }
 
 std::int32_t Places::Slots(const PlaceTarget &target, std::int32_t *output, std::int32_t capacity) {
@@ -714,6 +827,8 @@ bool Places::Insert(const PlaceTarget &target, std::int32_t index, std::int32_t 
         return false;
     if (target.info.kind == PropertyKind::SparseDelegate)
         return Fail("a sparse delegate gains bindings through bind");
+    if (target.info.kind == PropertyKind::Optional)
+        return index == 0 && count == 1 ? OptionalEmplace(target) : Fail("an optional holds one value, at 0");
     const std::optional<PropertyInfo> element = ElementOf(target.info);
     if (!element)
         return false;
@@ -728,6 +843,8 @@ bool Places::Remove(const PlaceTarget &target, std::int32_t index, std::int32_t 
         return false;
     const PropertyInfo &info = target.info;
     Containers &stores = owned_->Stores();
+    if (info.kind == PropertyKind::Optional)
+        return index == 0 && count == 1 ? OptionalReset(target) : Fail("an optional holds one value, at 0");
     if (info.kind == PropertyKind::Set || info.kind == PropertyKind::Map) {
         const std::optional<SetLayout> layout = stores.LayoutOf(info);
         if (!layout)
@@ -774,6 +891,8 @@ bool Places::Clear(const PlaceTarget &target, bool gameThread) {
         if (!delegates_.Ready())
             return Fail(delegates_.Failure());
         return delegates_.Clear(info, target.owner, target.value) ? true : Fail("the sparse delegate has no owner");
+    case PropertyKind::Optional:
+        return OptionalReset(target);
     case PropertyKind::String:
     case PropertyKind::Utf8String:
     case PropertyKind::AnsiString:
@@ -847,6 +966,20 @@ bool Places::BuildKey(const PropertyInfo &key, const URK_UnrealKey &input, bool 
             return Fail("the object is not live or not of the declared class");
         Store<Address>(at, input.object);
         return true;
+    case PropertyKind::WeakObject:
+        // The engine's own weak reference: index and serial (a serial is made if the object has none).
+        if (input.object != kNullAddress && !IsLiveObject(engine_->Finder(), input.object))
+            return Fail("the object is not live");
+        return calls.MakeWeak(input.object, at) ? true : Fail(calls.Failure());
+    case PropertyKind::SoftObject: {
+        // Its path holds a string: only the engine's Identical compares two.
+        if (!owned_->Stores().Virtuals().IdenticalReady())
+            return Fail("soft reference keys need the engine's Identical, which is not measured here");
+        // Built as the engine builds one; a lookup's copy is released after the find.
+        const bool done = input.text ? calls.AssignSoftPath(at, bytes->size(), Utf8ToUtf16(input.text), SoftClass(key))
+                                     : calls.AssignSoftObject(at, bytes->size(), input.object, SoftClass(key));
+        return done ? true : Fail(calls.Failure());
+    }
     case PropertyKind::Struct: {
         if (!input.bytes || input.size != bytes->size())
             return Fail("a struct key needs its whole value");
@@ -891,8 +1024,10 @@ std::int32_t Places::Find(const PlaceTarget &target, const URK_UnrealKey &key, b
     const std::optional<SetLayout> layout = stores.LayoutOf(info);
     if (!layout)
         return Fail(stores.Failure()), -1;
-    // Names are made (and a struct's names confirmed) through the engine.
-    if ((layout->key.kind == PropertyKind::Name || layout->key.kind == PropertyKind::Struct) &&
+    // Names, weak and soft references are made (and a struct's names confirmed) through the engine.
+    const PropertyKind kind = layout->key.kind;
+    if ((kind == PropertyKind::Name || kind == PropertyKind::Struct || kind == PropertyKind::WeakObject ||
+         kind == PropertyKind::SoftObject) &&
         !NeedGameThread(gameThread))
         return -1;
     std::vector<std::uint8_t> bytes;
@@ -902,6 +1037,8 @@ std::int32_t Places::Find(const PlaceTarget &target, const URK_UnrealKey &key, b
     const std::int32_t slot = stores.Find(*layout, target.value, bytes.data());
     if (slot < 0 && !stores.Failure().empty())
         failure_ = stores.Failure();
+    if (kind == PropertyKind::SoftObject && !owned_->Destroy(layout->key, bytes.data()))
+        Fail(owned_->Failure());
     return slot;
 }
 

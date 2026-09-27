@@ -172,27 +172,34 @@ std::string UnrealTypeDump() {
         line.back() = '\n';
         return line;
     };
-    std::string dump = row({"URKIT-UNREAL-TYPES", "2"}) + row({"IMAGE", "1", "2"}) + row({"ENGINE", "5.8.0"});
+    std::string dump = row({"URKIT-UNREAL-TYPES", "7"}) + row({"IMAGE", "1", "2"}) + row({"ENGINE", "5.8.0"});
     dump += row({"C", "Object", "/Script/CoreUObject", "", ""});
-    dump += row({"C", "Actor", "/Script/Engine", "Object", "/Script/CoreUObject"});
-    dump += row({"P", "Owner", "object", "8", "1", "0", "Actor", "/Script/Engine"});
-    dump += row({"P", "Instigator", "object", "8", "1", "0", "Pawn", "/Script/Engine"});
-    dump += row({"P", "class", "int32", "4", "1", "0", "", ""});
-    dump += row({"P", "Actor", "float", "4", "1", "0", "", ""});
-    dump += row({"P", "name", "bool", "1", "1", "0", "", ""});
-    dump += row({"P", "My Var", "double", "8", "1", "0", "", ""});
-    dump += row({"P", "My_Var", "byte", "1", "1", "0", "", ""});
-    dump += row({"P", "Weights", "float", "4", "3", "0", "", ""});
-    dump += row({"P", "Location", "struct", "24", "1", "0", "Missing", "/Script/CoreUObject"});
-    dump += row({"P", "Spot", "struct", "24", "1", "0", "Vector", "/Script/CoreUObject"});
-    dump += row({"P", "Tag", "name", "8", "1", "0", "", ""});
-    dump += row({"P", "Label", "string", "16", "1", "0", "", ""});
-    dump += row({"P", "Damaged", "multicast delegate", "16", "1", "0", "ActorDamaged__DelegateSignature", "/Script/Engine"});
+    dump += row({"C", "Actor", "/Script/Engine", "Object", "/Script/CoreUObject", "648", "8", "80"});
+    dump += row({"P", "Owner", "object", "8", "1", "25", "Actor", "/Script/Engine", "144", "0", "0", "255"});
+    dump += row({"P", "Instigator", "object", "8", "1", "0", "Pawn", "/Script/Engine", "-1", "0", "0", "255"});
+    dump += row({"P", "class", "int32", "4", "1", "0", "", "", "-1", "0", "0", "255"});
+    dump += row({"P", "Actor", "float", "4", "1", "0", "", "", "-1", "0", "0", "255"});
+    dump += row({"P", "name", "bool", "1", "1", "0", "", "", "152", "1", "4", "4"});
+    dump += row({"P", "My Var", "double", "8", "1", "0", "", "", "-1", "0", "0", "255"});
+    dump += row({"P", "My_Var", "byte", "1", "1", "0", "", "", "-1", "0", "0", "255"});
+    dump += row({"P", "Weights", "float", "4", "3", "0", "", "", "-1", "0", "0", "255"});
+    dump += row({"P", "Location", "struct", "24", "1", "0", "Missing", "/Script/CoreUObject", "-1", "0", "0", "255"});
+    dump += row({"P", "Spot", "struct", "24", "1", "0", "Vector", "/Script/CoreUObject", "-1", "0", "0", "255"});
+    dump += row({"P", "Tag", "name", "8", "1", "0", "", "", "-1", "0", "0", "255"});
+    dump += row({"P", "Label", "string", "16", "1", "0", "", "", "-1", "0", "0", "255"});
+    dump += row({"P", "Damaged", "multicast delegate", "16", "1", "0", "ActorDamaged__DelegateSignature", "/Script/Engine", "-1", "0", "0", "255"});
+    dump += row({"P", "Spots", "set", "80", "1", "0", "", "", "-1", "0", "0", "255", "soft object|40|Actor|/Script/Engine"});
+    dump += row({"P", "Seen", "map", "80", "1", "0", "", "", "-1", "0", "0", "255", "weak object|8|Actor|/Script/Engine",
+                 "int32|4||"});
+    dump += row({"P", "Watched", "field path", "32", "1", "0", "", "", "-1", "0", "0", "255"});
+    dump += row({"P", "Tint", "optional", "8", "1", "0", "", "", "-1", "0", "0", "255", "float|4||"});
+    dump += row({"P", "Users", "array", "16", "1", "0", "", "", "-1", "0", "0", "255", "interface|16|Usable|/Script/Engine"});
     dump += row({"G", "ActorDamaged__DelegateSignature", "/Script/Engine"});
     dump += row({"A", "Amount", "float", "4", "1", "80", "", ""});
     dump += row({"A", "Causer", "object", "8", "1", "80", "Actor", "/Script/Engine"});
-    dump += row({"C", "Pawn", "/Script/Engine", "Actor", "/Script/Engine"});
-    dump += row({"F", "GetController", "400", ""});
+    dump += row({"C", "Pawn", "/Script/Engine", "Actor", "/Script/Engine", "800", "8", "81"});
+    dump += row({"I", "NavAgentInterface", "/Script/AIModule"});
+    dump += row({"F", "GetController", "400", "1a2b30"});
     dump += row({"A", "ReturnValue", "object", "8", "1", "580", "Actor", "/Script/Engine"});
     dump += row({"F", "GetBounds", "400"});
     dump += row({"A", "Radius", "float", "4", "1", "180", "", ""});
@@ -201,7 +208,12 @@ std::string UnrealTypeDump() {
     dump += row({"A", "Mode", "enum", "1", "1", "80", "", ""});
     dump += row({"A", "Target", "object", "8", "1", "80", "Actor", "/Script/Engine"});
     dump += row({"A", "ReturnValue", "int32", "4", "1", "580", "", ""});
-    dump += row({"F", "Teleport", "400"});
+    dump += row({"F", "UseTarget", "400"});
+    dump += row({"A", "Target", "interface", "16", "1", "80", "Usable", "/Script/Engine"});
+    dump += row({"A", "ReturnValue", "interface", "16", "1", "580", "Usable", "/Script/Engine"});
+    dump += row({"F", "WatchField", "400"});
+    dump += row({"A", "Field", "field path", "32", "1", "80", "", ""});
+    dump += row({"F", "Teleport", "2004c0"});
     dump += row({"A", "Where", "struct", "24", "1", "80", "Vector", "/Script/CoreUObject"});
     dump += row({"F", "GetLabel", "400"});
     dump += row({"A", "ReturnValue", "struct", "24", "1", "580", "Labelled", "/Script/Engine"});
@@ -215,10 +227,64 @@ std::string UnrealTypeDump() {
     dump += row({"F", "OnHit__DelegateSignature", "130000"});
     dump += row({"F", "ExecuteUbergraph_Pawn", "0"});
     dump += row({"A", "EntryPoint", "int32", "4", "1", "80", "", ""});
+    dump += row({"Z", "NamePoolData", "5000"});
     dump += row({"C", "Settings", "/Script/PluginA", "Object", "/Script/CoreUObject"});
     dump += row({"C", "Settings", "/Script/PluginB", "Object", "/Script/CoreUObject"});
     dump += row({"C", "BP Door_C", "/Game/Doors/BP Door", "Actor", "/Script/Engine"});
-    dump += row({"P", "Open", "bool", "1", "1", "0", "", ""});
+    dump += row({"P", "Open", "bool", "1", "1", "0", "", "", "-1", "0", "0", "255"});
+    dump += row({"P", "Speed", "float", "4", "1", "0", "", "", "-1", "0", "0", "255"});
+    // Format 7 bytecode: events entering the ubergraph, a loop, a branch, a latent resume, a return value.
+    const std::string uber = R"("/Game/Doors/BP Door.BP Door_C:ExecuteUbergraph_BP_Door")";
+    const std::string printer = R"(Obj("/Script/Engine.Default__KismetSystemLibrary","KismetSystemLibrary"))";
+    dump += row({"F", "ReceiveBeginPlay", "20800"});
+    dump += row({"X", "0", "Call(" + uber + ",Int(10))"}) + row({"X", "20", "Return(Nothing)"}) +
+            row({"X", "22", "EndOfScript"});
+    dump += row({"F", "ReceiveTick", "20800"});
+    dump += row({"A", "DeltaSeconds", "float", "4", "1", "80", "", ""});
+    dump += row({"X", "0", R"(LetFrame("K2Node_Event_DeltaSeconds",Local("DeltaSeconds")))"});
+    dump += row({"X", "18", "Call(" + uber + ",Int(100))"}) + row({"X", "40", "Return(Nothing)"}) +
+            row({"X", "42", "EndOfScript"});
+    dump += row({"F", "GetSpeed", "40020400"});
+    dump += row({"A", "Scale", "float", "4", "1", "80", "", ""});
+    dump += row({"A", "ReturnValue", "float", "4", "1", "580", "", ""});
+    dump += row({"L", "CallFunc_Multiply_FloatFloat_ReturnValue", "float", "4", "1", "0", "", ""});
+    dump += row({"L", "Unused", "int32", "4", "1", "0", "", ""});
+    dump += row({"X", "0", R"(Let(Local("CallFunc_Multiply_FloatFloat_ReturnValue"),Call("/Script/Engine.KismetMathLibrary:Multiply_FloatFloat",Inst("Speed"),Local("Scale"))))"});
+    dump += row({"X", "20", R"(Let(Out("ReturnValue"),Local("CallFunc_Multiply_FloatFloat_ReturnValue")))"});
+    dump += row({"X", "40", "Return(Nothing)"}) + row({"X", "42", "EndOfScript"});
+    dump += row({"F", "Tangle", "20400"});
+    dump += row({"X", "0", R"(JumpIfNot(20,Inst("Open")))"}) + row({"X", "10", "Jump(30)"}) +
+            row({"X", "20", R"(Let(Inst("Speed"),Float(2)))"}) + row({"X", "30", R"(Let(Inst("Speed"),Float(3)))"}) +
+            row({"X", "35", R"(JumpIfNot(20,Inst("Open")))"}) + row({"X", "40", "Return(Nothing)"}) +
+            row({"X", "42", "EndOfScript"});
+    dump += row({"F", "ExecuteUbergraph_BP_Door", "0"});
+    dump += row({"A", "EntryPoint", "int32", "4", "1", "80", "", ""});
+    dump += row({"L", "Temp_int_Loop_Counter_Variable", "int32", "4", "1", "0", "", ""});
+    dump += row({"L", "CallFunc_Less_IntInt_ReturnValue", "bool", "1", "1", "0", "", ""});
+    const std::vector<std::pair<const char *, std::string>> ubergraph = {
+        {"0", R"(ComputedJump(Local("EntryPoint")))"},
+        {"10", R"(Let(Local("Temp_int_Loop_Counter_Variable"),Int(0)))"},
+        {"30", R"(Let(Local("CallFunc_Less_IntInt_ReturnValue"),Call("/Script/Engine.KismetMathLibrary:Less_IntInt",Local("Temp_int_Loop_Counter_Variable"),Int(3))))"},
+        {"50", R"(JumpIfNot(90,Local("CallFunc_Less_IntInt_ReturnValue")))"},
+        {"60", "Context(" + printer + R"(,Call("/Script/Engine.KismetSystemLibrary:PrintString",Self,Str("tick \"1\""))))"},
+        {"70", R"(Let(Local("Temp_int_Loop_Counter_Variable"),Call("/Script/Engine.KismetMathLibrary:Add_IntInt",Local("Temp_int_Loop_Counter_Variable"),Int(1))))"},
+        {"80", "Jump(30)"},
+        {"90", "Context(" + printer + R"(,Call("/Script/Engine.KismetSystemLibrary:Delay",Self,Float(1),Struct("/Script/Engine.LatentActionInfo",SkipOffset(200),Int(7),Name("ExecuteUbergraph_BP_Door"),Self))))"},
+        {"95", "Pop"},
+        {"100", "Push(160)"},
+        {"105", R"(JumpIfNot(130,Inst("Open")))"},
+        {"110", R"(LetBool(Inst("Open"),False))"},
+        {"120", "Jump(140)"},
+        {"130", R"(Let(Inst("Speed"),Local("K2Node_Event_DeltaSeconds")))"},
+        {"140", "Pop"},
+        {"160", R"(Call("/Game/Doors/BP Door.BP Door_C:Slam"))"},
+        {"170", "Pop"},
+        {"200", R"(Call("/Game/Doors/BP Door.BP Door_C:Slam"))"},
+        {"210", "Pop"},
+        {"220", "Return(Nothing)"},
+        {"230", "EndOfScript"}};
+    for (const auto &[offset, text] : ubergraph)
+        dump += row({"X", offset, text});
     dump += row({"F", "Slam", "400"});
     dump += row({"F", "InpActEvt_Jump_K2Node_InputActionEvent_0", "400"});
     // Struct cases: offsets, bitfields, nesting, objects, byte members, inherit-only.
@@ -227,6 +293,7 @@ std::string UnrealTypeDump() {
                            std::string_view mask = "0", std::string_view fieldMask = "255") {
         return row({"M", name, kind, size, "1", "0", inner, innerPackage, offset, "0", mask, fieldMask});
     };
+    dump += row({"E", "EMode", "/Script/Engine"}) + row({"V", "Walk", "0"}) + row({"V", "Fly", "3"});
     dump += row({"S", "Vector", "/Script/CoreUObject", "", "", "24", "8"});
     dump += field("X", "double", "8", "0") + field("Y", "double", "8", "8") + field("Z", "double", "8", "16");
     dump += row({"S", "VectorNet", "/Script/Engine", "Vector", "/Script/CoreUObject", "24", "8"});
@@ -255,6 +322,42 @@ void CheckUnrealTypes(const GeneratedProject &project) {
           project.label + ": BP_Door_C.h includes its super across folders");
     Check(compiled != std::string::npos && door.find("InpActEvt_Jump") > compiled && door.find("Slam()") < compiled,
           project.label + ": BP_Door_C.h puts compiler-made functions after the authored ones");
+    const std::string logic = ReadText(types / "Game/Doors/BP_Door_C.bp.cpp");
+    const fs::path re = project.root / "sdk/unreal/re";
+    const std::string usmap = ReadText(re / "mappings.usmap");
+    Check(usmap.size() > 16 && usmap.compare(0, 8, std::string("\xC4\x30\x04\0\0\0\0\0", 8)) == 0,
+          project.label + ": re/mappings.usmap has the usmap magic, version 4, no versioning, no compression");
+    const std::string layouts = ReadText(re / "unreal_types.h");
+    for (const char *expected : {"#pragma pack(push, 1)", "struct AActor { // 0x288, /Script/Engine.Actor\n    uint8 pad_0[0x90];\n    AActor * Owner;",
+                                 "    uint8 bits_0 : 2;\n    uint8 name : 1;\n    uint8 bits_3 : 5;",
+                                 "struct FVector { // 0x18, /Script/CoreUObject.Vector\n    double X;"})
+        Check(layouts.find(expected) != std::string::npos, project.label + ": re/unreal_types.h has " + expected);
+    for (const char *script : {"ida_import.py", "ghidra_import.py"}) {
+        const std::string text = ReadText(re / script);
+        Check(text.find("(0x1A2B30, \"APawn::execGetController\"),") != std::string::npos &&
+                  text.find("(0x5000, \"NamePoolData\"),") != std::string::npos,
+              project.label + ": re/" + script + " names native thunks and globals");
+    }
+    Check(door.find("// Blueprint logic as pseudo-code: BP_Door_C.bp.cpp") != std::string::npos,
+          project.label + ": BP_Door_C.h points at its pseudo-code");
+    for (const char *expected :
+         {"void ABP_Door_C::ReceiveBeginPlay()\n{\n    Temp_int_Loop_Counter_Variable = 0;\n"
+          "    while (Temp_int_Loop_Counter_Variable < 3) {\n"
+          "        UKismetSystemLibrary::PrintString(this, \"tick \\\"1\\\"\");\n"
+          "        Temp_int_Loop_Counter_Variable = Temp_int_Loop_Counter_Variable + 1;\n    }\n"
+          "    UKismetSystemLibrary::Delay(this, 1.0, LatentInfo(resume_00C8));\n}\n",
+          "void ABP_Door_C::ReceiveTick(float DeltaSeconds)\n{\n    if (Open) {\n        Open = false;\n"
+          "    } else {\n        Speed = DeltaSeconds;\n    }\n    Slam();\n}\n",
+          "float ABP_Door_C::GetSpeed(float Scale)\n{\n    return Speed * Scale;\n}\n",
+          "void ABP_Door_C::resume_00C8()\n{\n    Slam();\n}\n",
+          "void ABP_Door_C::Tangle()\n{\n    if (Open) {\n        goto L_001E;\n    }\nL_0014:\n    Speed = 2.0;\n"
+          "L_001E:\n    Speed = 3.0;\n    if (!Open) goto L_0014;\n}\n"})
+        Check(logic.find(expected) != std::string::npos,
+              project.label + ": BP_Door_C.bp.cpp has " +
+                  (logic.find(expected) != std::string::npos ? std::string(expected).substr(0, 40)
+                                                             : std::string(expected) + "\n--- got ---\n" + logic));
+    Check(logic.find("ExecuteUbergraph_BP_Door") == std::string::npos && logic.find("Unused") == std::string::npos,
+          project.label + ": BP_Door_C.bp.cpp shows events, not the ubergraph, and only used locals");
     const std::string index = ReadText(types / "INDEX.md");
     Check(index.find("### Game/Doors") < index.find("## Engine and plugins") &&
               index.find("### Engine") != std::string::npos && index.find("BP_Door_C") != std::string::npos,
@@ -266,9 +369,23 @@ void CheckUnrealTypes(const GeneratedProject &project) {
                                  "class Pawn;", "\"Actor\", \"/Script/Engine\"",
                                  "struct ActorDamaged_Event : ::URK::unreal::TypedCall<Actor> {",
                                  "::URK::unreal::Member<float> Amount() const { return parameter(\"Amount\"); }",
-                                 "::URK::unreal::EventMember<ActorDamaged_Event> Damaged() const"})
+                                 "::URK::unreal::EventMember<ActorDamaged_Event> Damaged() const",
+                                 "::URK::unreal::SetMember<::URK::unreal::SoftPath> Spots() const",
+                                 "::URK::unreal::MapMember<::URK::unreal::types::Actor, std::int32_t> Seen() const",
+                                 "::URK::unreal::FieldPathValue Watched() const",
+                                 "::URK::unreal::OptionalMember<float> Tint() const",
+                                 "::URK::unreal::ArrayMember<::URK::unreal::Object> Users() const"})
         Check(actor.find(expected) != std::string::npos, project.label + ": Actor.h has " + expected);
+    for (const char *expected : {"// 0x0288 bytes at dump time; native.",
+                                 "Owner() const { return {*this, \"Owner\"}; } // 0x0090 EditAnywhere, BlueprintReadWrite, Replicated",
+                                 "name_() const { return {*this, \"name\"}; } // 0x0099:2"})
+        Check(actor.find(expected) != std::string::npos, project.label + ": Actor.h notes " + expected);
     const std::string pawn = ReadText(types / "Engine/Pawn.h");
+    for (const char *expected : {"// 0x0320 bytes at dump time; native, Abstract.", "// Implements NavAgentInterface.",
+                                 "    // static\n", "    // Server, Reliable\n    bool Teleport("})
+        Check(pawn.find(expected) != std::string::npos, project.label + ": Pawn.h notes " + expected);
+    Check(ReadText(types / "Engine/EMode.h").find("(\"Fly\"); } // 3") != std::string::npos,
+          project.label + ": EMode.h notes the dumped number");
     for (const char *expected : {"template <typename UrkR = ::URK::unreal::types::Actor> UrkR GetController()",
                                  "std::optional<bool> GetBounds(float *Radius)",
                                  "static std::optional<std::int32_t> MakeOne(std::uint8_t Mode",
@@ -276,7 +393,8 @@ void CheckUnrealTypes(const GeneratedProject &project) {
                                  "std::optional<::URK::unreal::types::Vector> GetSpot()",
                                  "std::optional<bool> Sweep(::URK::unreal::types::HitLike *Hit)",
                                  "std::optional<::URK::unreal::types::Labelled> GetLabel()",
-                                 "No typed form yet: Blocked().",
+                                 "No typed form yet: WatchField(), Blocked().",
+                                 "std::optional<::URK::unreal::Object> UseTarget(const ::URK::unreal::Object &Target)",
                                  "struct Teleport_Call : ::URK::unreal::TypedCall<Pawn> {",
                                  "::URK::unreal::Member<::URK::unreal::types::Vector> Where() const { return parameter(\"Where\"); }",
                                  "::URK::unreal::Member<float> Radius() const",

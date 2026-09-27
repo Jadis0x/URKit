@@ -477,6 +477,8 @@ std::string MeasuredLayout(URK::Unreal::UnrealEngine &engine) {
     add("UStruct.MinAlignment", structs.minAlignment);
     add("UClass.ClassCastFlags", structs.castFlags);
     add("UClass.ClassDefaultObject", engine.Classes().classDefaultObject);
+    add("UClass.ClassFlags", engine.Classes().classFlags);
+    add("UClass.Interfaces", engine.Classes().interfaces);
     const FieldOffsets &fields = engine.Fields();
     add("UStruct.ChildProperties", fields.childProperties);
     add("FField.ClassPrivate", fields.fieldClass);
@@ -689,8 +691,14 @@ bool RunUnreal(Config &config) {
     if (dumpTypes && !gameLoop)
         Log("[Unreal][ERROR] DumpTypes needs the game loop; nothing will be dumped.");
     if (dumpTypes && gameLoop) {
-        const TypeDumpSources sources{engine.Finder(), engine.Structs(), engine.Chain(), engine.Values(),
-                                      engine.Functions(), engine.Types(), nullptr, &UnrealSdk_DescribeDefaults};
+        TypeDumpSources sources{engine.Finder(), engine.Structs(), engine.Chain(), engine.Values(),
+                                engine.Functions(), engine.Types(), nullptr, &UnrealSdk_DescribeDefaults,
+                                &UnrealSdk_DescribeScript};
+        sources.imageBase = MainModuleBase();
+        sources.imageSize = MainImage(engine.Version()).sizeOfImage;
+        sources.globals = engine.Globals();
+        if (frameCounter)
+            sources.globals.emplace_back("GFrameCounter", reinterpret_cast<Address>(frameCounter));
         g_gameLoop.dumper = std::make_unique<TypeDumper>(sources, Platform_ExeDir() + "URKit_unreal_types.txt",
                                                          MainImage(engine.Version()),
                                                          [](const std::string &line) { Log("%s", line.c_str()); });

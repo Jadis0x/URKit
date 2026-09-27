@@ -67,7 +67,16 @@ std::string UnrealSdkReadme(const std::string &details) {
            "delegates are typed too. The engine's own code makes, changes and frees their memory, so changes run "
            "on the game thread (`update()`, scene callbacks, `post_to_game_thread`), as do text and soft path "
            "reads; numbers, names, strings and container reads work anywhere.\n\n"
-           "`types/` is rewritten from the dump; do not edit it.\n\n"
+           "A Blueprint class whose bytecode was dumped also gets `types/<Folder>/<Name>.bp.cpp`: its events and "
+           "functions as C++-like pseudo-code (branches and loops rebuilt, compiler temporaries folded), for reading "
+           "only.\n\n"
+           "## Reverse engineering exports\n\n"
+           "`re/` holds what other tools read: `mappings.usmap` (FModel, CUE4Parse, UAssetAPI: unversioned "
+           "properties), `unreal_types.h` (every class and struct as a C struct at the dumped offsets, for IDA's and "
+           "Ghidra's C parsers) and `ida_import.py` / `ghidra_import.py`, which name each native function's exec "
+           "thunk (`AActor::execK2_DestroyActor`) and the engine globals the loader found, and load the header. "
+           "Offsets and addresses are those of the build that was dumped.\n\n"
+           "`types/` and `re/` are rewritten from the dump; do not edit them.\n\n"
            "## Hooking a function\n\n"
            "```cpp\n"
            "static u::FunctionHook damage = t::Actor::hook_ReceiveAnyDamage(\n"
@@ -144,7 +153,7 @@ bool Generate(const std::string &directory, const std::string &reportDetails, co
         if (!UnrealTypeCodegen::Build(typeDumpPath, &headers, error))
             return false;
         for (UnrealTypeCodegen::Header &header : headers)
-            plan.files.push_back({fs::path("types") / header.fileName, {}, std::move(header.contents),
+            plan.files.push_back({fs::path(header.folder) / header.fileName, {}, std::move(header.contents),
                                   mpg::OutputFilePolicy::GeneratedOverwrite, true, false, false});
     }
     sdk::OutputResult output;
@@ -185,20 +194,23 @@ bool GenerateModProject(const std::string &projectRoot, const std::string &unrea
                                       mpg::OutputFilePolicy::GeneratedOverwrite,
                                       true,
                                       true});
-    // types/ is copied whole when the SDK was staged elsewhere; stale headers go.
+    // types/ and re/ are copied whole when the SDK was staged elsewhere; stale files go.
     std::error_code ec;
-    const fs::path projectTypes = root / profile.sdkSubdirectory / "types";
     if (!fs::equivalent(sdkRoot, root / profile.sdkSubdirectory, ec)) {
-        fs::remove_all(projectTypes, ec);
-        for (fs::recursive_directory_iterator it(sdkRoot / "types", ec), end; !ec && it != end; it.increment(ec)) {
-            if (!it->is_regular_file(ec))
-                continue;
-            backendFiles.files.push_back({profile.sdkSubdirectory / "types" / it->path().lexically_relative(sdkRoot / "types"),
-                                          it->path(),
-                                          {},
-                                          mpg::OutputFilePolicy::GeneratedOverwrite,
-                                          true,
-                                          false});
+        for (const char *folder : {"types", "re"}) {
+            fs::remove_all(root / profile.sdkSubdirectory / folder, ec);
+            ec.clear();
+            for (fs::recursive_directory_iterator it(sdkRoot / folder, ec), end; !ec && it != end; it.increment(ec)) {
+                if (!it->is_regular_file(ec))
+                    continue;
+                backendFiles.files.push_back({profile.sdkSubdirectory / folder / it->path().lexically_relative(sdkRoot / folder),
+                                              it->path(),
+                                              {},
+                                              mpg::OutputFilePolicy::GeneratedOverwrite,
+                                              true,
+                                              false});
+            }
+            ec.clear();
         }
     }
     if (!sdk::WriteOutputPlan(backendFiles, nullptr, error))

@@ -152,9 +152,23 @@ int Unreal_CallFrameSet(URK_UnrealCallFrame *frame, const char *parameterName, c
         const std::uint8_t *current = callFrame->Slot(*parameter);
         if (!current || size != static_cast<std::size_t>(parameter->info.elementSize))
             return 0;
-        if (!StructChangeAllowed(UnrealEngine::Instance(), parameter->info.inner, current,
-                                 static_cast<const std::uint8_t *>(value), size))
-            return 0;
+        UnrealEngine &engine = UnrealEngine::Instance();
+        OwnedValues &owned = Serve().owned;
+        const bool gameThread = OnGameThread();
+        const auto *proposed = static_cast<const std::uint8_t *>(value);
+        // Names are confirmed through the engine, so only on the game thread.
+        if (!StructChangeAllowed(engine, parameter->info.inner, current, proposed, size, 0,
+                                 gameThread ? &CheckName : nullptr, &owned.Engine())) {
+            // Strings and field paths: copied by the engine's own code, released with the frame.
+            PropertyVirtuals &virtuals = owned.Stores().Virtuals();
+            if (!gameThread || parameter->info.arrayDim != 1 || !virtuals.ValueOpsReady() ||
+                !StructChangeAllowed(engine, parameter->info.inner, current, proposed, size, 0, &CheckName,
+                                     &owned.Engine(), true) ||
+                !virtuals.Copy(parameter->info, const_cast<std::uint8_t *>(current), proposed))
+                return 0;
+            loaderFrame->engineOwned[index] = 1;
+            return 1;
+        }
     }
     return callFrame->Set(parameterName, value, size) ? 1 : 0;
 }

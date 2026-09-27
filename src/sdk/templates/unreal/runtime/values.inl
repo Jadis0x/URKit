@@ -287,6 +287,7 @@ template <> struct Traits<SoftPath> {
         return path ? std::optional<SoftPath>(SoftPath{std::move(*path)}) : std::nullopt;
     }
     static bool set(const Place &place, const SoftPath &value) { return place.set_text(value.path); }
+    static void key(const SoftPath &value, URK_UnrealKey &key) { key.text = value.path.c_str(); }
 };
 
 template <> struct Traits<Binding> {

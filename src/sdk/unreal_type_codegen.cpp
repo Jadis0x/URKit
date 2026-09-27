@@ -1,9 +1,11 @@
 #include "unreal_type_codegen.h"
+#include "unreal_type_model.h"
 
 #include <algorithm>
 #include <cstdlib>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -16,7 +18,7 @@ namespace {
 
 // Must match src/unreal/unreal_type_dump.h.
 constexpr const char *kMagic = "URKIT-UNREAL-TYPES";
-constexpr int kVersion = 5;
+constexpr int kVersion = 7;
 
 // Engine flag values (EPropertyFlags, EFunctionFlags).
 constexpr std::uint64_t kConstParm = 0x2;
@@ -29,61 +31,10 @@ constexpr std::uint64_t kPropertyBlueprintVisible = 0x4;
 constexpr const char *kRuntime = "::URK::unreal::";
 constexpr const char *kTypes = "::URK::unreal::types::";
 
-struct Shape {
-    std::string kind;
-    int size = 0;
-    int dim = 1;
-    std::uint64_t flags = 0;
-    // The object the type is named by: class, struct, UEnum, delegate signature.
-    std::string inner;
-    std::string innerPackage;
-    // An array's or set's element, a map's key and value.
-    std::vector<Shape> elements;
-};
-
-// A class property, a function parameter, or a struct field (with layout).
-struct Member {
-    std::string name;
-    Shape shape;
-    int offset = -1;
-    int boolByte = 0;
-    int boolMask = 0;
-    int fieldMask = 0xFF;
-};
-
-struct Function {
-    std::string name;
-    std::uint32_t flags = 0;
-    std::vector<Member> parameters;
-    // Delegate signatures only: the package the members name it by.
-    std::string package;
-};
-
-struct Type {
-    bool isStruct = false;
-    bool isEnum = false;
-    // Enum value names; their numbers are looked up in the game at runtime.
-    std::vector<std::string> values;
-    std::string name;
-    std::string package;
-    std::string superName;
-    std::string superPackage;
-    int size = 0;
-    int alignment = 0;
-    std::vector<Member> members;
-    std::vector<Function> functions;
-    // Signatures of the class's delegate members (format 4).
-    std::vector<Function> signatures;
-    // Format 5: default-object values that differ from the parent ("path", "value").
-    std::vector<std::pair<std::string, std::string>> defaults;
-    // Format 5: component templates, "component (class)" then its changed members.
-    std::vector<std::pair<std::string, std::vector<std::pair<std::string, std::string>>>> components;
-    std::string ident;
-    // Under types/, mirroring the package: "Engine", "Game/Blueprints/Player".
-    std::string folder;
-};
-
-using TypeMap = std::map<std::string, Type>;
+bool HasScript(const Type &entry) {
+    return std::any_of(entry.functions.begin(), entry.functions.end(),
+                       [](const Function &function) { return !function.script.empty(); });
+}
 
 // Blueprint compiler output: anim graph nodes, the ubergraph frame, exposed-input thunks.
 bool CompilerMember(const Type &owner, const Member &member) {
@@ -157,7 +108,7 @@ std::optional<Shape> ParseShape(const std::vector<std::string> &fields, std::siz
     }
 }
 
-bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error) {
+bool Parse(const std::filesystem::path &path, TypeMap *types, Globals *globals, std::string *error) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         *error = "cannot read " + path.string();
@@ -198,19 +149,29 @@ bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error
                     entry.superName = fields[3];
                     entry.superPackage = fields[4];
                 }
-                if (entry.isStruct) {
+                if (entry.isStruct || (tag == "C" && fields.size() >= 7)) {
                     entry.size = std::stoi(fields[5]);
                     entry.alignment = std::stoi(fields[6]);
                 }
+                if (tag == "C" && fields.size() >= 8 && !fields[7].empty())
+                    entry.classFlags = static_cast<std::uint32_t>(std::stoul(fields[7], nullptr, 16));
                 current = &entry;
                 function = nullptr;
             } else if (tag == "V" && current && current->isEnum && fields.size() >= 2) {
-                current->values.push_back(fields[1]);
-            } else if (tag == "P" && current && !current->isStruct && !current->isEnum) {
+                current->values.emplace_back(fields[1], fields.size() >= 3 ? fields[2] : std::string());
+            } else if (tag == "I" && current && !current->isStruct && !current->isEnum && fields.size() >= 3) {
+                current->interfaces.push_back(fields[1]);
+            } else if (tag == "P" && current && !current->isStruct && !current->isEnum && format < 6) {
                 const std::optional<Shape> shape = ParseShape(fields, 8);
                 ok = shape.has_value();
                 if (ok)
                     current->members.push_back({fields[1], *shape});
+            } else if (tag == "P" && current && !current->isStruct && !current->isEnum && fields.size() >= 12) {
+                const std::optional<Shape> shape = ParseShape(fields, 12);
+                ok = shape.has_value();
+                if (ok)
+                    current->members.push_back({fields[1], *shape, std::stoi(fields[8]), std::stoi(fields[9]),
+                                                std::stoi(fields[10]), std::stoi(fields[11])});
             } else if (tag == "M" && current && current->isStruct && fields.size() >= 12) {
                 const std::optional<Shape> shape = ParseShape(fields, 12);
                 ok = shape.has_value();
@@ -221,9 +182,16 @@ bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error
                 current->functions.push_back(
                     {fields[1], static_cast<std::uint32_t>(std::stoul(fields[2], nullptr, 16)), {}});
                 function = &current->functions.back();
+                if (fields.size() >= 4 && !fields[3].empty())
+                    function->nativeRva = std::stoull(fields[3], nullptr, 16);
             } else if (tag == "G" && current && !current->isStruct && !current->isEnum && fields.size() >= 3) {
                 current->signatures.push_back({fields[1], 0, {}, fields[2]});
                 function = &current->signatures.back();
+            } else if (tag == "Z" && fields.size() >= 3) {
+                if (!fields[2].empty())
+                    globals->emplace_back(fields[1], std::stoull(fields[2], nullptr, 16));
+                current = nullptr;
+                function = nullptr;
             } else if (tag == "D" && current && !current->isStruct && !current->isEnum && fields.size() >= 3) {
                 current->defaults.emplace_back(fields[1], fields[2]);
             } else if (tag == "K" && current && !current->isStruct && !current->isEnum && fields.size() >= 5) {
@@ -237,6 +205,16 @@ bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error
                 ok = shape.has_value();
                 if (ok)
                     function->parameters.push_back({fields[1], *shape});
+            } else if (tag == "L" && function) {
+                const std::optional<Shape> shape = ParseShape(fields, 8);
+                ok = shape.has_value();
+                if (ok)
+                    function->locals.push_back({fields[1], *shape});
+            } else if (tag == "X" && function && fields.size() >= 3) {
+                function->script.emplace_back(std::stoi(fields[1]), fields[2]);
+            } else if (tag == "XF" && function && fields.size() >= 3) {
+                function->failedAt = std::stoi(fields[1]);
+                function->failure = fields[2];
             } else if (tag != "IMAGE" && tag != "ENGINE" && !line.empty()) {
                 ok = false;
             }
@@ -392,6 +370,11 @@ std::string Escape(const std::string &text) {
     return out;
 }
 
+// A backslash ending a // comment would splice the next line into it.
+std::string CommentSafe(const std::string &text) {
+    return !text.empty() && text.back() == '\\' ? text + " (ends in a backslash)" : text;
+}
+
 // What the class's defaults set, as the running game had them when it was dumped.
 std::string Defaults(const Type &entry) {
     std::ostringstream out;
@@ -399,7 +382,7 @@ std::string Defaults(const Type &entry) {
         out << "\n    // Defaults set here, where they differ from "
             << (entry.superName.empty() ? "the parent" : entry.superName) << " (live: class_default()):\n";
         for (const auto &[path, value] : entry.defaults)
-            out << "    //   " << path << " = " << value << '\n';
+            out << "    //   " << path << " = " << CommentSafe(value) << '\n';
     }
     if (!entry.components.empty()) {
         out << "\n    // Components this Blueprint adds or changes, where they differ from the parent Blueprint's\n"
@@ -407,7 +390,7 @@ std::string Defaults(const Type &entry) {
         for (const auto &[component, members] : entry.components) {
             out << "    //   " << component << (members.empty() ? "" : ":") << '\n';
             for (const auto &[path, value] : members)
-                out << "    //     " << path << " = " << value << '\n';
+                out << "    //     " << path << " = " << CommentSafe(value) << '\n';
         }
     }
     return out.str();
@@ -429,6 +412,132 @@ std::string Wrapped(const std::string &lead, const std::vector<std::string> &ite
     return out + line + '\n';
 }
 
+// --- notes -------------------------------------------------------------------
+// Engine flags as the UPROPERTY/UFUNCTION/UCLASS words they come from.
+
+std::string HexOffset(int value) {
+    char text[16];
+    std::snprintf(text, sizeof(text), "0x%04X", static_cast<unsigned>(value));
+    return text;
+}
+
+std::string Joined(const std::vector<std::string> &items) {
+    std::string out;
+    for (const std::string &item : items)
+        out += (out.empty() ? "" : ", ") + item;
+    return out;
+}
+
+std::vector<std::string> PropertyWords(std::uint64_t flags) {
+    std::vector<std::string> out;
+    const auto has = [flags](std::uint64_t bit) { return (flags & bit) != 0; };
+    if (has(0x1)) {
+        const char *where = has(0x10000) ? "DefaultsOnly" : has(0x800) ? "InstanceOnly" : "Anywhere";
+        out.push_back(std::string(has(0x20000) ? "Visible" : "Edit") + where);
+    }
+    if (has(0x4))
+        out.push_back(has(0x10) ? "BlueprintReadOnly" : "BlueprintReadWrite");
+    if (has(0x10000000))
+        out.push_back("BlueprintAssignable");
+    if (has(0x100000000000))
+        out.push_back("BlueprintCallable");
+    if (has(0x200000000000))
+        out.push_back("BlueprintAuthorityOnly");
+    if (has(0x20))
+        out.push_back(has(0x100000000) ? "ReplicatedUsing" : "Replicated");
+    if (has(0x80000) && has(0x2000000000000))
+        out.push_back("Instanced");
+    if (has(0x1000000000000))
+        out.push_back("ExposeOnSpawn");
+    if (has(0x4000))
+        out.push_back(has(0x40000) ? "GlobalConfig" : "Config");
+    if (has(0x1000000))
+        out.push_back("SaveGame");
+    if (has(0x2000))
+        out.push_back("Transient");
+    if (has(0x200000))
+        out.push_back("DuplicateTransient");
+    if (has(0x200000000))
+        out.push_back("Interp");
+    if (has(0x800000000))
+        out.push_back("EditorOnly");
+    if (has(0x20000000))
+        out.push_back("Deprecated");
+    if (has(0x40000000000000))
+        out.push_back("private");
+    else if (has(0x20000000000000))
+        out.push_back("protected");
+    return out;
+}
+
+// " // 0x0280 EditAnywhere, ..." after a member; bitfield bools name their bit.
+std::string MemberNote(int offset, int boolByte, int boolMask, int fieldMask, std::uint64_t flags) {
+    std::string note;
+    if (offset >= 0) {
+        note = HexOffset(offset + (fieldMask != 0xFF ? boolByte : 0));
+        if (fieldMask != 0xFF && boolMask > 0) {
+            int bit = 0;
+            while (bit < 7 && !(boolMask & (1 << bit)))
+                ++bit;
+            note += ":" + std::to_string(bit);
+        }
+    }
+    const std::string words = Joined(PropertyWords(flags));
+    if (!words.empty())
+        note += (note.empty() ? "" : " ") + words;
+    return note.empty() ? "" : " // " + note;
+}
+
+std::vector<std::string> FunctionWords(std::uint32_t flags, bool native) {
+    std::vector<std::string> out;
+    const auto has = [flags](std::uint32_t bit) { return (flags & bit) != 0; };
+    if (has(0x2000))
+        out.push_back("static");
+    if (has(0x40)) {
+        out.push_back(has(0x200000) ? "Server" : has(0x1000000) ? "Client" : has(0x4000) ? "NetMulticast" : "Net");
+        out.push_back(has(0x80) ? "Reliable" : "Unreliable");
+        if (has(0x80000000))
+            out.push_back("WithValidation");
+    }
+    if (native && has(0x8000000))
+        out.push_back(has(0x400) ? "BlueprintNativeEvent" : "BlueprintImplementableEvent");
+    else if (!native && has(0x800))
+        out.push_back("Event");
+    if (has(0x10000000))
+        out.push_back("BlueprintPure");
+    else if (has(0x4000000))
+        out.push_back("BlueprintCallable");
+    if (has(0x4))
+        out.push_back("BlueprintAuthorityOnly");
+    if (has(0x8))
+        out.push_back("BlueprintCosmetic");
+    if (has(0x200))
+        out.push_back("Exec");
+    if (has(0x40000000))
+        out.push_back("const");
+    if (has(0x40000))
+        out.push_back("private");
+    else if (has(0x80000))
+        out.push_back("protected");
+    return out;
+}
+
+std::vector<std::string> ClassWords(std::uint32_t flags) {
+    std::vector<std::string> out;
+    const auto has = [flags](std::uint32_t bit) { return (flags & bit) != 0; };
+    out.push_back(has(0x40000) ? "Blueprint" : has(0x80) ? "native" : "script");
+    const std::pair<std::uint32_t, const char *> words[] = {
+        {0x1, "Abstract"},           {0x4000, "Interface"},       {0x4, "Config"},
+        {0x2, "DefaultConfig"},      {0x8000000, "GlobalUserConfig"}, {0x400, "PerObjectConfig"},
+        {0x8, "Transient"},          {0x200, "NotPlaceable"},     {0x1000, "EditInlineNew"},
+        {0x200000, "DefaultToInstanced"}, {0x10000, "Const"},     {0x2000000, "Deprecated"}};
+    for (const auto &[bit, word] : words) {
+        if (has(bit))
+            out.push_back(word);
+    }
+    return out;
+}
+
 // --- types -------------------------------------------------------------------
 
 // URK_UnrealPropertyKind, by the dump's kind names.
@@ -439,7 +548,8 @@ int KindId(const std::string &kind) {
         {"name", 13},        {"string", 14},      {"text", 15},    {"object", 16}, {"class", 17},
         {"weak object", 18}, {"soft object", 19}, {"interface", 20}, {"struct", 21}, {"array", 22},
         {"set", 23},         {"map", 24},         {"delegate", 25}, {"multicast delegate", 26},
-        {"sparse delegate", 27}, {"lazy object", 28}, {"utf8 string", 29}, {"ansi string", 30}};
+        {"sparse delegate", 27}, {"lazy object", 28}, {"utf8 string", 29}, {"ansi string", 30},
+        {"field path", 31},      {"optional", 32}};
     const auto found = ids.find(kind);
     return found == ids.end() ? 0 : found->second;
 }
@@ -535,9 +645,9 @@ class Generator {
         return target;
     }
 
-    // Same rule as the loader: unknown kinds can't be released, so calls are refused.
+    // Same rule as the loader: kinds it can't release make a call refused.
     bool Leaks(const Shape &shape, int depth = 0) {
-        if (shape.kind == "unknown" || depth > 16)
+        if (shape.kind == "unknown" || shape.kind == "optional" || depth > 16)
             return true;
         for (const Shape &element : shape.elements) {
             if (Leaks(element, depth + 1))
@@ -555,6 +665,13 @@ class Generator {
                 return true;
         }
         return false;
+    }
+
+    // Read, never written from C++: a field path has no text the loader can turn into one.
+    static bool ReadOnly(const Shape &shape) {
+        if (shape.kind == "field path")
+            return true;
+        return std::any_of(shape.elements.begin(), shape.elements.end(), [](const Shape &e) { return ReadOnly(e); });
     }
 
     // The generated enum a shape names, for enums and bytes that carry one.
@@ -586,10 +703,13 @@ class Generator {
             return std::string("std::string");
         if (shape.kind == "object" || shape.kind == "weak object" || shape.kind == "lazy object")
             return ObjectTypeNamed(shape, forwards);
-        if (shape.kind == "class")
+        // An interface is reached as the object implementing it; the loader fills in its address.
+        if (shape.kind == "class" || shape.kind == "interface")
             return std::string(kRuntime) + "Object";
         if (shape.kind == "soft object")
             return std::string(kRuntime) + "SoftPath";
+        if (shape.kind == "field path")
+            return std::string("std::string");
         if (shape.kind == "delegate")
             return std::string(kRuntime) + "Binding";
         if (shape.kind == "struct") {
@@ -619,9 +739,10 @@ class Generator {
 
     // What the loader can hash and compare as a set element or map key.
     static bool Keyable(const Shape &shape) {
-        static const std::set<std::string> keys = {"bool",   "byte",   "int8",   "int16",  "int32", "int64",
-                                                   "uint16", "uint32", "uint64", "float",  "double", "enum",
-                                                   "name",   "string", "object", "class",  "struct"};
+        static const std::set<std::string> keys = {"bool",   "byte",   "int8",   "int16",  "int32",       "int64",
+                                                   "uint16", "uint32", "uint64", "float",  "double",      "enum",
+                                                   "name",   "string", "object", "class",  "struct",      "soft object",
+                                                   "weak object"};
         return keys.count(shape.kind) != 0;
     }
 
@@ -645,6 +766,13 @@ class Generator {
             return std::string(kRuntime) + "StringValue";
         if (shape.kind == "text")
             return std::string(kRuntime) + "TextValue";
+        if (shape.kind == "field path")
+            return std::string(kRuntime) + "FieldPathValue";
+        if (shape.kind == "optional" && shape.elements.size() == 1) {
+            const std::optional<std::string> value = PlaceType(shape.elements[0], includes, forwards, 1);
+            return value ? std::optional<std::string>(std::string(kRuntime) + "OptionalMember<" + *value + ">")
+                         : std::nullopt;
+        }
         if (shape.kind == "soft object")
             return std::string(kRuntime) + "SoftMember<" + ObjectTypeNamed(shape, forwards) + ">";
         if (shape.kind == "weak object" || shape.kind == "lazy object")
@@ -783,7 +911,7 @@ class Generator {
             members << "    " << type << ' ' << ident;
             if (count != 1 || !typed)
                 members << '[' << count << ']';
-            members << ";\n";
+            members << ';' << MemberNote(-1, 0, 0, 0xFF, shape.flags) << '\n';
             if (!typed) {
                 layout.opaque.push_back(member->name);
                 // Kept as bytes, reached in place (strings, arrays, text...).
@@ -879,17 +1007,17 @@ class Generator {
     // Names only; resolved in the running game, so renumbering needs no rebuild.
     Header EmitEnum(const Type &entry) {
         std::ostringstream out;
-        out << Preamble(entry, ": value names only, each looked up in the running game.");
+        out << Preamble(entry, ": values by name, each looked up in the running game (numbers as dumped).");
         out << "#include \"" << RuntimeInclude(entry) << "\"\n\nnamespace URK::unreal::types {\n\n"
             << "struct " << entry.ident << " : " << kRuntime << "Enum<" << entry.ident << "> {\n"
             << "    using Enum::Enum;\n"
             << "    static constexpr const char *kName = \"" << Escape(entry.name) << "\";\n"
             << "    static constexpr const char *kPackage = \"" << Escape(entry.package) << "\";\n";
         std::set<std::string> taken = {"Enum", "from_value", "enum_object", "name_literal", "UrkEnumTag"};
-        for (const std::string &value : entry.values) {
+        for (const auto &[value, number] : entry.values) {
             const std::string ident = Unique(Identifier(value), taken, entry.ident);
             out << "    static " << entry.ident << ' ' << ident << "() { return " << entry.ident << "(\""
-                << Escape(value) << "\"); }\n";
+                << Escape(value) << "\"); }" << (number.empty() ? "" : " // " + number) << '\n';
         }
         out << "};\n} // namespace URK::unreal::types\n";
         return {FileOf(entry), out.str()};
@@ -951,12 +1079,14 @@ class Generator {
             }
             std::ostringstream &to = CompilerMember(entry, property) ? compiler : body;
             const std::string ident = Unique(Identifier(property.name), taken, entry.ident);
+            const std::string note = MemberNote(property.offset, property.boolByte, property.boolMask,
+                                                property.fieldMask, property.shape.flags);
             if (property.shape.dim > 1)
                 to << "    " << *type << ' ' << ident << "(std::int32_t index) const { return {*this, \""
-                   << Escape(property.name) << "\", index}; }\n";
+                   << Escape(property.name) << "\", index}; }" << note << '\n';
             else
                 to << "    " << *type << ' ' << ident << "() const { return {*this, \"" << Escape(property.name)
-                   << "\"}; }\n";
+                   << "\"}; }" << note << '\n';
         }
         std::vector<const Function *> hooked;
         for (const Function &function : entry.functions) {
@@ -985,7 +1115,20 @@ class Generator {
             if (ident != entry.ident && (!super || ident != super->ident))
                 out << "class " << ident << ";\n";
         }
-        out << "\nclass " << entry.ident << " : public " << base << " {\n  public:\n"
+        out << '\n';
+        if (entry.size > 0 || entry.classFlags) {
+            out << "//";
+            if (entry.size > 0)
+                out << ' ' << HexOffset(entry.size) << " bytes at dump time" << (entry.classFlags ? ";" : ".");
+            if (entry.classFlags)
+                out << ' ' << Joined(ClassWords(*entry.classFlags)) << '.';
+            out << '\n';
+        }
+        if (!entry.interfaces.empty())
+            out << "// Implements " << Joined(entry.interfaces) << ".\n";
+        if (HasScript(entry))
+            out << "// Blueprint logic as pseudo-code: " << entry.ident << ".bp.cpp\n";
+        out << "class " << entry.ident << " : public " << base << " {\n  public:\n"
             << "    URK_UNREAL_TYPE(" << entry.ident << ", " << base << ", \"" << Escape(entry.name) << "\", \""
             << Escape(entry.package) << "\")\n";
         if (!events.str().empty())
@@ -1061,7 +1204,8 @@ class Generator {
                 returned = &parameter;
                 continue;
             }
-            if (shape.dim != 1)
+            // The loader refuses a frame holding what it can't release, in or out.
+            if (shape.dim != 1 || Leaks(shape))
                 return false;
             const std::string ident = Unique(Identifier(parameter.name), parameterNames, owner.ident);
             const std::string name = "\"" + Escape(parameter.name) + "\"";
@@ -1100,6 +1244,8 @@ class Generator {
                     return false;
                 }
             } else if (placed) {
+                if (ReadOnly(shape))
+                    return false;
                 signature.push_back("const " + *placed + " &" + ident);
                 sets.push_back("urk_frame.set_value<" + *placed + ">(" + name + ", " + ident + ")");
             } else if (value) {
@@ -1158,6 +1304,9 @@ class Generator {
 
         const bool isStatic = (function.flags & kFunctionStatic) != 0;
         const std::string ident = Unique(Identifier(function.name), taken, owner.ident);
+        if (const std::string words = Joined(FunctionWords(function.flags, owner.package.rfind("/Script/", 0) == 0));
+            !words.empty())
+            body << "    // " << words << '\n';
         body << "    " << prefix << (isStatic ? "static " : "") << result << ' ' << ident << '(';
         for (std::size_t i = 0; i < signature.size(); ++i)
             body << (i ? ", " : "") << signature[i];
@@ -1204,7 +1353,8 @@ std::string Index(const TypeMap &types, const std::vector<const Type *> &emitted
     std::ostringstream out;
     out << "# Types\n\nGenerated by urk-sdk from `" << kDumpFileName << "`; regenerated with it, do not edit. "
         << types.size() << " types, " << emitted.size() << " with a header. Folders mirror the package: "
-        << "`/Script/Engine` is `Engine/`, `/Game/Doors/BP_Door` is `Game/Doors/`.\n\n"
+        << "`/Script/Engine` is `Engine/`, `/Game/Doors/BP_Door` is `Game/Doors/`. A Blueprint class with bytecode "
+        << "also has `<Class>.bp.cpp`: its logic as pseudo-code, for reading (never compiled).\n\n"
         << "```cpp\n#include \"sdk/unreal/types/Engine/Character.h\"\n```\n";
     const auto section = [&out](const char *title, const std::map<std::string, Folder> &folders) {
         if (folders.empty())
@@ -1237,7 +1387,8 @@ bool Build(const std::filesystem::path &dumpPath, std::vector<Header> *headers, 
     std::string ignored;
     std::string &message = error ? *error : ignored;
     TypeMap types;
-    if (!Parse(dumpPath, &types, &message))
+    Globals globals;
+    if (!Parse(dumpPath, &types, &globals, &message))
         return false;
     AssignIdents(types);
     AssignFolders(types);
@@ -1251,8 +1402,12 @@ bool Build(const std::filesystem::path &dumpPath, std::vector<Header> *headers, 
             continue;
         headers->push_back(generator.Emit(entry));
         emitted.push_back(&entry);
+        if (std::string logic = RenderBlueprint(entry, types); !logic.empty())
+            headers->push_back({entry.folder + "/" + entry.ident + ".bp.cpp", std::move(logic)});
     }
     headers->push_back({"INDEX.md", Index(types, emitted, ProjectOf(dumpPath))});
+    for (ExportFile &file : ReverseEngineeringFiles(types, globals, ProjectOf(dumpPath)))
+        headers->push_back({std::move(file.name), std::move(file.contents), "re"});
     return true;
 }
 

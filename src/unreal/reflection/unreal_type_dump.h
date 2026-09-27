@@ -1,6 +1,6 @@
 #pragma once
 
-// Reflected types for the SDK generator: names, kinds, signatures. No offsets.
+// Reflected types for the SDK generator: names, kinds, signatures, flags. Offsets are for reading, not code.
 
 #include "unreal/reflection/unreal_enums.h"
 #include "unreal/reflection/unreal_functions.h"
@@ -16,11 +16,13 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace URK::Unreal {
 
 // Format the generator reads. Bump on any change to the line layout.
-inline constexpr int kTypeDumpVersion = 5;
+inline constexpr int kTypeDumpVersion = 7;
 inline constexpr const char *kTypeDumpMagic = "URKIT-UNREAL-TYPES";
 
 // One block per class ("package<TAB>name") so dumps from different maps merge.
@@ -48,6 +50,12 @@ struct TypeDumpSources {
     const EnumNames *enums = nullptr;
     // D/K lines for a class: default values and component templates (format 5).
     std::function<std::string(Address)> defaults;
+    // X/XF lines of a function's bytecode (format 7); state: 0 none, 1 whole, 2 partly decoded.
+    std::function<std::string(Address, int &)> script;
+    // The main image: native entry points and globals in it are written as RVAs (format 7).
+    Address imageBase = kNullAddress;
+    std::uint32_t imageSize = 0;
+    std::vector<std::pair<std::string, Address>> globals;
 };
 
 // Non-blocking dump: Scan queues, Step describes within a budget, writing is off-thread.
@@ -104,6 +112,9 @@ class TypeDumper {
     unsigned long long started_ = 0;
     double spentMs_ = 0;
     int frames_ = 0;
+    // Blueprint scripts described this round: whole, partly.
+    int scripts_ = 0;
+    int partialScripts_ = 0;
 };
 
 } // namespace URK::Unreal

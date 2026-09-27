@@ -1,6 +1,7 @@
 // The URK_UnrealApi table, and the loader's entry points into it.
 
 #include "unreal/api/sdk_api_internal.h"
+#include "unreal/reflection/unreal_script_code.h"
 #include "unreal/values/unreal_class_defaults.h"
 
 namespace URK::Unreal::SdkApi {
@@ -134,6 +135,23 @@ std::string UnrealSdk_DescribeDefaults(Address classObject) {
         return {};
     static ClassDefaults defaults(UnrealEngine::Instance(), Serve().places);
     return defaults.Describe(classObject);
+}
+
+std::string UnrealSdk_DescribeScript(Address function, int &state) {
+    state = 0;
+    UnrealEngine &engine = UnrealEngine::Instance();
+    if (!engine.Available() || !OnGameThread())
+        return {};
+    static ScriptDescriber describer(engine.Finder(), engine.Structs(), engine.Chain(), engine.Functions(),
+                                     engine.Version());
+    const bool measured = describer.Measured();
+    const ScriptDescriber::Result result = describer.Describe(function);
+    if (!measured && describer.Measured())
+        Report(kNullAddress, describer.Offset() != kOffsetNotFound
+                                 ? "Blueprint bytecode: UStruct.Script at " + std::to_string(describer.Offset())
+                                 : "Blueprint bytecode not dumped: UStruct.Script not found (" + describer.Failure() + ")");
+    state = !result.present ? 0 : result.complete ? 1 : 2;
+    return result.lines;
 }
 
 bool UnrealSdk_HoldProcessEventHook() {

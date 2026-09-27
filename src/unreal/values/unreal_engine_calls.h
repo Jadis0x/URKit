@@ -18,6 +18,9 @@ namespace URK::Unreal {
 
 // FString, TArray, FUtf8String: data pointer, Num, Max.
 inline constexpr std::int32_t kArrayHeaderSize = 16;
+// FFieldPath in shipping builds: FField*, TWeakObjectPtr owner, TArray<FName> path.
+inline constexpr std::int32_t kFieldPathSize = 32;
+inline constexpr std::int32_t kFieldPathArray = 16;
 // Far above any real container; a larger count means the header is not one.
 inline constexpr std::int32_t kMaxContainerElements = 1 << 26;
 

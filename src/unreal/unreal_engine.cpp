@@ -298,4 +298,19 @@ bool UnrealEngine::RuledOut() const { return ruledOut_.load(std::memory_order_ac
 
 bool UnrealEngine::Available() const { return available_.load(std::memory_order_acquire); }
 
+std::vector<std::pair<std::string, Address>> UnrealEngine::Globals() const {
+    std::vector<std::pair<std::string, Address>> globals;
+    if (!Available() || !runtime_)
+        return globals;
+    globals.emplace_back("GUObjectArray_ObjObjects", runtime_->objectArrayAddress);
+    globals.emplace_back("NamePoolData", runtime_->nameTableAddress);
+    if (processEvent_.Resolved())
+        globals.emplace_back("UObject::ProcessEvent", processEvent_.baseImplementation);
+    if (const Address object = finder_->FindInOuter("Default__Object", "/Script/CoreUObject"); object != kNullAddress) {
+        if (const std::optional<Address> vtable = memory_.ReadPointer(object))
+            globals.emplace_back("UObject::vftable", *vtable);
+    }
+    return globals;
+}
+
 } // namespace URK::Unreal

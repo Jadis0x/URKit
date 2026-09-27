@@ -90,6 +90,7 @@ set(URK_UNREAL_SRC
     ${URK_SRC_DIR}/unreal/reflection/unreal_names.cpp
     ${URK_SRC_DIR}/unreal/reflection/unreal_object_array.cpp
     ${URK_SRC_DIR}/unreal/reflection/unreal_object_finder.cpp
+    ${URK_SRC_DIR}/unreal/reflection/unreal_script_code.cpp
     ${URK_SRC_DIR}/unreal/reflection/unreal_type_dump.cpp
     ${URK_SRC_DIR}/unreal/reflection/unreal_type_queries.cpp
     ${URK_SRC_DIR}/unreal/api/sdk_api_calls.cpp
@@ -128,6 +129,8 @@ set(URK_SDK_GENERATOR_SRC
     ${URK_SRC_DIR}/sdk/il2cpp_project_generator.cpp
     ${URK_SRC_DIR}/sdk/unreal_sdk_generator.cpp
     ${URK_SRC_DIR}/sdk/unreal_type_codegen.cpp
+    ${URK_SRC_DIR}/sdk/unreal_script_render.cpp
+    ${URK_SRC_DIR}/sdk/unreal_re_export.cpp
     ${URK_SRC_DIR}/sdk/sdk_generator_contract.cpp
     ${URK_SRC_DIR}/sdk/project_manifest.cpp
     ${URK_SRC_DIR}/sdk/project_ledger.cpp
