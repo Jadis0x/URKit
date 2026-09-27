@@ -174,8 +174,7 @@ std::string Hex4(int value) {
     return text;
 }
 
-// A real number that reads as one: 2 -> 2.0.
-// Shortest form that reads back the same value (older dumps wrote 17 digits).
+// A real number that reads as one (2 -> 2.0), in the shortest form that reads back the same value.
 std::string Real(const std::string &text, bool single) {
     std::string out = text;
     double value = 0;
@@ -831,11 +830,16 @@ class Writer {
 
     // --- control flow ---
 
+    // Positions are the layout: statements in offset order, then copies, each Plain/Branch falling into p + 1.
     struct Region {
+        // Statement index per position.
         std::vector<int> order;
+        // Statement index -> its first (original) position.
         std::map<int, int> position;
-        // Per statement: pop target offset, -1 end of thread, -2 differs by path.
-        std::map<int, int> popTarget;
+        // 0, or the copy number of a statement repeated because its flow stack differs by path.
+        std::vector<int> copy;
+        // Per Pop/PopIfNot: target offset, -1 end of thread, -2 differs by path (too many states to copy).
+        std::vector<int> popTo;
         std::vector<Flow> flow;
         std::vector<int> target;
         std::vector<std::vector<int>> preds;
@@ -846,104 +850,248 @@ class Writer {
 
     static int Target(const Node &node) { return std::stoi(node.Arg(0).text); }
 
+    // Walks every (statement, flow stack) state from start. A statement whose stack differs by path and that
+    // leads to a Pop with differing targets (a Sequence pin reached from two places) is copied per stack.
     Region Analyze(const Loaded &loaded, int start) const {
         Region region;
-        const auto next = [&](int index) { return index + 1 < static_cast<int>(loaded.statements.size()) ? index + 1 : -1; };
+        const int total = static_cast<int>(loaded.statements.size());
+        const auto next = [&](int index) { return index + 1 < total ? index + 1 : -1; };
         const auto indexOf = [&](int offset) {
             const auto found = loaded.index.find(offset);
             return found == loaded.index.end() ? -1 : found->second;
         };
-        std::set<int> reached;
-        std::set<std::pair<int, std::vector<int>>> seen;
-        std::vector<std::pair<int, std::vector<int>>> work = {{start, {}}};
-        const auto merge = [&](int index, int value) {
-            const auto [it, added] = region.popTarget.emplace(index, value);
-            if (!added && it->second != value)
-                it->second = -2;
+
+        using State = std::pair<int, std::vector<int>>;
+        std::map<State, int> ids;
+        std::vector<State> states;
+        std::vector<int> fall, jump, popTo, work;
+        bool overflow = false;
+        const auto intern = [&](int index, std::vector<int> stack) {
+            if (index < 0)
+                return -1;
+            State key{index, std::move(stack)};
+            const auto found = ids.find(key);
+            if (found != ids.end())
+                return found->second;
+            if (states.size() >= kMaxStates) {
+                overflow = true;
+                return -1;
+            }
+            const int id = static_cast<int>(states.size());
+            ids.emplace(key, id);
+            states.push_back(std::move(key));
+            fall.push_back(-1);
+            jump.push_back(-1);
+            popTo.push_back(-1);
+            work.push_back(id);
+            return id;
         };
+        intern(start, {});
         while (!work.empty()) {
-            auto [index, stack] = std::move(work.back());
+            const int id = work.back();
             work.pop_back();
-            if (index < 0 || seen.size() > kMaxStates || !seen.emplace(index, stack).second)
-                continue;
-            reached.insert(index);
-            const Node &node = loaded.statements[index].node;
-            const auto go = [&](int to, std::vector<int> with) {
-                if (to >= 0)
-                    work.emplace_back(to, std::move(with));
-            };
+            const int index = states[static_cast<std::size_t>(id)].first;
+            std::vector<int> stack = states[static_cast<std::size_t>(id)].second;
+            const Node &node = loaded.statements[static_cast<std::size_t>(index)].node;
+            int toFall = -1;
+            int toJump = -1;
             if (node.Is("Jump")) {
-                go(indexOf(Target(node)), stack);
+                toJump = intern(indexOf(Target(node)), stack);
             } else if (node.Is("JumpIfNot")) {
-                go(next(index), stack);
-                go(indexOf(Target(node)), stack);
+                toFall = intern(next(index), stack);
+                toJump = intern(indexOf(Target(node)), stack);
             } else if (node.Is("Push")) {
                 std::vector<int> pushed = stack;
                 if (pushed.size() < kMaxFlowDepth)
                     pushed.push_back(Target(node));
-                go(next(index), pushed);
+                toFall = intern(next(index), std::move(pushed));
             } else if (node.Is("Pop") || node.Is("PopIfNot")) {
                 if (node.Is("PopIfNot"))
-                    go(next(index), stack);
-                if (stack.empty()) {
-                    merge(index, -1);
-                } else {
+                    toFall = intern(next(index), stack);
+                if (!stack.empty()) {
                     const int to = stack.back();
                     stack.pop_back();
-                    merge(index, to);
-                    go(indexOf(to), stack);
+                    popTo[static_cast<std::size_t>(id)] = to;
+                    toJump = intern(indexOf(to), std::move(stack));
                 }
-            } else if (node.Is("Return") || node.Is("EndOfScript") || node.Is("ComputedJump")) {
-            } else {
-                go(next(index), stack);
+            } else if (!(node.Is("Return") || node.Is("EndOfScript") || node.Is("ComputedJump"))) {
+                toFall = intern(next(index), stack);
             }
+            fall[static_cast<std::size_t>(id)] = toFall;
+            jump[static_cast<std::size_t>(id)] = toJump;
         }
-        if (seen.size() > kMaxStates) {
-            for (auto &[index, value] : region.popTarget)
-                value = -2;
+        const int stateCount = static_cast<int>(states.size());
+
+        // Pops whose target differs by path, and the states that lead to one.
+        std::map<int, std::set<int>> popTargets;
+        std::map<int, int> firstState, stateCounts;
+        for (int id = 0; id < stateCount; ++id) {
+            const int index = states[static_cast<std::size_t>(id)].first;
+            firstState.emplace(index, id);
+            ++stateCounts[index];
+            const Node &node = loaded.statements[static_cast<std::size_t>(index)].node;
+            if (node.Is("Pop") || node.Is("PopIfNot"))
+                popTargets[index].insert(popTo[static_cast<std::size_t>(id)]);
         }
-        region.order.assign(reached.begin(), reached.end());
-        const int count = static_cast<int>(region.order.size());
-        for (int p = 0; p < count; ++p)
-            region.position[region.order[p]] = p;
+        const auto differs = [&](int index) {
+            const auto found = popTargets.find(index);
+            return found != popTargets.end() && found->second.size() > 1;
+        };
+        std::set<int> split;
+        if (!overflow) {
+            std::vector<std::vector<int>> into(static_cast<std::size_t>(stateCount));
+            for (int id = 0; id < stateCount; ++id) {
+                for (const int to : {fall[static_cast<std::size_t>(id)], jump[static_cast<std::size_t>(id)]}) {
+                    if (to >= 0)
+                        into[static_cast<std::size_t>(to)].push_back(id);
+                }
+            }
+            std::vector<bool> leads(static_cast<std::size_t>(stateCount), false);
+            std::vector<int> back;
+            for (int id = 0; id < stateCount; ++id) {
+                if (differs(states[static_cast<std::size_t>(id)].first)) {
+                    leads[static_cast<std::size_t>(id)] = true;
+                    back.push_back(id);
+                }
+            }
+            while (!back.empty()) {
+                const int id = back.back();
+                back.pop_back();
+                for (const int from : into[static_cast<std::size_t>(id)]) {
+                    if (!leads[static_cast<std::size_t>(from)]) {
+                        leads[static_cast<std::size_t>(from)] = true;
+                        back.push_back(from);
+                    }
+                }
+            }
+            for (int id = 0; id < stateCount; ++id) {
+                const int index = states[static_cast<std::size_t>(id)].first;
+                if (leads[static_cast<std::size_t>(id)] && stateCounts[index] > 1)
+                    split.insert(index);
+            }
+            // Copies beyond twice the code read worse than the marker they replace.
+            std::size_t copied = 0;
+            for (const int index : split)
+                copied += static_cast<std::size_t>(stateCounts[index] - 1);
+            if (copied > 2 * firstState.size() + 32)
+                split.clear();
+        }
+        // A split statement's original is the state the one before it falls into, so the text reads on.
+        std::map<int, int> original;
+        for (const auto &[index, id] : firstState) {
+            int chosen = id;
+            const auto before = original.find(index - 1);
+            // The entry keeps its own (empty-stack) state: Body starts at the original.
+            if (split.count(index) && index != start && before != original.end()) {
+                const int into = fall[static_cast<std::size_t>(before->second)];
+                if (into >= 0 && states[static_cast<std::size_t>(into)].first == index)
+                    chosen = into;
+            }
+            original.emplace(index, chosen);
+        }
+        // One node per statement, or per state where split.
+        const auto nodeOf = [&](int id) {
+            if (id < 0)
+                return -1;
+            const int index = states[static_cast<std::size_t>(id)].first;
+            return split.count(index) ? id : original.at(index);
+        };
+
+        // Layout: originals by offset, then copies grouped by stack; a jump where fall-through would land wrong.
+        std::vector<int> layout;
+        for (const auto &[index, id] : original)
+            layout.push_back(id);
+        std::vector<int> copies;
+        for (int id = 0; id < stateCount; ++id) {
+            if (split.count(states[static_cast<std::size_t>(id)].first) &&
+                id != original.at(states[static_cast<std::size_t>(id)].first))
+                copies.push_back(id);
+        }
+        std::sort(copies.begin(), copies.end(), [&](int a, int b) {
+            const State &x = states[static_cast<std::size_t>(a)];
+            const State &y = states[static_cast<std::size_t>(b)];
+            return x.second != y.second ? x.second < y.second : x.first < y.first;
+        });
+        layout.insert(layout.end(), copies.begin(), copies.end());
+
+        // Entries: a node id, or -(target node + 2) for an inserted jump.
+        std::vector<int> entries;
+        for (std::size_t i = 0; i < layout.size(); ++i) {
+            const int id = layout[i];
+            entries.push_back(id);
+            const int to = nodeOf(fall[static_cast<std::size_t>(id)]);
+            if (to >= 0 && (i + 1 >= layout.size() || layout[i + 1] != to))
+                entries.push_back(-(to + 2));
+        }
+        const int count = static_cast<int>(entries.size());
+        std::map<int, int> positionOfNode;
+        for (int p = 0; p < count; ++p) {
+            if (entries[static_cast<std::size_t>(p)] >= 0)
+                positionOfNode[entries[static_cast<std::size_t>(p)]] = p;
+        }
+        const auto positionOf = [&](int node) {
+            const auto found = positionOfNode.find(node);
+            return found == positionOfNode.end() ? -1 : found->second;
+        };
+
+        region.order.assign(count, -1);
+        region.copy.assign(count, 0);
+        region.popTo.assign(count, -1);
         region.flow.assign(count, Flow::Plain);
         region.target.assign(count, -1);
         region.preds.assign(count, {});
         region.exitTarget.assign(count, false);
         region.removed.assign(count, false);
-        const auto positionOf = [&](int offset) {
-            const int index = indexOf(offset);
-            const auto found = region.position.find(index);
-            return found == region.position.end() ? -1 : found->second;
-        };
+        std::map<int, int> copiesOf;
+        std::vector<bool> falls(static_cast<std::size_t>(count), false);
         for (int p = 0; p < count; ++p) {
-            const int index = region.order[p];
-            const Node &node = loaded.statements[index].node;
+            const int entry = entries[static_cast<std::size_t>(p)];
+            if (entry < 0) {
+                // The inserted jump: to the node the previous one falls into.
+                const int to = -entry - 2;
+                const int index = states[static_cast<std::size_t>(to)].first;
+                Node goTo;
+                goTo.tag = "Jump";
+                goTo.args.push_back(Node{"", std::to_string(loaded.statements[static_cast<std::size_t>(index)].offset), true});
+                region.nodes.push_back(std::move(goTo));
+                region.order[p] = region.order[p - 1];
+                region.flow[p] = Flow::Goto;
+                region.target[p] = positionOf(to);
+                continue;
+            }
+            const int index = states[static_cast<std::size_t>(entry)].first;
+            const Node &node = loaded.statements[static_cast<std::size_t>(index)].node;
             region.nodes.push_back(node);
-            const auto popped = region.popTarget.find(index);
+            region.order[p] = index;
+            const auto [seen, added] = copiesOf.emplace(index, 0);
+            if (added)
+                region.position[index] = p;
+            else
+                region.copy[p] = ++seen->second;
+            falls[static_cast<std::size_t>(p)] = fall[static_cast<std::size_t>(entry)] >= 0;
             if (node.Is("Jump")) {
                 region.flow[p] = Flow::Goto;
-                region.target[p] = positionOf(Target(node));
+                region.target[p] = positionOf(nodeOf(jump[static_cast<std::size_t>(entry)]));
             } else if (node.Is("JumpIfNot")) {
                 region.flow[p] = Flow::Branch;
-                region.target[p] = positionOf(Target(node));
+                region.target[p] = positionOf(nodeOf(jump[static_cast<std::size_t>(entry)]));
             } else if (node.Is("Pop") || node.Is("PopIfNot")) {
-                const int to = popped == region.popTarget.end() ? -2 : popped->second;
+                // Unexplored states (too many) leave every pop unknown.
+                const int to = overflow || (differs(index) && !split.count(index)) ? -2
+                                                                                   : popTo[static_cast<std::size_t>(entry)];
                 const bool branch = node.Is("PopIfNot");
+                region.popTo[p] = to;
                 region.flow[p] = to >= 0 ? (branch ? Flow::Branch : Flow::Goto) : (branch ? Flow::Branch : Flow::Exit);
-                region.target[p] = to >= 0 ? positionOf(to) : -1;
+                region.target[p] = to >= 0 ? positionOf(nodeOf(jump[static_cast<std::size_t>(entry)])) : -1;
                 region.exitTarget[p] = to < 0;
             } else if (node.Is("Return") || node.Is("EndOfScript") || node.Is("ComputedJump")) {
                 region.flow[p] = Flow::Exit;
             }
         }
         for (int p = 0; p < count; ++p) {
-            const int index = region.order[p];
-            if (region.flow[p] == Flow::Plain || region.flow[p] == Flow::Branch) {
-                const auto found = region.position.find(index + 1);
-                if (found != region.position.end())
-                    region.preds[found->second].push_back(p);
-            }
+            if ((region.flow[p] == Flow::Plain || region.flow[p] == Flow::Branch) && falls[static_cast<std::size_t>(p)] &&
+                p + 1 < count)
+                region.preds[p + 1].push_back(p);
             if ((region.flow[p] == Flow::Goto || region.flow[p] == Flow::Branch) && region.target[p] >= 0)
                 region.preds[region.target[p]].push_back(p);
         }
@@ -1066,10 +1214,8 @@ class Writer {
             if (ExitAt(target))
                 return "return;";
             labels.insert(target);
-            return "goto L_" + Hex4(Offset(target)) + ';';
+            return "goto " + w_.LabelOf(r_, target) + ';';
         }
-
-        int Offset(int p) const { return r_.order[p] >= 0 ? w_.OffsetOf(r_, p) : 0; }
 
         // A plain return (no value) at a position: jumping there is returning.
         bool ExitAt(int p) const {
@@ -1168,7 +1314,7 @@ class Writer {
                     Say(indent, "goto *" + w_.Expr(node.Arg(0), scope_, 1).s + ";  // entry point dispatch");
                 else if (node.Is("Return") && !node.Arg(0).Is("Nothing"))
                     Say(indent, "return " + w_.Expr(node.Arg(0), scope_, 1).s + ';');
-                else if (node.Is("Pop") && r_.popTarget.count(r_.order[p]) && r_.popTarget.at(r_.order[p]) == -2)
+                else if (node.Is("Pop") && r_.popTo[p] == -2)
                     Say(indent, "return;  // flow stack differs by path");
                 else if (p + 1 < to || !node.Is("EndOfScript"))
                     Say(indent, "return;");
@@ -1238,6 +1384,11 @@ class Writer {
     };
 
     int OffsetOf(const Region &region, int p) const { return offsets_.at(region.order[p]); }
+    // L_0210, or L_0210_1 for its first copy.
+    std::string LabelOf(const Region &region, int p) const {
+        std::string label = "L_" + Hex4(OffsetOf(region, p));
+        return region.copy[p] ? label + '_' + std::to_string(region.copy[p]) : label;
+    }
 
     // The body of one entry into loaded, braces included.
     std::string Body(const Loaded &loaded, int start, const Scope &scopeIn, bool ubergraph, std::set<int> *covered,
@@ -1307,8 +1458,8 @@ class Writer {
             if (line.position >= 0) {
                 if (emitter.labels.count(line.position)) {
                     emitter.labels.erase(line.position);
-                    out << std::string(static_cast<std::size_t>(std::max(0, line.indent - 1)) * 4, ' ') << "L_"
-                        << Hex4(OffsetOf(region, line.position)) << ":\n";
+                    out << std::string(static_cast<std::size_t>(std::max(0, line.indent - 1)) * 4, ' ')
+                        << LabelOf(region, line.position) << ":\n";
                 }
                 continue;
             }

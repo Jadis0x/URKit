@@ -257,6 +257,14 @@ std::string UnrealTypeDump() {
             row({"X", "20", R"(Let(Inst("Speed"),Float(2)))"}) + row({"X", "30", R"(Let(Inst("Speed"),Float(3)))"}) +
             row({"X", "35", R"(JumpIfNot(20,Inst("Open")))"}) + row({"X", "40", "Return(Nothing)"}) +
             row({"X", "42", "EndOfScript"});
+    // A Sequence pin (Push 70) and a node both paths share: its Pop goes to 70 or to the end.
+    dump += row({"F", "Shared", "20400"});
+    dump += row({"X", "0", "Push(90)"}) + row({"X", "5", R"(JumpIfNot(40,Inst("Open")))"}) +
+            row({"X", "15", "Push(70)"}) + row({"X", "20", R"(Let(Inst("Speed"),Float(1)))"}) +
+            row({"X", "30", R"(Call("/Game/Doors/BP Door.BP Door_C:Slam"))"}) + row({"X", "35", "Pop"}) +
+            row({"X", "40", R"(Let(Inst("Speed"),Float(2)))"}) + row({"X", "50", "Jump(30)"}) +
+            row({"X", "70", R"(Let(Inst("Speed"),Float(0.349999994)))"}) + row({"X", "80", "Pop"}) +
+            row({"X", "90", "Return(Nothing)"}) + row({"X", "92", "EndOfScript"});
     dump += row({"F", "ExecuteUbergraph_BP_Door", "0"});
     dump += row({"A", "EntryPoint", "int32", "4", "1", "80", "", ""});
     dump += row({"L", "Temp_int_Loop_Counter_Variable", "int32", "4", "1", "0", "", ""});
@@ -351,7 +359,9 @@ void CheckUnrealTypes(const GeneratedProject &project) {
           "float ABP_Door_C::GetSpeed(float Scale)\n{\n    return Speed * Scale;\n}\n",
           "void ABP_Door_C::resume_00C8()\n{\n    Slam();\n}\n",
           "void ABP_Door_C::Tangle()\n{\n    if (Open) {\n        goto L_001E;\n    }\nL_0014:\n    Speed = 2.0;\n"
-          "L_001E:\n    Speed = 3.0;\n    if (!Open) goto L_0014;\n}\n"})
+          "L_001E:\n    Speed = 3.0;\n    if (!Open) goto L_0014;\n}\n",
+          "void ABP_Door_C::Shared()\n{\n    if (Open) {\n        Speed = 1.0;\n        Slam();\n    } else {\n"
+          "        Speed = 2.0;\n        goto L_001E_1;\n    }\n    Speed = 0.35;\n    return;\nL_001E_1:\n    Slam();\n}\n"})
         Check(logic.find(expected) != std::string::npos,
               project.label + ": BP_Door_C.bp.cpp has " +
                   (logic.find(expected) != std::string::npos ? std::string(expected).substr(0, 40)
