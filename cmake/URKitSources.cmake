@@ -106,6 +106,7 @@ set(URK_UNREAL_SRC
     ${URK_SRC_DIR}/unreal/values/unreal_engine_calls.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_owned_values.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_places.cpp
+    ${URK_SRC_DIR}/unreal/values/unreal_class_defaults.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_property_values.cpp
     ${URK_SRC_DIR}/unreal/values/unreal_property_virtuals.cpp
 )

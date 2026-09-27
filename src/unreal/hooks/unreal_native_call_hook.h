@@ -32,7 +32,8 @@ class NativeCallHook {
 
     // Why a function is not routed (empty when it can be).
     static std::string Refusal(const FunctionInfo &info, const std::string &ownerName);
-    bool Attach(std::shared_ptr<const FunctionInfo> info);
+    // note says which calls stay unseen (off the game thread, when a parameter owns engine memory).
+    bool Attach(std::shared_ptr<const FunctionInfo> info, std::string *note = nullptr);
     void Detach(Address function);
 
   private:
@@ -43,6 +44,8 @@ class NativeCallHook {
         void *original = nullptr;
         std::uint8_t *stub = nullptr;
         std::atomic<bool> active{false};
+        // Parameters own no engine memory: routed on any thread (animation Blueprints run on workers).
+        bool anyThread = false;
     };
 
     NativeCallHook() = default;

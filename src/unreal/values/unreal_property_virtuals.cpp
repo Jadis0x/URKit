@@ -165,12 +165,15 @@ void **PropertyVirtuals::VtableOf(Address field) {
 }
 
 void PropertyVirtuals::Measure() {
+    if (settled_.load(std::memory_order_acquire))
+        return;
     std::string note;
     {
         std::lock_guard lock(mutex_);
         if (measured_)
             return;
         MeasureLocked();
+        settled_.store(true, std::memory_order_release);
         note = hashSlot_ < 0 ? "no engine key hash: " + failure_
                              : "keys hash and compare through the property's own virtuals: GetValueTypeHash slot " +
                                    std::to_string(hashSlot_) +

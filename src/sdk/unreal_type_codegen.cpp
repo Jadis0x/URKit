@@ -16,7 +16,7 @@ namespace {
 
 // Must match src/unreal/unreal_type_dump.h.
 constexpr const char *kMagic = "URKIT-UNREAL-TYPES";
-constexpr int kVersion = 4;
+constexpr int kVersion = 5;
 
 // Engine flag values (EPropertyFlags, EFunctionFlags).
 constexpr std::uint64_t kConstParm = 0x2;
@@ -74,6 +74,10 @@ struct Type {
     std::vector<Function> functions;
     // Signatures of the class's delegate members (format 4).
     std::vector<Function> signatures;
+    // Format 5: default-object values that differ from the parent ("path", "value").
+    std::vector<std::pair<std::string, std::string>> defaults;
+    // Format 5: component templates, "component (class)" then its changed members.
+    std::vector<std::pair<std::string, std::vector<std::pair<std::string, std::string>>>> components;
     std::string ident;
     // Under types/, mirroring the package: "Engine", "Game/Blueprints/Player".
     std::string folder;
@@ -220,6 +224,14 @@ bool Parse(const std::filesystem::path &path, TypeMap *types, std::string *error
             } else if (tag == "G" && current && !current->isStruct && !current->isEnum && fields.size() >= 3) {
                 current->signatures.push_back({fields[1], 0, {}, fields[2]});
                 function = &current->signatures.back();
+            } else if (tag == "D" && current && !current->isStruct && !current->isEnum && fields.size() >= 3) {
+                current->defaults.emplace_back(fields[1], fields[2]);
+            } else if (tag == "K" && current && !current->isStruct && !current->isEnum && fields.size() >= 5) {
+                const std::string component = fields[1] + " (" + fields[2] + ")";
+                if (current->components.empty() || current->components.back().first != component)
+                    current->components.push_back({component, {}});
+                if (!fields[3].empty())
+                    current->components.back().second.emplace_back(fields[3], fields[4]);
             } else if (tag == "A" && function) {
                 const std::optional<Shape> shape = ParseShape(fields, 8);
                 ok = shape.has_value();
@@ -378,6 +390,27 @@ std::string Escape(const std::string &text) {
         out += ch;
     }
     return out;
+}
+
+// What the class's defaults set, as the running game had them when it was dumped.
+std::string Defaults(const Type &entry) {
+    std::ostringstream out;
+    if (!entry.defaults.empty()) {
+        out << "\n    // Defaults set here, where they differ from "
+            << (entry.superName.empty() ? "the parent" : entry.superName) << " (live: class_default()):\n";
+        for (const auto &[path, value] : entry.defaults)
+            out << "    //   " << path << " = " << value << '\n';
+    }
+    if (!entry.components.empty()) {
+        out << "\n    // Components this Blueprint adds or changes, where they differ from the parent Blueprint's\n"
+            << "    // (or, for one added here, the component class's) defaults:\n";
+        for (const auto &[component, members] : entry.components) {
+            out << "    //   " << component << (members.empty() ? "" : ":") << '\n';
+            for (const auto &[path, value] : members)
+                out << "    //     " << path << " = " << value << '\n';
+        }
+    }
+    return out.str();
 }
 
 std::string Wrapped(const std::string &lead, const std::vector<std::string> &items) {
@@ -963,6 +996,8 @@ class Generator {
             out << "\n    // hook_<Function>(before, after): the callbacks get a typed view of the call.\n" << hooks.str();
         if (!compiler.str().empty())
             out << "\n    // Blueprint compiler output, not authored in the Blueprint.\n" << compiler.str();
+        if (!entry.defaults.empty() || !entry.components.empty())
+            out << Defaults(entry);
         if (!skipped.empty())
             out << Wrapped("No typed form yet: ", skipped);
         out << "};\n} // namespace URK::unreal::types\n";

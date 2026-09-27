@@ -279,6 +279,15 @@ Address TypeDumper::OuterValue(Address object) const {
     return outer;
 }
 
+// A class's default object is never a type: UClass's own CDO would read as a class named Default__Class.
+bool TypeDumper::DefaultObject(Address object) const {
+    constexpr std::uint32_t kClassDefaultObject = 0x10;
+    std::uint32_t flags = 0;
+    const std::int32_t offset = sources_.finder.Offsets().flags;
+    return offset != kOffsetNotFound && sources_.finder.Reader().ReadTrusted(object + offset, &flags, sizeof(flags)) &&
+           (flags & kClassDefaultObject) != 0;
+}
+
 // What an object is, judged by its class's cast flags; each class is asked once.
 std::uint8_t TypeDumper::KindOf(Address object) {
     const std::int32_t offset = sources_.finder.Offsets().classPointer;
@@ -318,7 +327,7 @@ std::size_t TypeDumper::Scan(const std::string &label, const EnumNames *enums) {
     std::size_t queued = 0;
     sources_.finder.Objects().ForEach([&](std::int32_t, Address object) {
         const std::uint8_t kind = object == kNullAddress ? std::uint8_t{0} : KindOf(object);
-        if (kind == 0)
+        if (kind == 0 || DefaultObject(object))
             return true;
         const std::uint64_t name = NameValue(object);
         const Address outer = OuterValue(object);
@@ -385,7 +394,8 @@ void TypeDumper::Describe(const Queued &item) {
     const Named self{item.key.substr(tab + 1), item.key.substr(0, tab)};
     const TypeDumpSources &s = sources_;
     if (item.kind == kKindClass)
-        ready_[item.key] = DumpClass(s.finder, s.structs, s.chain, s.values, s.functions, s.types, item.object, self);
+        ready_[item.key] = DumpClass(s.finder, s.structs, s.chain, s.values, s.functions, s.types, item.object, self) +
+                           (s.defaults ? s.defaults(item.object) : std::string());
     else if (item.kind == kKindStruct)
         ready_[item.key] = DumpStruct(s.finder, s.structs, s.chain, s.values, s.types, item.object, self);
     else
@@ -394,7 +404,7 @@ void TypeDumper::Describe(const Queued &item) {
 
 bool TypeDumper::DescribeNow(Address object) {
     const std::uint8_t kind = object == kNullAddress ? std::uint8_t{0} : KindOf(object);
-    if (kind == 0)
+    if (kind == 0 || DefaultObject(object))
         return false;
     const Named self = NameAndPackage(sources_.finder, object);
     const std::string key = self.package + '\t' + self.name;

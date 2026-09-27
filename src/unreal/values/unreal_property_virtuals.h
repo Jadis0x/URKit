@@ -5,6 +5,7 @@
 #include "unreal/layout/unreal_property_offsets.h"
 #include "unreal/values/unreal_property_values.h"
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -50,6 +51,8 @@ class PropertyVirtuals {
     const PropertyValues *values_;
     std::mutex mutex_;
     bool measured_ = false;
+    // Set once the slots are final: later calls skip the lock (native calls come from every thread).
+    std::atomic<bool> settled_{false};
     std::int32_t hashSlot_ = -1;
     std::int32_t identicalSlot_ = -1;
     std::int32_t initializeSlot_ = -1;

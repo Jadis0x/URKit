@@ -184,10 +184,21 @@ std::uint8_t *NativeCallHook::MakeStub(Entry *entry) {
     return stub;
 }
 
-bool NativeCallHook::Attach(std::shared_ptr<const FunctionInfo> info) {
+bool NativeCallHook::Attach(std::shared_ptr<const FunctionInfo> info, std::string *note) {
     const std::lock_guard lock(mutex_);
     if (!ready_ || !info)
         return false;
+    std::string owner;
+    for (const FunctionParameter &parameter : info->parameters) {
+        if (owned_->Classify(parameter.info) != Ownership::None || owned_->NeedsInitialize(parameter.info)) {
+            owner = parameter.name;
+            break;
+        }
+    }
+    if (note)
+        *note = owner.empty() ? std::string()
+                              : "its calls from Blueprint off the game thread (animation Blueprints) are not seen: "
+                                "parameter " + owner + " owns engine memory";
     const Address function = info->function;
     auto &slot = *reinterpret_cast<std::atomic<void *> *>(function + static_cast<Address>(funcOffset_));
     std::unique_ptr<Entry> &entry = entries_[function];
@@ -202,6 +213,7 @@ bool NativeCallHook::Attach(std::shared_ptr<const FunctionInfo> info) {
     if (entry->active.load(std::memory_order_acquire))
         return true;
     entry->info = std::move(info);
+    entry->anyThread = owner.empty();
     entry->original = slot.load(std::memory_order_acquire);
     entry->active.store(true, std::memory_order_release);
     slot.store(entry->stub, std::memory_order_release);
@@ -230,8 +242,9 @@ void __fastcall NativeCallHook::Thunk(void *context, std::uint8_t *stack, void *
     NativeCallHook &self = Instance();
     // No bytecode: ProcessEvent's own frame (ours included), where the hook already ran.
     const std::uint8_t *code = *reinterpret_cast<std::uint8_t **>(stack + self.codeOffset_);
+    const bool gameThread = ProcessEventHook::Instance().GameThreadId() == GetCurrentThreadId();
     if (!code || !entry->active.load(std::memory_order_acquire) || FunctionHooks::QuietHere() ||
-        ProcessEventHook::Instance().GameThreadId() != GetCurrentThreadId() || !self.virtuals_->ValueOpsReady()) {
+        !(gameThread || entry->anyThread) || !self.virtuals_->ValueOpsReady()) {
         original(context, stack, result);
         return;
     }
@@ -252,8 +265,11 @@ void NativeCallHook::Route(void *context, std::uint8_t *stack, void *result, Ent
         for (std::int32_t i = 0; i < parameter.info.arrayDim; ++i)
             visit(parms + parameter.info.offset + static_cast<std::size_t>(i) * parameter.info.elementSize, i);
     };
-    for (const FunctionParameter &parameter : info.parameters)
-        each(parameter, [&](std::uint8_t *value, std::int32_t) { owned_->Initialize(parameter.info, value); });
+    // Plain values need neither; skipping keeps worker threads out of OwnedValues' state.
+    if (!entry.anyThread) {
+        for (const FunctionParameter &parameter : info.parameters)
+            each(parameter, [&](std::uint8_t *value, std::int32_t) { owned_->Initialize(parameter.info, value); });
+    }
 
     // As the VM would for its own call: each argument in order, references kept to write back.
     struct Out {
@@ -278,8 +294,10 @@ void NativeCallHook::Route(void *context, std::uint8_t *stack, void *result, Ent
     }
     matched = matched && *code == kExEndFunctionParms;
     const auto release = [&] {
-        for (const FunctionParameter &parameter : info.parameters)
-            each(parameter, [&](std::uint8_t *value, std::int32_t) { owned_->Destroy(parameter.info, value); });
+        if (!entry.anyThread) {
+            for (const FunctionParameter &parameter : info.parameters)
+                each(parameter, [&](std::uint8_t *value, std::int32_t) { owned_->Destroy(parameter.info, value); });
+        }
         _aligned_free(parms);
     };
     if (!matched) {

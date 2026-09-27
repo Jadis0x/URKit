@@ -1,6 +1,7 @@
 // The URK_UnrealApi table, and the loader's entry points into it.
 
 #include "unreal/api/sdk_api_internal.h"
+#include "unreal/values/unreal_class_defaults.h"
 
 namespace URK::Unreal::SdkApi {
 
@@ -127,6 +128,13 @@ void UnrealSdk_ReleasePending() {
 }
 
 const EnumNames *UnrealSdk_Enums() { return Enums(); }
+
+std::string UnrealSdk_DescribeDefaults(Address classObject) {
+    if (!UnrealEngine::Instance().Available() || !OnGameThread())
+        return {};
+    static ClassDefaults defaults(UnrealEngine::Instance(), Serve().places);
+    return defaults.Describe(classObject);
+}
 
 bool UnrealSdk_HoldProcessEventHook() {
     std::lock_guard lock(g_hookMutex);

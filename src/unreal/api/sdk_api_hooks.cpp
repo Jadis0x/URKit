@@ -216,8 +216,11 @@ static void RouteNativeCalls(UnrealEngine &engine, const std::shared_ptr<const F
         Report(kNullAddress, "native calls from Blueprint are not hooked: " + natives.Failure());
         return;
     }
-    if (!natives.Attach(info))
+    std::string note;
+    if (!natives.Attach(info, &note))
         Report(function, "its calls from Blueprint could not be routed");
+    else if (!note.empty())
+        Report(function, note);
 }
 
 std::uint64_t Unreal_FunctionHookAdd(URK_UnrealObject function, URK_UnrealFunctionHookFn before,

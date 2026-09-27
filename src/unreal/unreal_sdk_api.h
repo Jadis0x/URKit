@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 
 namespace URK::Unreal {
 
@@ -146,5 +147,8 @@ void UnrealSdk_ReleasePending();
 class EnumNames;
 // Enum names once measured (the game thread measures them), else null.
 const EnumNames *UnrealSdk_Enums();
+
+// A class's default values that differ from its parent's, as type dump lines. Game thread.
+std::string UnrealSdk_DescribeDefaults(Address classObject);
 
 } // namespace URK::Unreal

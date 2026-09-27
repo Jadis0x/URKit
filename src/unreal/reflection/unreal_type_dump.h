@@ -20,7 +20,7 @@
 namespace URK::Unreal {
 
 // Format the generator reads. Bump on any change to the line layout.
-inline constexpr int kTypeDumpVersion = 4;
+inline constexpr int kTypeDumpVersion = 5;
 inline constexpr const char *kTypeDumpMagic = "URKIT-UNREAL-TYPES";
 
 // One block per class ("package<TAB>name") so dumps from different maps merge.
@@ -46,6 +46,8 @@ struct TypeDumpSources {
     const FunctionOffsets &functions;
     const TypeQueries &types;
     const EnumNames *enums = nullptr;
+    // D/K lines for a class: default values and component templates (format 5).
+    std::function<std::string(Address)> defaults;
 };
 
 // Non-blocking dump: Scan queues, Step describes within a budget, writing is off-thread.
@@ -81,6 +83,7 @@ class TypeDumper {
 
     std::uint64_t NameValue(Address object) const;
     Address OuterValue(Address object) const;
+    bool DefaultObject(Address object) const;
     void Describe(const Queued &item);
     std::uint8_t KindOf(Address object);
     void Flush();

@@ -690,7 +690,7 @@ bool RunUnreal(Config &config) {
         Log("[Unreal][ERROR] DumpTypes needs the game loop; nothing will be dumped.");
     if (dumpTypes && gameLoop) {
         const TypeDumpSources sources{engine.Finder(), engine.Structs(), engine.Chain(), engine.Values(),
-                                      engine.Functions(), engine.Types()};
+                                      engine.Functions(), engine.Types(), nullptr, &UnrealSdk_DescribeDefaults};
         g_gameLoop.dumper = std::make_unique<TypeDumper>(sources, Platform_ExeDir() + "URKit_unreal_types.txt",
                                                          MainImage(engine.Version()),
                                                          [](const std::string &line) { Log("%s", line.c_str()); });
