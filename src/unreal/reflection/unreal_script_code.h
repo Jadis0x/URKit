@@ -1,6 +1,6 @@
 #pragma once
 
-// Blueprint bytecode (UStruct::Script) as portable text for the type dump; urk-sdk renders it.
+// Blueprint bytecode (UStruct::Script) as portable text for the type dump; urk.exe renders it.
 
 #include "unreal/detect/unreal_engine_detect.h"
 #include "unreal/reflection/unreal_functions.h"

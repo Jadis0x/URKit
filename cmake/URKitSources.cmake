@@ -138,7 +138,6 @@ set(URK_SDK_GENERATOR_SRC
 
 set(URK_PROJECT_UPDATER_SRC
     ${URK_SRC_DIR}/sdk/project_updater.cpp
-    ${URK_SRC_DIR}/sdk/updater_self_update.cpp
 )
 
 set(URK_DEV_MCP_CORE_SRC
@@ -167,11 +166,6 @@ set(URK_DEV_MCP_SERVER_LIBRARY_SRC
     ${URK_DEV_MCP_CORE_SRC}
 )
 
-set(URK_DEV_MCP_SERVER_SRC
-    ${URK_ROOT_DIR}/mcp/server/main.cpp
-    ${URK_DEV_MCP_SERVER_LIBRARY_SRC}
-)
-
 set(URK_DEV_BRIDGE_SRC
     ${URK_ROOT_DIR}/dev/bridge/dev_bridge.cpp
     ${URK_ROOT_DIR}/dev/bridge/dev_bridge.h
@@ -182,17 +176,37 @@ set(URK_DEV_BRIDGE_SRC
     ${URK_DEV_MCP_CORE_SRC}
 )
 
-set(URK_SDK_TOOL_SRC
-    ${URK_SRC_DIR}/tools/win32_tool_ui.h
-    ${URK_SRC_DIR}/tools/sdk_tool/main.cpp
-    ${URK_SDK_GENERATOR_SRC}
-)
-
-set(URK_UPDATER_SRC
-    ${URK_SRC_DIR}/tools/win32_tool_ui.h
-    ${URK_SRC_DIR}/tools/updater_tool/main.cpp
+set(URK_APP_SRC
+    ${URK_SRC_DIR}/app/main.cpp
+    ${URK_SRC_DIR}/app/cli.cpp
+    ${URK_SRC_DIR}/app/cli.h
+    ${URK_SRC_DIR}/app/activity_log.cpp
+    ${URK_SRC_DIR}/app/activity_log.h
+    ${URK_SRC_DIR}/app/generator_service.cpp
+    ${URK_SRC_DIR}/app/generator_service.h
+    ${URK_SRC_DIR}/app/loader_service.cpp
+    ${URK_SRC_DIR}/app/loader_service.h
+    ${URK_SRC_DIR}/app/self_update.cpp
+    ${URK_SRC_DIR}/app/self_update.h
+    ${URK_SRC_DIR}/app/text_util.h
+    ${URK_SRC_DIR}/app/gui/gui_app.cpp
+    ${URK_SRC_DIR}/app/gui/gui_app.h
+    ${URK_SRC_DIR}/app/gui/main_frame.cpp
+    ${URK_SRC_DIR}/app/gui/main_frame.h
+    ${URK_SRC_DIR}/app/gui/pages.h
+    ${URK_SRC_DIR}/app/gui/page_common.h
+    ${URK_SRC_DIR}/app/gui/new_project_page.cpp
+    ${URK_SRC_DIR}/app/gui/update_page.cpp
+    ${URK_SRC_DIR}/app/gui/loader_page.cpp
+    ${URK_SRC_DIR}/app/gui/about_page.cpp
+    ${URK_SRC_DIR}/app/gui/theme.h
+    ${URK_SRC_DIR}/app/gui/widgets.cpp
+    ${URK_SRC_DIR}/app/gui/widgets.h
+    ${URK_SRC_DIR}/app/urk.rc
+    ${URK_SRC_DIR}/app/urk.manifest
     ${URK_SDK_GENERATOR_SRC}
     ${URK_PROJECT_UPDATER_SRC}
+    ${URK_DEV_MCP_SERVER_LIBRARY_SRC}
 )
 
 set(URK_SDK_TEMPLATE_FILES
@@ -231,8 +245,7 @@ set(URK_SDK_TEMPLATE_FILES
     ${URK_SRC_DIR}/sdk/templates/unreal/highlight.inl
 )
 set_source_files_properties(${URK_SDK_TEMPLATE_FILES} PROPERTIES HEADER_FILE_ONLY TRUE)
-list(APPEND URK_SDK_TOOL_SRC ${URK_SDK_TEMPLATE_FILES})
-list(APPEND URK_UPDATER_SRC ${URK_SDK_TEMPLATE_FILES})
+list(APPEND URK_APP_SRC ${URK_SDK_TEMPLATE_FILES})
 
 set(URK_COMMON_SRC
     ${URK_CORE_SRC}
@@ -293,8 +306,6 @@ set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/sdk/sdk_generator_contract.h
     ${URK_SRC_DIR}/sdk/project_manifest.h
     ${URK_SRC_DIR}/sdk/project_updater.h
-    ${URK_SRC_DIR}/sdk/updater_self_update.h
-    ${URK_SRC_DIR}/sdk/updater_version.h
 
     ${URK_SRC_DIR}/unity/mono_api.h
     ${URK_SRC_DIR}/unity/il2cpp_export_policy.h
@@ -346,7 +357,5 @@ foreach(header_path IN LISTS URK_HEADER_CANDIDATES)
 endforeach()
 
 urk_validate_sources(${URK_COMMON_SRC})
-urk_validate_sources(${URK_SDK_TOOL_SRC})
-urk_validate_sources(${URK_UPDATER_SRC})
-urk_validate_sources(${URK_DEV_MCP_SERVER_SRC})
+urk_validate_sources(${URK_APP_SRC})
 urk_validate_sources(${URK_DEV_BRIDGE_SRC})

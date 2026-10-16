@@ -20,32 +20,35 @@ Unreal Engine support is on the way, but it isn't ready yet. See
 
 ## What's in a release
 
-- `urk-sdk.exe` makes a new mod project for a game.
-- `urk-updater.exe` brings an existing project up to date without touching
-  the files you wrote.
-- `version.dll`, `winhttp.dll`, `winmm.dll` and `dwmapi.dll` are the loaders.
-  You only need one of them: the one the game actually loads. `version.dll` is
-  a good first try. If Windows loads its own copy first (some games get a
+- `urk.exe` makes new mod projects, updates existing ones without touching
+  the files you wrote, and installs or injects the loader. Run it with no
+  arguments for the window, or see `urk.exe help`.
+- `version.dll`, `winhttp.dll`, `winmm.dll` and `dwmapi.dll` are the proxy
+  loaders. You only need the one the game actually loads. `version.dll` is a
+  good first try. If Windows loads its own copy first (some games get a
   compatibility shim that does), try `dwmapi.dll`.
-- `URKitInjector.dll` is a loader for when you'd rather inject it yourself
-  than drop a proxy next to the game.
-- `urk-dev-mcp.exe` and `URKitDevBridge.dll` are optional. They let AI coding
+- `URKitInjector.dll` is the loader for injector mode: `urk.exe` loads it into
+  the running game instead of placing a proxy next to it.
+- `URKitDevBridge.dll` is optional. With `urk.exe mcp` it lets AI coding
   assistants build, deploy and inspect your mod.
 
-The loader goes next to the game's executable, and your built mods go in a
-`Mods` folder beside it. Install just one loader and keep its name as is.
+Keep these files together in one folder. `urk.exe` copies the proxy you pick
+next to the game's executable, and your built mods go in a `Mods` folder
+beside it. Only one proxy should be installed.
 
 ## Quick start
 
 ```powershell
-./urk-sdk.exe --game-exe C:\Games\Example\Example.exe --backend auto --name MyMod
+./urk.exe new --game-exe C:\Games\Example\Example.exe --name MyMod --loader proxy
 cd <GameDir>\urk-sdk-output\MyMod\project
 cmake --preset clang-debug
 cmake --build --preset clang-debug --parallel
 ```
 
-`--backend auto` works out whether the game is Mono or IL2CPP for you. The
-build puts a debug DLL straight into the game's `Mods` folder.
+URKit works out whether the game is Mono or IL2CPP for you, and
+`--loader proxy` puts `version.dll` next to the game. The build puts a debug
+DLL straight into the game's `Mods` folder. The same steps are on the
+**Create** page of `urk.exe`.
 
 You'll need CMake 3.28 or newer, Ninja, and either LLVM/Clang or MSVC (VS 2022
 Build Tools or newer). Prefer `cl.exe`? Use `msvc-debug`. When you're ready to
@@ -53,7 +56,8 @@ share your mod, build with `clang-release` or `msvc-release`.
 
 Now start the game and open `URKit_logs.log` next to its executable. You
 should see your mod load. No log file at all usually means the game doesn't
-load the loader you picked, so try one of the others.
+load the loader you picked. Try another proxy on the **Loader** page, or use
+injector mode there.
 
 ## Unreal Engine (work in progress)
 

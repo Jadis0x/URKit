@@ -8,7 +8,7 @@ struct Config {
     int initDelayMs = 0;
     std::string runtime = "auto";
     std::string modsDir = "Mods";
-    // [Unreal] DumpTypes: write reflected classes for urk-sdk's typed headers.
+    // [Unreal] DumpTypes: write reflected classes for the typed headers urk.exe generates.
     bool unrealDumpTypes = false;
     // Hooks also catch native functions Blueprint calls directly; off until proven in games.
     bool unrealNativeFromBlueprint = false;

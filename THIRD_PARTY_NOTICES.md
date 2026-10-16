@@ -148,7 +148,7 @@ not redistribute those SDK files in its public archive.
 
 ## JSON for Modern C++ 3.12.0
 
-The URKit development MCP server and runtime bridge use JSON for Modern C++.
+`urk.exe` and the development runtime bridge use JSON for Modern C++.
 It is licensed under the MIT License:
 
 > Copyright (c) 2013-2025 Niels Lohmann
@@ -170,3 +170,46 @@ It is licensed under the MIT License:
 > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
+
+## wxWidgets 3.3.3
+
+`urk.exe` statically links the base and core libraries of wxWidgets 3.3.3,
+downloaded from `https://github.com/wxWidgets/wxWidgets/releases/tag/v3.3.3`.
+wxWidgets is licensed under the wxWindows Library Licence 3.1, which permits
+distributing binaries built from it under the user's own terms.
+
+> Copyright (c) 1998-2005 Julian Smart, Robert Roebling et al
+
+The wxWidgets build bundles zlib (zlib licence), libpng (PNG Reference Library
+License version 2) and PCRE2. PCRE2 is distributed under the BSD licence:
+
+> Copyright (c) 1997-2007 University of Cambridge
+> Copyright (c) 2007-2024 Philip Hazel
+> Copyright (c) 2010-2024 Zoltan Herczeg
+> All rights reserved.
+>
+> Redistribution and use in source and binary forms, with or without
+> modification, are permitted provided that the following conditions are met:
+>
+> * Redistributions of source code must retain the above copyright notices,
+>   this list of conditions and the following disclaimer.
+>
+> * Redistributions in binary form must reproduce the above copyright
+>   notices, this list of conditions and the following disclaimer in the
+>   documentation and/or other materials provided with the distribution.
+>
+> * Neither the name of the University of Cambridge nor the names of any
+>   contributors may be used to endorse or promote products derived from this
+>   software without specific prior written permission.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+> AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+> IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+> ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+> LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+> CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+> SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+> INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+> CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+> ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+> POSSIBILITY OF SUCH DAMAGE.

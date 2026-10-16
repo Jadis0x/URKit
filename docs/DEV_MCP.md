@@ -1,6 +1,6 @@
 # URKit Development MCP
 
-`urk-dev-mcp.exe` provides a client-neutral development loop for generated URKit
+`urk.exe mcp` provides a client-neutral development loop for generated URKit
 mods. Codex, Claude, and other local MCP hosts launch the same stdio server.
 Project operations stay outside the game. Runtime operations pass through a
 current-user, local-only Windows named pipe to `URKitDevBridge.dll`.
@@ -13,11 +13,12 @@ model for older clients.
 
 ```powershell
 cmake --preset clang-release
-cmake --build --preset clang-release --target URKitDevMcp URKitDevBridge --parallel
+cmake --build --preset clang-release --target URKitApp URKitDevBridge --parallel
 ```
 
-The outputs are `urk-dev-mcp.exe` and `URKitDevBridge.dll` in the configured
-build directory. Copy `URKitDevBridge.dll` to the target game's `Mods`
+The outputs are `urk.exe` and `URKitDevBridge.dll` in the configured build
+directory. The MCP server is the `mcp` command of `urk.exe`; there is no
+separate executable. Copy `URKitDevBridge.dll` to the target game's `Mods`
 directory. Keep it out of public gameplay installations.
 
 ## Client configuration
@@ -28,7 +29,7 @@ The server requires the root of one generated URKit mod project. Use
 Codex CLI:
 
 ```powershell
-codex mcp add urkit-dev -- "C:\absolute\path\to\urk-dev-mcp.exe" --project "C:\absolute\path\to\generated\project"
+codex mcp add urkit-dev -- "C:\absolute\path\to\urk.exe" mcp --project "C:\absolute\path\to\generated\project"
 ```
 
 Claude Desktop and generic JSON-based MCP hosts:
@@ -37,8 +38,9 @@ Claude Desktop and generic JSON-based MCP hosts:
 {
   "mcpServers": {
     "urkit-dev": {
-      "command": "C:\\absolute\\path\\to\\urk-dev-mcp.exe",
+      "command": "C:\\absolute\\path\\to\\urk.exe",
       "args": [
+        "mcp",
         "--project",
         "C:\\absolute\\path\\to\\generated\\project"
       ]
@@ -51,8 +53,9 @@ Multiple running games:
 
 ```json
 {
-  "command": "C:\\absolute\\path\\to\\urk-dev-mcp.exe",
+  "command": "C:\\absolute\\path\\to\\urk.exe",
   "args": [
+    "mcp",
     "--project",
     "C:\\absolute\\path\\to\\generated\\project",
     "--game-pid",

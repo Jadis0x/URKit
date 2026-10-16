@@ -19,16 +19,19 @@ pipeline, coroutines, and a diagnostics chapter for when a call quietly fails.
 
 - CMake 3.28+ and Ninja
 - LLVM/Clang, or the MSVC toolchain from VS 2022 Build Tools or newer
-- `urk-sdk.exe` from a URKit release
+- a URKit release, extracted to one folder (`urk.exe` and the loader DLLs)
 - the game you're modding, installed
 
 ## 1. Generate a project
 
+Open `urk.exe`, drop the game's executable on **Create**, leave the loader
+on **Proxy**, and press **Create project**. The same from a terminal:
+
 ```powershell
-./urk-sdk.exe --game-exe C:\Games\SampleGame\SampleGame.exe --backend auto --name FirstMod
+./urk.exe new --game-exe C:\Games\SampleGame\SampleGame.exe --name FirstMod --loader proxy
 ```
 
-`auto` looks at the game folder and picks Mono or IL2CPP for you. If you
+URKit looks at the game folder and picks Mono or IL2CPP for you. If you
 already know which one the game uses, pass `--backend mono` or `--backend
 il2cpp` directly. The project lands at:
 
@@ -53,9 +56,10 @@ The build copies the DLL straight into the game's `Mods` folder.
 
 Launch the game. Then open `URKit_logs.log`, next to the game executable, and
 look for a line saying the mod initialized. If the file isn't there at all,
-the game isn't importing the proxy DLL you installed. Double check you put
-the right one (`version.dll`, `winmm.dll`, `winhttp.dll`, or `dwmapi.dll`) next to the
-executable, and that there's only one.
+the game isn't importing the proxy DLL you installed. The **Loader** page of
+`urk.exe` shows which proxy is in the game folder; install another one there
+(`dwmapi.dll` is the usual second try), or switch to injector mode and inject
+into the running game.
 
 Keep this log open in a text editor while you work. Every step below writes
 something to it.

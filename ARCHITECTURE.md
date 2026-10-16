@@ -17,10 +17,11 @@ and export definition differ.
 | `src/core/` | Configuration, logging, hooks, lifecycle, networking, and shared state. |
 | `src/unity/` | Mono and IL2CPP export/metadata adapters. |
 | `src/ui/` | Loader splash UI. |
-| `src/tools/sdk_tool/` | `urk-sdk.exe` command-line and Win32 UI. |
+| `src/app/` | `urk.exe`: generator, updater, loader install and injection, MCP entry, command line. |
+| `src/app/gui/` | wxWidgets window of `urk.exe`. |
 | `src/sdk/` | SDK/project writers and output validation. |
 | `src/sdk/templates/` | Generated runtime, Unity, and optional UI source. |
-| `mcp/` | Client-neutral stdio MCP server, project services, and bounded bridge protocol. |
+| `mcp/` | Client-neutral stdio MCP server (run as `urk.exe mcp`), project services, and bounded bridge protocol. |
 | `dev/bridge/` | Optional in-game development bridge and runtime-test discovery. |
 | `sdk/dev_test.h` | Fixed C ABI for mod-owned runtime tests. |
 | `cmake/` | Source lists, embedded header generation, and release staging. |
@@ -39,7 +40,7 @@ templates belong in the matching responsibility directory and must be added to
 
 ## Runtime flow
 
-1. A selected proxy forwards to the real Windows DLL, or an external workflow
+1. A selected proxy forwards to the real Windows DLL, or `urk.exe loader inject`
    loads the dedicated `URKitInjector.dll` loader into the game.
 2. A process-wide owner marker ensures that only one URKit entry DLL starts the
    shared runtime when a game loads more than one supported proxy.

@@ -31,28 +31,26 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(FetchContent)
 
 option(URK_BUILD_LOADER "Build the Windows loader DLLs" ${WIN32})
-option(URK_BUILD_SDK_TOOL "Build the standalone SDK/project generation tool" ON)
+option(URK_BUILD_APP "Build urk.exe: project generator, updater, loader installer and MCP server" ${WIN32})
+option(URK_BUILD_DEV_BRIDGE "Build URKitDevBridge.dll, the in-game side of the development MCP" ${WIN32})
 option(URK_WITH_CURL "Enable libcurl-backed HTTPS JSON requests" ON)
 option(URK_WITH_SAFETYHOOK "Enable the SafetyHook backend and mid-function hooks" ON)
 option(URK_HARDEN_RELEASE "Enable release hardening for loader DLLs" ON)
 option(URK_BUILD_PUBLIC_RELEASE_STAGE "Add the prebuilt release staging target" OFF)
-option(URK_BUILD_DEV_MCP "Build the local URKit mod-development MCP server and runtime bridge" ${WIN32})
 set(URK_PUBLIC_RELEASE_DIR "${CMAKE_CURRENT_BINARY_DIR}/public-release" CACHE PATH
     "Empty or URKit-managed directory for staged public release files")
 
-if (URK_BUILD_PUBLIC_RELEASE_STAGE AND NOT URK_BUILD_LOADER)
-    message(FATAL_ERROR "URK_BUILD_PUBLIC_RELEASE_STAGE requires URK_BUILD_LOADER=ON.")
+if (URK_BUILD_PUBLIC_RELEASE_STAGE AND NOT (URK_BUILD_LOADER AND URK_BUILD_APP AND URK_BUILD_DEV_BRIDGE))
+    message(FATAL_ERROR "URK_BUILD_PUBLIC_RELEASE_STAGE requires URK_BUILD_LOADER, URK_BUILD_APP and "
+                        "URK_BUILD_DEV_BRIDGE.")
 endif()
 
-if (URK_BUILD_PUBLIC_RELEASE_STAGE AND NOT URK_BUILD_SDK_TOOL)
-    message(FATAL_ERROR "URK_BUILD_PUBLIC_RELEASE_STAGE requires URK_BUILD_SDK_TOOL=ON.")
+if ((URK_BUILD_APP OR URK_BUILD_DEV_BRIDGE) AND NOT WIN32)
+    message(FATAL_ERROR "urk.exe and URKitDevBridge.dll require Windows. Configure with -DURK_BUILD_APP=OFF "
+                        "-DURK_BUILD_DEV_BRIDGE=OFF.")
 endif()
 
-if (URK_BUILD_PUBLIC_RELEASE_STAGE AND NOT URK_BUILD_DEV_MCP)
-    message(FATAL_ERROR "URK_BUILD_PUBLIC_RELEASE_STAGE requires URK_BUILD_DEV_MCP=ON.")
-endif()
-
-if (URK_BUILD_DEV_MCP)
+if (URK_BUILD_APP OR URK_BUILD_DEV_BRIDGE)
     FetchContent_Declare(nlohmann_json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
         GIT_TAG        v3.12.0
@@ -68,22 +66,7 @@ endfunction()
 
 include(cmake/URKitSources.cmake)
 
-if (URK_BUILD_DEV_MCP)
-    if (NOT WIN32)
-        message(FATAL_ERROR "URKit development MCP currently requires Windows.")
-    endif()
-
-    add_executable(URKitDevMcp ${URK_DEV_MCP_SERVER_SRC})
-    target_compile_features(URKitDevMcp PRIVATE cxx_std_20)
-    target_include_directories(URKitDevMcp PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/sdk
-        ${CMAKE_CURRENT_SOURCE_DIR}/sdk
-    )
-    target_compile_definitions(URKitDevMcp PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(URKitDevMcp PRIVATE nlohmann_json::nlohmann_json)
-    set_target_properties(URKitDevMcp PROPERTIES OUTPUT_NAME "urk-dev-mcp")
-
+if (URK_BUILD_DEV_BRIDGE)
     add_library(URKitDevBridge SHARED ${URK_DEV_BRIDGE_SRC})
     target_compile_features(URKitDevBridge PRIVATE cxx_std_20)
     target_include_directories(URKitDevBridge PRIVATE
@@ -94,16 +77,48 @@ if (URK_BUILD_DEV_MCP)
     target_compile_definitions(URKitDevBridge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(URKitDevBridge PRIVATE nlohmann_json::nlohmann_json advapi32)
     set_target_properties(URKitDevBridge PROPERTIES PREFIX "" OUTPUT_NAME "URKitDevBridge")
-
-    foreach(target_name IN ITEMS URKitDevMcp URKitDevBridge)
-        if (MSVC)
-            target_compile_options(${target_name} PRIVATE /W4 /permissive- /EHsc /utf-8)
-        endif()
-        urk_disable_vs_vcpkg_integration(${target_name})
-    endforeach()
+    if (MSVC)
+        target_compile_options(URKitDevBridge PRIVATE /W4 /permissive- /EHsc /utf-8)
+    endif()
+    urk_disable_vs_vcpkg_integration(URKitDevBridge)
 endif()
 
-if (URK_BUILD_SDK_TOOL)
+if (URK_BUILD_APP)
+    enable_language(C)
+    enable_language(RC)
+
+    # wxWidgets from the release archive: it carries the bundled third-party sources,
+    # so no submodule clone is needed. Only base and core are built.
+    # wx decides wxUSE_EXCEPTIONS from _CPPUNWIND; it must be built with the same /EHsc as urk.exe.
+    add_compile_options("$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+    set(wxBUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(wxBUILD_MONOLITHIC OFF CACHE BOOL "" FORCE)
+    set(wxBUILD_SAMPLES OFF CACHE STRING "" FORCE)
+    set(wxBUILD_TESTS OFF CACHE STRING "" FORCE)
+    set(wxBUILD_DEMOS OFF CACHE BOOL "" FORCE)
+    set(wxBUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    set(wxBUILD_INSTALL OFF CACHE BOOL "" FORCE)
+    set(wxBUILD_USE_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
+    set(wxUSE_WEBVIEW OFF CACHE BOOL "" FORCE)
+    set(wxUSE_MEDIACTRL OFF CACHE BOOL "" FORCE)
+    set(wxUSE_OPENGL OFF CACHE BOOL "" FORCE)
+    set(wxUSE_STC OFF CACHE BOOL "" FORCE)
+    set(wxUSE_RICHTEXT OFF CACHE BOOL "" FORCE)
+    set(wxUSE_XRC OFF CACHE BOOL "" FORCE)
+    set(wxUSE_AUI OFF CACHE BOOL "" FORCE)
+    set(wxUSE_RIBBON OFF CACHE BOOL "" FORCE)
+    set(wxUSE_PROPGRID OFF CACHE BOOL "" FORCE)
+    set(wxUSE_LIBTIFF OFF CACHE STRING "" FORCE)
+    set(wxUSE_LIBJPEG OFF CACHE STRING "" FORCE)
+    set(wxUSE_LIBWEBP OFF CACHE STRING "" FORCE)
+    FetchContent_Declare(wxWidgets
+        URL      https://github.com/wxWidgets/wxWidgets/releases/download/v3.3.3/wxWidgets-3.3.3.tar.bz2
+        URL_HASH SHA256=81b09d6dd9f1ed9301f8c55a968a488d0491f264dc2bab19a7e407ac67009482
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(wxWidgets)
+
     set(URK_GENERATED_SDK_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/sdk)
     set(URK_EMBEDDED_MOD_SDK_HEADER ${URK_GENERATED_SDK_DIR}/embedded_mod_sdk.h)
     set(URK_EMBEDDED_DEV_TEST_HEADER ${URK_GENERATED_SDK_DIR}/embedded_dev_test.h)
@@ -134,40 +149,33 @@ if (URK_BUILD_SDK_TOOL)
         VERBATIM
     )
 
-    function(urk_add_sdk_executable target_name output_name source_list)
-        add_executable(${target_name}
-            ${source_list}
-            ${URK_COMMON_HEADERS}
-            ${URK_EMBEDDED_MOD_SDK_HEADER}
-            ${URK_EMBEDDED_DEV_TEST_HEADER}
+    add_executable(URKitApp WIN32
+        ${URK_APP_SRC}
+        ${URK_COMMON_HEADERS}
+        ${URK_EMBEDDED_MOD_SDK_HEADER}
+        ${URK_EMBEDDED_DEV_TEST_HEADER}
+    )
+    target_compile_features(URKitApp PRIVATE cxx_std_20)
+    target_include_directories(URKitApp PRIVATE
+        ${URK_INCLUDE_DIRS}
+        ${URK_GENERATED_SDK_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/mcp/server
+    )
+    target_compile_definitions(URKitApp PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    target_link_libraries(URKitApp PRIVATE wx::core wx::base nlohmann_json::nlohmann_json
+        bcrypt winhttp shell32 ole32 advapi32)
+    set_target_properties(URKitApp PROPERTIES OUTPUT_NAME "urk")
+    if (MSVC)
+        target_compile_options(URKitApp PRIVATE /W4 /permissive- /EHsc /utf-8)
+        target_link_options(URKitApp PRIVATE
+            "$<$<NOT:$<CONFIG:Debug>>:/INCREMENTAL:NO>"
+            "$<$<NOT:$<CONFIG:Debug>>:/OPT:REF>"
+            "$<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>"
         )
-        target_compile_features(${target_name} PRIVATE cxx_std_20)
-        target_include_directories(${target_name} PRIVATE ${URK_INCLUDE_DIRS} ${URK_GENERATED_SDK_DIR})
-        target_compile_definitions(${target_name} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-        set_target_properties(${target_name} PROPERTIES OUTPUT_NAME "${output_name}")
-        if (WIN32)
-            set_target_properties(${target_name} PROPERTIES WIN32_EXECUTABLE TRUE)
-            target_compile_definitions(${target_name} PRIVATE UNICODE _UNICODE)
-            target_link_libraries(${target_name} PRIVATE comctl32 comdlg32 dwmapi gdiplus ole32 shell32 uxtheme)
-        endif()
-        if (MSVC)
-            target_compile_options(${target_name} PRIVATE /W4 /permissive- /EHsc /utf-8)
-            target_link_options(${target_name} PRIVATE
-                "$<$<NOT:$<CONFIG:Debug>>:/INCREMENTAL:NO>"
-                "$<$<NOT:$<CONFIG:Debug>>:/OPT:REF>"
-                "$<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>"
-                "$<$<CONFIG:Release>:/LTCG>"
-            )
-            set_property(TARGET ${target_name} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
-        endif()
-        urk_disable_vs_vcpkg_integration(${target_name})
-    endfunction()
-
-    urk_add_sdk_executable(URKitSdkTool "urk-sdk" "${URK_SDK_TOOL_SRC}")
-    urk_add_sdk_executable(URKitUpdater "urk-updater" "${URK_UPDATER_SRC}")
-    if (WIN32)
-        target_link_libraries(URKitUpdater PRIVATE bcrypt winhttp)
     endif()
+    urk_disable_vs_vcpkg_integration(URKitApp)
 endif()
 
 if (NOT URK_BUILD_LOADER)
@@ -416,18 +424,16 @@ if (URK_BUILD_PUBLIC_RELEASE_STAGE)
     add_custom_target(URKitPublicRelease
         COMMAND ${CMAKE_COMMAND}
             -DOUTPUT_DIR=${URK_PUBLIC_RELEASE_DIR}
-            -DSDK_TOOL=$<TARGET_FILE:URKitSdkTool>
-            -DUPDATER=$<TARGET_FILE:URKitUpdater>
+            -DAPP=$<TARGET_FILE:URKitApp>
             -DVERSION_LOADER=$<TARGET_FILE:URKit>
             -DWINHTTP_LOADER=$<TARGET_FILE:URKitWinHttp>
             -DWINMM_LOADER=$<TARGET_FILE:URKitWinMm>
             -DDWMAPI_LOADER=$<TARGET_FILE:URKitDwmApi>
             -DINJECTED_LOADER=$<TARGET_FILE:URKitInjected>
-            -DDEV_MCP=$<TARGET_FILE:URKitDevMcp>
             -DDEV_BRIDGE=$<TARGET_FILE:URKitDevBridge>
             -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/StagePublicRelease.cmake
-        DEPENDS URKitSdkTool URKitUpdater URKit URKitWinHttp URKitWinMm URKitDwmApi URKitInjected URKitDevMcp URKitDevBridge
+        DEPENDS URKitApp URKit URKitWinHttp URKitWinMm URKitDwmApi URKitInjected URKitDevBridge
         COMMENT "Staging prebuilt URKit binaries"
         VERBATIM
     )

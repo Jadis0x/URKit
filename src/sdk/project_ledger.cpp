@@ -191,16 +191,18 @@ bool HashFileSha256(const fs::path &path, std::string *hash, std::string *error)
     return true;
 }
 
-bool ReadGeneratedFileLedger(const fs::path &projectRoot, GeneratedFileLedger *ledger, std::string *error) {
+namespace {
+
+bool ReadLedgerAt(const fs::path &path, const char *label, GeneratedFileLedger *ledger, std::string *error) {
     if (!ledger) {
         if (error)
-            *error = "generated-file ledger output is null";
+            *error = std::string(label) + " output is null";
         return false;
     }
-    std::ifstream input(projectRoot / kGeneratedFileLedgerRelativePath, std::ios::binary);
+    std::ifstream input(path, std::ios::binary);
     if (!input) {
         if (error)
-            *error = "generated-file ledger is missing";
+            *error = std::string(label) + " is missing";
         return false;
     }
 
@@ -214,7 +216,7 @@ bool ReadGeneratedFileLedger(const fs::path &projectRoot, GeneratedFileLedger *l
         const std::size_t equals = line.find('=');
         if (equals == std::string::npos || equals == 0) {
             if (error)
-                *error = "generated-file ledger contains an invalid line";
+                *error = std::string(label) + " contains an invalid line";
             return false;
         }
         const std::string key = line.substr(0, equals);
@@ -223,42 +225,104 @@ bool ReadGeneratedFileLedger(const fs::path &projectRoot, GeneratedFileLedger *l
             if (!ParsePositiveInt(value, &parsed.schemaVersion) ||
                 parsed.schemaVersion != kGeneratedFileLedgerSchemaVersion) {
                 if (error)
-                    *error = "generated-file ledger has an unsupported schema version";
+                    *error = std::string(label) + " has an unsupported schema version";
                 return false;
             }
         } else if (key == "sdk_version") {
             if (!ParsePositiveInt(value, &parsed.sdkVersion)) {
                 if (error)
-                    *error = "generated-file ledger has an invalid SDK version";
+                    *error = std::string(label) + " has an invalid SDK version";
                 return false;
             }
         } else if (key == "file") {
             const std::size_t separator = value.find('\t');
             if (separator == std::string::npos || !IsSha256(value.substr(0, separator))) {
                 if (error)
-                    *error = "generated-file ledger has an invalid file hash";
+                    *error = std::string(label) + " has an invalid file hash";
                 return false;
             }
             const fs::path relative = fs::path(value.substr(separator + 1)).lexically_normal();
             if (!IsSafeRelativePath(relative) ||
                 !parsed.hashes.emplace(relative.generic_string(), value.substr(0, separator)).second) {
                 if (error)
-                    *error = "generated-file ledger has an invalid or duplicate path";
+                    *error = std::string(label) + " has an invalid or duplicate path";
                 return false;
             }
         } else {
             if (error)
-                *error = "generated-file ledger contains an unknown field";
+                *error = std::string(label) + " contains an unknown field";
             return false;
         }
     }
     if (!input.eof() || parsed.sdkVersion <= 0) {
         if (error)
-            *error = "generated-file ledger is incomplete";
+            *error = std::string(label) + " is incomplete";
         return false;
     }
     *ledger = std::move(parsed);
     return true;
+}
+
+bool WriteLedgerAt(const fs::path &path, const char *label, const char *comment, int sdkVersion,
+                   std::vector<std::pair<std::string, std::string>> entries, std::string *error) {
+    std::sort(entries.begin(), entries.end());
+    if (std::adjacent_find(entries.begin(), entries.end(), [](const auto &left, const auto &right) {
+            return left.first == right.first;
+        }) != entries.end()) {
+        if (error)
+            *error = std::string(label) + " received duplicate paths";
+        return false;
+    }
+
+    const fs::path temporary = path.parent_path() / (path.filename().string() + ".tmp");
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) {
+        if (error)
+            *error = std::string("cannot create ") + label + " directory: " + ec.message();
+        return false;
+    }
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        if (error)
+            *error = std::string("cannot write ") + label;
+        return false;
+    }
+    output << "# " << comment << '\n'
+           << "schema_version=" << kGeneratedFileLedgerSchemaVersion << '\n'
+           << "sdk_version=" << sdkVersion << '\n';
+    for (const auto &[pathText, hash] : entries)
+        output << "file=" << hash << '\t' << pathText << '\n';
+    output.close();
+    if (!output) {
+        fs::remove(temporary, ec);
+        if (error)
+            *error = std::string("cannot finish ") + label;
+        return false;
+    }
+    fs::rename(temporary, path, ec);
+    if (ec) {
+        fs::remove(path, ec);
+        ec.clear();
+        fs::rename(temporary, path, ec);
+    }
+    if (ec) {
+        fs::remove(temporary, ec);
+        if (error)
+            *error = std::string("cannot publish ") + label + ": " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+bool ReadGeneratedFileLedger(const fs::path &projectRoot, GeneratedFileLedger *ledger, std::string *error) {
+    return ReadLedgerAt(projectRoot / kGeneratedFileLedgerRelativePath, "generated-file ledger", ledger, error);
+}
+
+bool ReadEditableFileLedger(const fs::path &projectRoot, GeneratedFileLedger *ledger, std::string *error) {
+    return ReadLedgerAt(projectRoot / kEditableFileLedgerRelativePath, "editable-file ledger", ledger, error);
 }
 
 bool WriteGeneratedFileLedger(const fs::path &projectRoot, int sdkVersion, const std::vector<fs::path> &relativePaths,
@@ -283,55 +347,52 @@ bool WriteGeneratedFileLedger(const fs::path &projectRoot, int sdkVersion, const
             return false;
         entries.emplace_back(relative.generic_string(), std::move(hash));
     }
-    std::sort(entries.begin(), entries.end());
-    if (std::adjacent_find(entries.begin(), entries.end(), [](const auto &left, const auto &right) {
-            return left.first == right.first;
-        }) != entries.end()) {
-        if (error)
-            *error = "generated-file ledger received duplicate paths";
-        return false;
-    }
+    return WriteLedgerAt(projectRoot / kGeneratedFileLedgerRelativePath, "generated-file ledger",
+                         "Managed by URKit. SHA-256 baselines for replaceable generated files.", sdkVersion,
+                         std::move(entries), error);
+}
 
-    const fs::path path = projectRoot / kGeneratedFileLedgerRelativePath;
-    const fs::path temporary = path.parent_path() / "generated-files.ini.tmp";
-    std::error_code ec;
-    fs::create_directories(path.parent_path(), ec);
-    if (ec) {
+namespace {
+
+bool WriteHashLedger(const fs::path &path, const char *label, const char *comment, int sdkVersion,
+                     const std::unordered_map<std::string, std::string> &hashes, std::string *error) {
+    if (sdkVersion <= 0) {
         if (error)
-            *error = "cannot create generated-file ledger directory: " + ec.message();
+            *error = std::string("cannot write ") + label + " without an SDK version";
         return false;
     }
-    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        if (error)
-            *error = "cannot write generated-file ledger";
-        return false;
+    std::vector<std::pair<std::string, std::string>> entries;
+    entries.reserve(hashes.size());
+    for (const auto &[pathText, hash] : hashes) {
+        const fs::path relative = fs::path(pathText).lexically_normal();
+        if (!IsSafeRelativePath(relative) || !IsSha256(hash)) {
+            if (error)
+                *error = std::string(label) + " rejected an unsafe entry";
+            return false;
+        }
+        entries.emplace_back(relative.generic_string(), hash);
     }
-    output << "# Managed by URKit. SHA-256 baselines for replaceable generated files.\n"
-           << "schema_version=" << kGeneratedFileLedgerSchemaVersion << '\n'
-           << "sdk_version=" << sdkVersion << '\n';
-    for (const auto &[pathText, hash] : entries)
-        output << "file=" << hash << '\t' << pathText << '\n';
-    output.close();
-    if (!output) {
-        fs::remove(temporary, ec);
-        if (error)
-            *error = "cannot finish generated-file ledger";
-        return false;
-    }
-    fs::rename(temporary, path, ec);
-    if (ec) {
-        fs::remove(path, ec);
-        ec.clear();
-        fs::rename(temporary, path, ec);
-    }
-    if (ec) {
-        fs::remove(temporary, ec);
-        if (error)
-            *error = "cannot publish generated-file ledger: " + ec.message();
-        return false;
-    }
-    return true;
+    return WriteLedgerAt(path, label, comment, sdkVersion, std::move(entries), error);
+}
+
+} // namespace
+
+bool WriteEditableFileLedger(const fs::path &projectRoot, int sdkVersion,
+                             const std::unordered_map<std::string, std::string> &hashes, std::string *error) {
+    return WriteHashLedger(projectRoot / kEditableFileLedgerRelativePath, "editable-file ledger",
+                           "Managed by URKit. SHA-256 of the template each user-owned file started from.", sdkVersion,
+                           hashes, error);
+}
+
+bool ReadReviewedTemplateLedger(const fs::path &projectRoot, GeneratedFileLedger *ledger, std::string *error) {
+    return ReadLedgerAt(projectRoot / kReviewedTemplateLedgerRelativePath, "reviewed-template ledger", ledger, error);
+}
+
+bool WriteReviewedTemplateLedger(const fs::path &projectRoot, int sdkVersion,
+                                 const std::unordered_map<std::string, std::string> &hashes, std::string *error) {
+    return WriteHashLedger(projectRoot / kReviewedTemplateLedgerRelativePath, "reviewed-template ledger",
+                           "Managed by URKit. Template changes already reported for files you kept.", sdkVersion,
+                           hashes, error);
 }
 
 } // namespace UrkProject

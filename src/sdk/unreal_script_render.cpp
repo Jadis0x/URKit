@@ -305,7 +305,7 @@ class Writer {
             }
         }
         std::ostringstream out;
-        out << "// " << entry_.name << ": pseudo-code decompiled by urk-sdk from Blueprint bytecode. For reading;\n"
+        out << "// " << entry_.name << ": pseudo-code decompiled by urk.exe from Blueprint bytecode. For reading;\n"
             << "// it is not compiled. Names are the engine's; UFoo::Bar(...) is a static call, resume_XXXX a latent\n"
             << "// continuation, L_XXXX a bytecode offset.\n";
         const std::string all = events.str() + functions.str() + resumes.str();
