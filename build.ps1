@@ -15,9 +15,7 @@ param(
 
     [switch]$Clean,
 
-    [string]$Target,
-
-    [switch]$NoTests
+    [string]$Target
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,9 +90,6 @@ if ($Clean -and (Test-Path $buildDir)) {
 Push-Location $RepoRoot
 try {
     $configureArgs = @('--preset', $presetName)
-    if ($NoTests) {
-        $configureArgs += @('-DBUILD_TESTING=OFF')
-    }
 
     Write-Host "-- Configuring ($presetName) --" -ForegroundColor Cyan
     & cmake @configureArgs

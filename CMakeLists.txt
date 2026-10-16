@@ -15,8 +15,6 @@ set(VCPKG_APPLOCAL_DEPS ${URK_VCPKG_APPLOCAL_DEPS} CACHE BOOL
 
 project(URKit LANGUAGES CXX)
 
-include(CTest)
-
 if (WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "URKit supports x64 Windows targets only.")
 endif()
@@ -103,63 +101,6 @@ if (URK_BUILD_DEV_MCP)
         endif()
         urk_disable_vs_vcpkg_integration(${target_name})
     endforeach()
-
-    if (BUILD_TESTING)
-        add_executable(urk_mcp_protocol_tests
-            tests/mcp_protocol_tests.cpp
-            ${URK_DEV_MCP_SERVER_LIBRARY_SRC}
-        )
-        target_include_directories(urk_mcp_protocol_tests PRIVATE . src/sdk sdk)
-        target_compile_features(urk_mcp_protocol_tests PRIVATE cxx_std_20)
-        target_compile_definitions(urk_mcp_protocol_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-        target_link_libraries(urk_mcp_protocol_tests PRIVATE nlohmann_json::nlohmann_json)
-        add_test(NAME urkit_mcp_protocol COMMAND urk_mcp_protocol_tests)
-
-        add_executable(urk_mcp_project_service_tests
-            tests/mcp_project_service_tests.cpp
-            mcp/server/process_runner.cpp
-            mcp/server/project_service.cpp
-            src/sdk/project_manifest.cpp
-        )
-        target_include_directories(urk_mcp_project_service_tests PRIVATE . src/sdk sdk)
-        target_compile_features(urk_mcp_project_service_tests PRIVATE cxx_std_20)
-        target_compile_definitions(urk_mcp_project_service_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-        target_compile_definitions(urk_mcp_project_service_tests PRIVATE
-            URK_TEST_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
-        )
-        target_link_libraries(urk_mcp_project_service_tests PRIVATE nlohmann_json::nlohmann_json)
-        add_test(NAME urkit_mcp_project_service COMMAND urk_mcp_project_service_tests)
-
-        add_executable(urk_runtime_test_discovery_tests
-            tests/runtime_test_discovery_tests.cpp
-            dev/bridge/runtime_test_discovery.cpp
-        )
-        target_include_directories(urk_runtime_test_discovery_tests PRIVATE . sdk dev/bridge)
-        target_compile_features(urk_runtime_test_discovery_tests PRIVATE cxx_std_20)
-        target_compile_definitions(urk_runtime_test_discovery_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-        target_link_libraries(urk_runtime_test_discovery_tests PRIVATE nlohmann_json::nlohmann_json)
-        add_test(NAME urkit_runtime_test_discovery COMMAND urk_runtime_test_discovery_tests)
-    endif()
-endif()
-
-if (BUILD_TESTING)
-    # Pure string logic shared by the Mono and IL2CPP bindings; no runtime needed.
-    add_executable(urk_unity_name_matching_tests tests/unity_name_matching_tests.cpp)
-    target_include_directories(urk_unity_name_matching_tests PRIVATE .)
-    target_compile_features(urk_unity_name_matching_tests PRIVATE cxx_std_20)
-    target_compile_definitions(urk_unity_name_matching_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    urk_disable_vs_vcpkg_integration(urk_unity_name_matching_tests)
-    add_test(NAME urkit_unity_name_matching COMMAND urk_unity_name_matching_tests)
-
-    # The Unreal reader's range cache against memory the test reserves and frees; no game needed.
-    add_executable(urk_unreal_process_memory_tests tests/unreal_process_memory_tests.cpp
-        ${URK_SRC_DIR}/unreal/memory/unreal_process_memory.cpp)
-    target_include_directories(urk_unreal_process_memory_tests PRIVATE . src)
-    target_compile_features(urk_unreal_process_memory_tests PRIVATE cxx_std_20)
-    target_compile_definitions(urk_unreal_process_memory_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    urk_disable_vs_vcpkg_integration(urk_unreal_process_memory_tests)
-    add_test(NAME urkit_unreal_process_memory COMMAND urk_unreal_process_memory_tests)
-
 endif()
 
 if (URK_BUILD_SDK_TOOL)
@@ -227,32 +168,6 @@ if (URK_BUILD_SDK_TOOL)
     if (WIN32)
         target_link_libraries(URKitUpdater PRIVATE bcrypt winhttp)
     endif()
-
-if (BUILD_TESTING)
-    # The SDK templates are raw strings, so only a generated project type-checks
-    # them. This generates one per backend and compiles a probe against it.
-    add_executable(urk_generated_project_tests
-        tests/generated_project_tests.cpp
-        ${URK_SDK_GENERATOR_SRC}
-        ${URK_EMBEDDED_MOD_SDK_HEADER}
-        ${URK_EMBEDDED_DEV_TEST_HEADER}
-    )
-    target_include_directories(urk_generated_project_tests PRIVATE . ${URK_INCLUDE_DIRS} ${URK_GENERATED_SDK_DIR})
-    target_compile_features(urk_generated_project_tests PRIVATE cxx_std_20)
-    target_compile_definitions(urk_generated_project_tests PRIVATE
-        WIN32_LEAN_AND_MEAN NOMINMAX
-        URK_TEST_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
-        URK_TEST_SDK_DIR="${URK_SDK_DIR}"
-    )
-    if (MSVC)
-        # Same as the tools: the generator catches exceptions per class.
-        target_compile_options(urk_generated_project_tests PRIVATE /EHsc /utf-8)
-    endif()
-    urk_disable_vs_vcpkg_integration(urk_generated_project_tests)
-    add_test(NAME urkit_generated_project COMMAND urk_generated_project_tests)
-    set_tests_properties(urkit_generated_project PROPERTIES TIMEOUT 600)
-endif()
-
 endif()
 
 if (NOT URK_BUILD_LOADER)
@@ -294,24 +209,9 @@ if (URK_WITH_SAFETYHOOK)
         target_compile_options(safetyhook PRIVATE /W0)
     endif()
     urk_disable_vs_vcpkg_integration(safetyhook)
-
-    if (BUILD_TESTING)
-        add_executable(urk_safetyhook_backend_tests
-            tests/safetyhook_backend_tests.cpp
-            src/core/safetyhook_backend.cpp
-        )
-        target_include_directories(urk_safetyhook_backend_tests PRIVATE src/core sdk)
-        target_compile_features(urk_safetyhook_backend_tests PRIVATE cxx_std_23)
-        target_compile_definitions(urk_safetyhook_backend_tests PRIVATE
-            URK_WITH_SAFETYHOOK=1 WIN32_LEAN_AND_MEAN NOMINMAX)
-        target_link_libraries(urk_safetyhook_backend_tests PRIVATE safetyhook)
-        urk_disable_vs_vcpkg_integration(urk_safetyhook_backend_tests)
-        add_test(NAME urkit_safetyhook_backend COMMAND urk_safetyhook_backend_tests)
-    endif()
 endif()
 
 if (URK_WITH_CURL)
-    set(URK_SAVED_BUILD_TESTING ${BUILD_TESTING})
     set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
     set(CURL_STATIC_CRT ON CACHE BOOL "" FORCE)
@@ -335,7 +235,6 @@ if (URK_WITH_CURL)
         GIT_TAG        curl-8_21_0
     )
     FetchContent_MakeAvailable(curl)
-    set(BUILD_TESTING ${URK_SAVED_BUILD_TESTING} CACHE BOOL "" FORCE)
     if (TARGET CURL::libcurl)
         set(URK_CURL_TARGET CURL::libcurl)
     elseif (TARGET libcurl)

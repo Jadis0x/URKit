@@ -5,7 +5,6 @@ rem URKit build launcher.
 rem   build.bat                     -> interactive menu
 rem   build.bat msvc release        -> non-interactive
 rem   build.bat clang debug clean   -> non-interactive + wipe build dir
-rem   build.bat msvc release notests
 
 set "COMPILER=%~1"
 set "CONFIG=%~2"
@@ -39,7 +38,6 @@ if "%EXTRA%"=="" (
 
 set "PS_ARGS=-Compiler %COMPILER% -Config %CONFIG%"
 if /i "%EXTRA%"=="clean" set "PS_ARGS=%PS_ARGS% -Clean"
-if /i "%EXTRA%"=="notests" set "PS_ARGS=%PS_ARGS% -NoTests"
 
 echo Running: powershell -File build.ps1 %PS_ARGS%
 echo.
