@@ -155,10 +155,12 @@ DetoursResult UpdateTransactionThreads(std::vector<HANDLE> *opened_threads) {
         const LONG update_result = DetourUpdateThread(thread);
         if (update_result != NO_ERROR) {
             // Threads exiting after the snapshot fail with ERROR_ACCESS_DENIED; skip them.
+            // A thread still inside ExitThread/TerminateThread is refused the same way
+            // while its exit code reads STILL_ACTIVE, but it never runs patched code again.
             DWORD exit_code = 0;
             const bool exited = GetExitCodeThread(thread, &exit_code) && exit_code != STILL_ACTIVE;
             CloseHandle(thread);
-            if (exited)
+            if (exited || update_result == ERROR_ACCESS_DENIED)
                 continue;
             result = {update_result, "DetourUpdateThread", entry.th32ThreadID};
             break;

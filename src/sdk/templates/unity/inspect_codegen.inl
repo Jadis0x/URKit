@@ -146,7 +146,9 @@ void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr);
     while (current) {
         void *it = nullptr;
         const void *match = nullptr;
+        const void *nonGeneric = nullptr;
         int matches = 0;
+        int nonGenericMatches = 0;
         while (const auto *m = URK::mono::class_get_methods(static_cast<const URK::mono::Class *>(current), &it)) {
             const char *mn = URK::mono::method_get_name(m);
             if (!mn || n != mn)
@@ -155,9 +157,17 @@ void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr);
             if (argc < 0 || (sig && static_cast<int>(URK::mono::signature_get_param_count(sig)) == argc)) {
                 match = m;
                 ++matches;
+                if (!URK::mono::method_is_generic(m)) {
+                    nonGeneric = m;
+                    ++nonGenericMatches;
+                }
             }
         }
-        if (matches > 1) {
+        // A generic definition cannot be invoked directly, so a single
+        // non-generic candidate wins over generic overloads of the same shape.
+        if (nonGenericMatches == 1) {
+            match = nonGeneric;
+        } else if (matches > 1) {
             set_error(std::string("Unity method lookup failed: ambiguous overload by name/argc: ") + std::string(name));
             return nullptr;
         }
@@ -188,7 +198,9 @@ void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr);
     while (current) {
         void *it = nullptr;
         const void *match = nullptr;
+        const void *nonGeneric = nullptr;
         int matches = 0;
+        int nonGenericMatches = 0;
         while (const auto *m = URK::il2cpp::class_get_methods(static_cast<const URK::il2cpp::Class *>(current), &it)) {
             const char *mn = URK::il2cpp::method_get_name(m);
             if (!mn || n != mn)
@@ -196,9 +208,15 @@ void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr);
             if (argc < 0 || static_cast<int>(URK::il2cpp::method_get_param_count(m)) == argc) {
                 match = m;
                 ++matches;
+                if (!URK::il2cpp::method_is_generic(m)) {
+                    nonGeneric = m;
+                    ++nonGenericMatches;
+                }
             }
         }
-        if (matches > 1) {
+        if (nonGenericMatches == 1) {
+            match = nonGeneric;
+        } else if (matches > 1) {
             set_error(std::string("Unity method lookup failed: ambiguous overload by name/argc: ") + std::string(name));
             return nullptr;
         }

@@ -1515,23 +1515,32 @@ struct Object {
     template <class T> static std::vector<T> FindAllInstances() {
         return FindObjectsOfTypeAll<T>();
     }
-    template <class T = Object> static T Instantiate(const T &original) {
-        return T{detail::InvokeStatic<void *>(UnityObjectType, "Instantiate", original)};
+    // The clone has the original's type unless one is named:
+    // Instantiate(go) returns a GameObject, Instantiate<GameObject>(component) also works.
+    template <class T, class U> using InstantiateResult = std::conditional_t<std::is_void_v<T>, U, T>;
+    template <class T = void, class U> static InstantiateResult<T, U> Instantiate(const U &original) {
+        return InstantiateResult<T, U>{detail::InvokeStatic<void *>(UnityObjectType, "Instantiate", original)};
     }
-    template <class T = Object> static T Instantiate(const T &original, const Transform &parent) {
-        return T{detail::InvokeStatic<void *>(UnityObjectType, "Instantiate", original, parent)};
+    template <class T = void, class U>
+    static InstantiateResult<T, U> Instantiate(const U &original, const Transform &parent) {
+        return InstantiateResult<T, U>{detail::InvokeStatic<void *>(UnityObjectType, "Instantiate", original, parent)};
     }
-    template <class T = Object>
-    static T Instantiate(const T &original, const Transform &parent, bool instantiateInWorldSpace) {
-        return T{
+    template <class T = void, class U>
+    static InstantiateResult<T, U> Instantiate(const U &original, const Transform &parent,
+                                               bool instantiateInWorldSpace) {
+        return InstantiateResult<T, U>{
             detail::InvokeStatic<void *>(UnityObjectType, "Instantiate", original, parent, instantiateInWorldSpace)};
     }
-    template <class T = Object> static T Instantiate(const T &original, Vector3 position, Quaternion rotation) {
-        return T{detail::InvokeStatic<void *>(UnityObjectType, "Instantiate", original, position, rotation)};
+    template <class T = void, class U>
+    static InstantiateResult<T, U> Instantiate(const U &original, Vector3 position, Quaternion rotation) {
+        return InstantiateResult<T, U>{
+            detail::InvokeStatic<void *>(UnityObjectType, "Instantiate", original, position, rotation)};
     }
-    template <class T = Object>
-    static T Instantiate(const T &original, Vector3 position, Quaternion rotation, const Transform &parent) {
-        return T{detail::InvokeStatic<void *>(UnityObjectType, "Instantiate", original, position, rotation, parent)};
+    template <class T = void, class U>
+    static InstantiateResult<T, U> Instantiate(const U &original, Vector3 position, Quaternion rotation,
+                                               const Transform &parent) {
+        return InstantiateResult<T, U>{
+            detail::InvokeStatic<void *>(UnityObjectType, "Instantiate", original, position, rotation, parent)};
     }
     static void Destroy(const Object &object) {
         detail::InvokeStatic<void>(UnityObjectType, "Destroy", object);
