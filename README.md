@@ -16,7 +16,7 @@ with both Mono and IL2CPP games.
 Unreal Engine support is on the way, but it isn't ready yet. See
 [where it stands](#unreal-engine-work-in-progress).
 
-<img src="showcase/ss1.png" width="550">
+<img src="showcase/ss1.png" width="100%">
 
 ## What's in a release
 
