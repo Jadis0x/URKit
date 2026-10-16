@@ -439,6 +439,8 @@ std::optional<Operand> MemoryOperand(const std::uint8_t *code, std::size_t size,
 struct Store {
     Operand target;
     std::optional<std::uint32_t> immediate;
+    // The register stored, when there is no immediate.
+    int source = -1;
     std::size_t end = 0;
 
     // Absolute for rip, else the raw displacement.
@@ -479,14 +481,38 @@ std::optional<Store> DecodeStore(const std::uint8_t *code, std::size_t size, std
         std::memcpy(&value, code + store.end, width);
         store.immediate = value;
         store.end += width;
+    } else {
+        store.source = operand->reg | ((rex & 4) << 1);
     }
     return store;
+}
+
+struct RegisterLoad {
+    int target = 0;
+    std::uint32_t value = 0;
+};
+
+// `mov r32, imm32` at code[at].
+std::optional<RegisterLoad> DecodeRegisterLoad(const std::uint8_t *code, std::size_t size, std::size_t at) {
+    std::uint8_t rex = 0;
+    if (at < size && (code[at] & 0xF0) == 0x40)
+        rex = code[at++];
+    if ((rex & 8) || at + 5 > size || (code[at] & 0xF8) != 0xB8)
+        return std::nullopt;
+    RegisterLoad load;
+    load.target = (code[at] & 7) | ((rex & 1) << 3);
+    std::memcpy(&load.value, code + at + 1, sizeof(load.value));
+    return load;
 }
 
 constexpr std::uint8_t kMaxMinor = 30;
 // REX + opcode + ModRM + SIB + disp32 + imm32.
 constexpr std::size_t kLongestStore = 12;
-constexpr int kChangelistWithin = 4;
+constexpr std::size_t kLongestInstruction = 15;
+// Patch and changelist stores follow within this many instructions, in either order.
+constexpr int kFieldsWithin = 12;
+// Or the changelist comes this many bytes before the version store.
+constexpr std::size_t kChangelistBefore = kLongestStore * 4;
 constexpr std::size_t kChunk = std::size_t{1} << 20;
 
 } // namespace
@@ -495,19 +521,21 @@ EngineVersion FindVersionInCode(const MemoryReader &reader, std::span<const Scan
                                 InstructionLength length) {
     EngineVersion found;
     std::vector<std::uint8_t> buffer;
-    // Chunks overlap by a few instructions, so a store is never cut in two.
-    constexpr std::size_t kOverlap = kLongestStore * (kChangelistWithin + 3);
+    // Chunks overlap by a few instructions on both sides, so a store is never cut in two.
+    constexpr std::size_t kOverlap = kLongestStore + kLongestInstruction * kFieldsWithin;
+    constexpr std::size_t kLead = kLongestStore + kChangelistBefore;
     for (const ScanRegion &region : code) {
         for (std::uint64_t offset = 0; offset < region.size; offset += kChunk) {
+            const auto lead = static_cast<std::size_t>(std::min<std::uint64_t>(offset, kLead));
             const auto take =
-                static_cast<std::size_t>(std::min<std::uint64_t>(kChunk + kOverlap, region.size - offset));
-            const Address base = region.start + offset;
+                static_cast<std::size_t>(std::min<std::uint64_t>(kChunk + kOverlap, region.size - offset) + lead);
+            const Address base = region.start + offset - lead;
             buffer.resize(take);
             if (!reader.Read(base, buffer.data(), take))
                 continue;
             const std::uint8_t *bytes = buffer.data();
-            const std::size_t scanEnd = std::min(take, kChunk);
-            for (std::size_t p = 2; p + 4 <= scanEnd; ++p) {
+            const std::size_t scanEnd = std::min(take, lead + kChunk);
+            for (std::size_t p = std::max<std::size_t>(lead, 2); p + 4 <= scanEnd; ++p) {
                 // Major (4 or 5) and a minor, 16 bits each.
                 if ((bytes[p] != 4 && bytes[p] != 5) || bytes[p + 1] != 0 || bytes[p + 2] == 0 ||
                     bytes[p + 2] > kMaxMinor || bytes[p + 3] != 0)
@@ -520,24 +548,44 @@ EngineVersion FindVersionInCode(const MemoryReader &reader, std::span<const Scan
                     // FEngineVersionBase is 4-byte aligned.
                     if (version->target.base != kRip && at % 4 != 0)
                         continue;
-                    const std::optional<Store> patch = DecodeStore(bytes, take, version->end, true);
-                    if (!patch || !patch->SameBase(*version) || patch->Where(base) != at + 4 ||
-                        (patch->immediate && *patch->immediate > kMaxMinor))
-                        continue;
+                    const auto isChangelist = [&](const std::optional<Store> &store) {
+                        return store && store->SameBase(*version) && store->Where(base) == at + 8;
+                    };
+                    // Instructions are not decodable backwards: every byte is a try.
                     bool changelist = false;
-                    std::size_t next = patch->end;
-                    for (int step = 0; step < kChangelistWithin && next < take; ++step) {
+                    for (std::size_t back = start > kChangelistBefore ? start - kChangelistBefore : 0;
+                         back < start && !changelist; ++back) {
+                        const std::optional<Store> store = DecodeStore(bytes, take, back, false);
+                        changelist = isChangelist(store) && store->end <= start;
+                    }
+                    // The compiler may put other instructions between them (Grounded).
+                    std::optional<Store> patch;
+                    std::optional<std::uint32_t> patchValue;
+                    std::optional<RegisterLoad> previous;
+                    std::size_t next = version->end;
+                    for (int step = 0; step < kFieldsWithin && next < take && !(patch && changelist); ++step) {
+                        const std::optional<Store> sixteen = DecodeStore(bytes, take, next, true);
                         const std::optional<Store> store = DecodeStore(bytes, take, next, false);
-                        if (store && store->SameBase(*version) && store->Where(base) == at + 8) {
-                            changelist = true;
-                            break;
+                        if (!patch && sixteen && sixteen->SameBase(*version) && sixteen->Where(base) == at + 4) {
+                            patch = sixteen;
+                            // A register patch is known when loaded right before.
+                            if (sixteen->immediate)
+                                patchValue = sixteen->immediate;
+                            else if (previous && previous->target == sixteen->source)
+                                patchValue = previous->value;
                         }
-                        const std::size_t size = length ? length(bytes + next, take - next) : 0;
+                        if (isChangelist(store))
+                            changelist = true;
+                        previous = DecodeRegisterLoad(bytes, take, next);
+                        std::size_t size = length ? length(bytes + next, take - next) : 0;
+                        // Without a decoder, only stores can be stepped over.
+                        if (size == 0)
+                            size = sixteen ? sixteen->end - next : store ? store->end - next : 0;
                         if (size == 0)
                             break;
                         next += size;
                     }
-                    if (!changelist)
+                    if (!patch || !changelist || (patchValue && *patchValue > kMaxMinor))
                         continue;
                     const std::int32_t major = bytes[p];
                     const std::int32_t minor = bytes[p + 2];
@@ -545,8 +593,8 @@ EngineVersion FindVersionInCode(const MemoryReader &reader, std::span<const Scan
                         return {};
                     found.major = major;
                     found.minor = minor;
-                    if (patch->immediate)
-                        found.patch = std::max(found.patch, static_cast<std::int32_t>(*patch->immediate));
+                    if (patchValue)
+                        found.patch = std::max(found.patch, static_cast<std::int32_t>(*patchValue));
                     found.source = "FEngineVersion's constructor in code";
                     break;
                 }

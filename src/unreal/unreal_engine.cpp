@@ -238,7 +238,8 @@ std::vector<std::string> UnrealEngine::ExplainAnchorsLocked() {
 }
 
 void UnrealEngine::ResolveVersionFromCode(InstructionLength length) {
-    if (!Available() || version_.Known())
+    // A version resource often stops at "4.27": the patch is still in code.
+    if (!Available() || (version_.Known() && version_.patch > 0))
         return;
     std::vector<ScanRegion> code;
     for (const Address module : Presence().runtimeModules) {
@@ -248,6 +249,13 @@ void UnrealEngine::ResolveVersionFromCode(InstructionLength length) {
     EngineVersion found = FindVersionInCode(memory_, code, length);
     if (!found.Known())
         return;
+    if (version_.Known()) {
+        if (found.major == version_.major && found.minor == version_.minor && found.patch > 0) {
+            version_.patch = found.patch;
+            version_.source += " (patch from FEngineVersion's constructor in code)";
+        }
+        return;
+    }
     found.branch = version_.branch;
     found.changelist = version_.changelist;
     version_ = std::move(found);

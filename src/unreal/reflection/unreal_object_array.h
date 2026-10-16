@@ -4,6 +4,9 @@
 
 #include "unreal/memory/unreal_memory.h"
 
+#include <xmmintrin.h>
+
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -85,6 +88,8 @@ class ObjectArray {
 
     // Every slot in index order, a block per read; stops when visit returns false.
     template <typename Visit> void ForEach(Visit &&visit) const {
+        // Objects are scattered: fetching headers ahead hides most of each miss.
+        constexpr std::int32_t kFetchAhead = 16;
         const std::int32_t total = Num();
         std::vector<Address> block;
         std::vector<std::uint8_t> bytes;
@@ -92,7 +97,11 @@ class ObjectArray {
             const std::int32_t count = ReadBlock(first, total, block, bytes);
             if (count <= 0)
                 return;
+            for (std::int32_t i = 0; i < std::min(count, kFetchAhead); ++i)
+                FetchHeader(block[i]);
             for (std::int32_t i = 0; i < count; ++i) {
+                if (i + kFetchAhead < count)
+                    FetchHeader(block[i + kFetchAhead]);
                 if (!visit(first + i, block[i]))
                     return;
             }
@@ -101,6 +110,12 @@ class ObjectArray {
     }
 
   private:
+    // A prefetch never faults, so any pointer will do.
+    static void FetchHeader(Address object) {
+        if (object != kNullAddress)
+            _mm_prefetch(reinterpret_cast<const char *>(object), _MM_HINT_T0);
+    }
+
     // Object pointers from first on, within one chunk; null where unreadable.
     std::int32_t ReadBlock(std::int32_t first, std::int32_t total, std::vector<Address> &objects,
                            std::vector<std::uint8_t> &bytes) const;

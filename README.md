@@ -59,22 +59,20 @@ load the loader you picked, so try one of the others.
 
 We're working on Unreal support, and honestly it's not ready for real mods
 yet. Unity has an API we can ask about the game; Unreal doesn't, so URKit has
-to find everything on its own while the game runs. That part works, but so
-far it has only been tried on two games, and the second one already turned
-up bugs. Here's where things stand:
+to find everything on its own while the game runs. So far it has been tried
+on UE 4.27, 5.4 and 5.8 games. Here's where things stand:
 
 | What | Status | Notes |
 |---|---|---|
-| Finding the engine in a running game | Works | Tried on a UE 5.8 game and a UE 5.4 game |
-| Calling game functions, hooking `ProcessEvent` | Works | The 5.4 game needed a fix first |
+| Finding the engine in a running game | Works | |
+| Calling game functions, hooking `ProcessEvent` | Works | |
 | Map load / map change events | Works | |
-| `update()` every frame | Buggy | In quiet scenes like a main menu it can drop to about once a second |
-| Typed headers from the game (`DumpTypes`) | Works on 5.8 | Not tried on other versions yet |
-| Numbers, objects, structs, `FString`, `FName`, `TArray` | Works on 5.8 | |
+| `update()` every frame | Works | |
+| Typed headers from the game (`DumpTypes`) | Works | |
+| Numbers, objects, structs, `FString`, `FName`, `FText`, `TArray` | Works | |
 | `TSet` and `TMap` | Mostly works | If an edit fails halfway, the container can be left broken |
-| `FText` | 5.8 only | Turned off on 5.4 for now |
-| Enums by name, soft and weak references, delegates | Works on 5.8 | |
-| Sparse delegates, interfaces, lazy pointers | Not yet | |
+| Enums by name, soft and weak references, delegates | Works | |
+| Sparse delegates, interfaces, lazy pointers | Works | |
 | Engines older than 4.25 | Not supported | |
 
 If you want to poke at it anyway: put the loader next to the game's

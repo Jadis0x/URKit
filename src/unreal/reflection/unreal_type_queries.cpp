@@ -328,18 +328,26 @@ std::vector<Address> TypeQueries::InstancesOf(const InstanceQuery &query) const 
         Address defaultObject = kNullAddress;
     };
     std::unordered_map<Address, Verdict> verdicts;
+    // Neighbours often share a class; this skips the map for them.
+    Address lastClass = kNullAddress;
+    const Verdict *last = nullptr;
     finder_->Objects().ForEach([&](std::int32_t, Address object) {
         const Address classObject = TrustedClassOf(object);
         if (classObject == kNullAddress)
             return true;
-        const auto [entry, added] = verdicts.try_emplace(classObject);
-        Verdict &verdict = entry->second;
-        if (added) {
-            verdict.matches =
-                query.exact ? classObject == query.classObject : IsChildOf(classObject, query.classObject);
-            if (verdict.matches && !query.includeDefaults)
-                verdict.defaultObject = DefaultObjectOf(classObject);
+        if (classObject != lastClass) {
+            const auto [entry, added] = verdicts.try_emplace(classObject);
+            Verdict &verdict = entry->second;
+            if (added) {
+                verdict.matches =
+                    query.exact ? classObject == query.classObject : IsChildOf(classObject, query.classObject);
+                if (verdict.matches && !query.includeDefaults)
+                    verdict.defaultObject = DefaultObjectOf(classObject);
+            }
+            lastClass = classObject;
+            last = &verdict;
         }
+        const Verdict &verdict = *last;
         if (!verdict.matches || (!query.includeDefaults && object == verdict.defaultObject))
             return true;
         found.push_back(object);
