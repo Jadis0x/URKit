@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <gdiplus.h>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -48,8 +49,8 @@ constexpr DWORD kFadeOutMs = 220;
 constexpr float kProgressModsStart = 0.72f;
 constexpr float kProgressModsEnd = 0.96f;
 // Card size in 96-DPI pixels; the shadow margin is drawn around it.
-constexpr int kCardWidth = 760;
-constexpr int kCardHeight = 300;
+constexpr int kCardWidth = 1000;
+constexpr int kCardHeight = 477;
 constexpr int kShadowMargin = 18;
 
 ULONG_PTR g_gdiplusToken = 0;
@@ -192,17 +193,8 @@ Gdiplus::Image *LoadImageFromBytes(const std::vector<BYTE> &bytes) {
 }
 
 Gdiplus::Image *LoadEmbeddedSplashImage() {
-    DWORD decodedSize = 0;
-    if (!CryptStringToBinaryA(IntroSplashEmbedded::kImageBase64, 0, CRYPT_STRING_BASE64, nullptr, &decodedSize, nullptr,
-                              nullptr) ||
-        decodedSize == 0)
-        return nullptr;
-    std::vector<BYTE> decoded(decodedSize);
-    if (!CryptStringToBinaryA(IntroSplashEmbedded::kImageBase64, 0, CRYPT_STRING_BASE64, decoded.data(), &decodedSize,
-                              nullptr, nullptr))
-        return nullptr;
-    decoded.resize(decodedSize);
-    return LoadImageFromBytes(decoded);
+    return LoadImageFromBytes(std::vector<BYTE>(std::begin(IntroSplashEmbedded::kImagePng),
+                                                std::end(IntroSplashEmbedded::kImagePng)));
 }
 
 void LoadSplashImage() {
