@@ -165,7 +165,7 @@ void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr);
         }
         // A generic definition cannot be invoked directly, so a single
         // non-generic candidate wins over generic overloads of the same shape.
-        if (nonGenericMatches == 1) {
+        if (argc >= 0 && nonGenericMatches == 1) {
             match = nonGeneric;
         } else if (matches > 1) {
             set_error(std::string("Unity method lookup failed: ambiguous overload by name/argc: ") + std::string(name));
@@ -214,7 +214,7 @@ void DumpProperties(TypeRef type, DiagnosticSink sink = nullptr);
                 }
             }
         }
-        if (nonGenericMatches == 1) {
+        if (argc >= 0 && nonGenericMatches == 1) {
             match = nonGeneric;
         } else if (matches > 1) {
             set_error(std::string("Unity method lookup failed: ambiguous overload by name/argc: ") + std::string(name));

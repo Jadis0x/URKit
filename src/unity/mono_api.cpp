@@ -513,30 +513,47 @@ MonoMethod *MonoApi::FindMethod(const char *image, const char *namespc, const ch
         return nullptr;
     }
 
-    MonoMethod *match = nullptr;
-    void *iterator = nullptr;
-    while (MonoMethod *method = class_get_methods(k, &iterator)) {
-        const char *name = method_get_name(method);
-        if (!name || std::strcmp(name, method_name) != 0)
-            continue;
-        if (argc >= 0) {
-            MonoMethodSignature *sig = method_signature(method);
-            if (!sig || static_cast<int>(signature_get_param_count(sig)) != argc)
+    for (MonoClass *current = k; current; current = class_get_parent ? class_get_parent(current) : nullptr) {
+        MonoMethod *match = nullptr;
+        MonoMethod *nonGeneric = nullptr;
+        int matches = 0;
+        int nonGenericMatches = 0;
+        void *iterator = nullptr;
+        while (MonoMethod *method = class_get_methods(current, &iterator)) {
+            const char *name = method_get_name(method);
+            if (!name || std::strcmp(name, method_name) != 0)
                 continue;
+            if (argc >= 0) {
+                MonoMethodSignature *sig = method_signature(method);
+                if (!sig || static_cast<int>(signature_get_param_count(sig)) != argc)
+                    continue;
+            }
+            ++matches;
+            if (!match)
+                match = method;
+            if (!method_is_generic || !method_is_generic(method)) {
+                ++nonGenericMatches;
+                if (!nonGeneric)
+                    nonGeneric = method;
+            }
         }
-        if (match && match != method) {
+        // A generic definition cannot be invoked directly, so a single non-generic
+        // candidate wins over generic overloads of the same shape.
+        if (argc >= 0 && nonGenericMatches == 1) {
+            match = nonGeneric;
+        } else if (matches > 1) {
             Log("[runtime][Mono][ERROR] method lookup is ambiguous: image='%s' type='%s.%s' method='%s' argc=%d "
-                "first=%p second=%p.",
-                image ? image : "", namespc ? namespc : "", klass ? klass : "", method_name, argc, match, method);
+                "matches=%d.",
+                image ? image : "", namespc ? namespc : "", klass ? klass : "", method_name, argc, matches);
             return nullptr;
         }
-        match = method;
+        if (match) {
+            std::scoped_lock lock(g_monoLookupCacheMutex);
+            g_monoLookupCaches.methods[cacheKey] = match;
+            return match;
+        }
     }
-    if (match) {
-        std::scoped_lock lock(g_monoLookupCacheMutex);
-        g_monoLookupCaches.methods[cacheKey] = match;
-    }
-    return match;
+    return nullptr;
 }
 
 MonoMethod *MonoApi::FindMethodExact(const char *image, const char *namespc, const char *klass, const char *method_name,

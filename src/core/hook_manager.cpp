@@ -110,6 +110,17 @@ class ProcessHeapHold {
     bool held_;
 };
 
+// True once a thread has begun exiting. Its exit code still reads STILL_ACTIVE until it is gone, and
+// enlisting it is refused with ERROR_ACCESS_DENIED, but it never runs patched code again.
+bool ThreadIsTerminating(HANDLE thread) {
+    constexpr ULONG kThreadIsTerminated = 20;
+    using NtQueryInformationThreadFn = LONG(NTAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    static const auto query = reinterpret_cast<NtQueryInformationThreadFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
+    ULONG terminated = 0;
+    return query && query(thread, kThreadIsTerminated, &terminated, sizeof(terminated), nullptr) >= 0 && terminated;
+}
+
 DetoursResult UpdateTransactionThreads(std::vector<HANDLE> *opened_threads) {
     if (!opened_threads)
         return {ERROR_INVALID_PARAMETER, "thread handle storage", 0};
@@ -154,13 +165,13 @@ DetoursResult UpdateTransactionThreads(std::vector<HANDLE> *opened_threads) {
 
         const LONG update_result = DetourUpdateThread(thread);
         if (update_result != NO_ERROR) {
-            // Threads exiting after the snapshot fail with ERROR_ACCESS_DENIED; skip them.
-            // A thread still inside ExitThread/TerminateThread is refused the same way
-            // while its exit code reads STILL_ACTIVE, but it never runs patched code again.
+            // Threads exiting after the snapshot fail with ERROR_ACCESS_DENIED; skip them. A live thread
+            // refused the same way must not be skipped: it could be running the code being patched.
             DWORD exit_code = 0;
-            const bool exited = GetExitCodeThread(thread, &exit_code) && exit_code != STILL_ACTIVE;
+            const bool exited = (GetExitCodeThread(thread, &exit_code) && exit_code != STILL_ACTIVE) ||
+                                (update_result == ERROR_ACCESS_DENIED && ThreadIsTerminating(thread));
             CloseHandle(thread);
-            if (exited || update_result == ERROR_ACCESS_DENIED)
+            if (exited)
                 continue;
             result = {update_result, "DetourUpdateThread", entry.th32ThreadID};
             break;
