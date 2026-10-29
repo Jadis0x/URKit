@@ -6,8 +6,8 @@
 urk_app ICON "urk.ico"
 
 1 VERSIONINFO
-FILEVERSION 0,5,0,0
-PRODUCTVERSION 0,5,0,0
+FILEVERSION 0,5,1,0
+PRODUCTVERSION 0,5,1,0
 FILEOS 0x40004
 FILETYPE 0x1
 BEGIN
@@ -17,12 +17,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Jadis0x"
             VALUE "FileDescription", "URKit"
-            VALUE "FileVersion", "0.5.0"
+            VALUE "FileVersion", "0.5.1"
             VALUE "InternalName", "urk"
             VALUE "LegalCopyright", "MIT License"
             VALUE "OriginalFilename", "urk.exe"
             VALUE "ProductName", "URKit"
-            VALUE "ProductVersion", "0.5.0"
+            VALUE "ProductVersion", "0.5.1"
         END
     END
     BLOCK "VarFileInfo"

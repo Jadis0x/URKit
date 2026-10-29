@@ -2,8 +2,10 @@
 <#
     Builds the MSVC release and packs it into out\installer\URKit-Setup-<version>.exe.
     Run from the repository root:  .\installer\make-installer.ps1
+    -SkipBuild packs what is already in out\build\msvc-release (package-release.ps1 uses this).
     Needs Inno Setup 6 (winget install JRSoftware.InnoSetup).
 #>
+param([switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $BinDir = Join-Path $RepoRoot 'out\build\msvc-release'
@@ -18,8 +20,10 @@ if (-not $iscc) {
     exit 1
 }
 
-& (Join-Path $RepoRoot 'build.ps1') -Compiler msvc -Config Release
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if (-not $SkipBuild) {
+    & (Join-Path $RepoRoot 'build.ps1') -Compiler msvc -Config Release
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 
 foreach ($name in 'urk.exe', 'version.dll', 'winhttp.dll', 'winmm.dll', 'dwmapi.dll', 'URKitInjector.dll', 'URKitDevBridge.dll') {
     if (-not (Test-Path (Join-Path $BinDir $name))) {
