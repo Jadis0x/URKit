@@ -37,10 +37,10 @@ constexpr const char *kUsage =
     "\n"
     "  urk.exe                               open the window\n"
     "  urk.exe new --game-exe <path> [--backend auto|mono|il2cpp|unreal] [--name <name>]\n"
-    "              [--localization] [--loader none|proxy|injector] [--proxy version|winhttp|winmm|dwmapi]\n"
+    "              [--localization] [--loader none|proxy|injector] [--proxy version|winhttp|winmm|dwmapi|msimg32]\n"
     "  urk.exe update --project <dir> [--check | --apply [--overwrite-conflicts] | --stage-sdk]\n"
     "  urk.exe loader status  --game-exe <path>\n"
-    "  urk.exe loader install --game-exe <path> [--proxy version|winhttp|winmm|dwmapi] [--replace-foreign]\n"
+    "  urk.exe loader install --game-exe <path> [--proxy version|winhttp|winmm|dwmapi|msimg32] [--replace-foreign]\n"
     "  urk.exe loader remove  --game-exe <path>\n"
     "  urk.exe loader inject  (--pid <pid> | --process <name.exe>) [--wait]\n"
     "  urk.exe self-update [--check]\n"
@@ -160,7 +160,7 @@ int RunNew(const std::vector<std::wstring> &raw, size_t start) {
         return UsageError("--loader must be none, proxy or injector");
     const std::string proxy = args.Value("--proxy", "version");
     if (!IsProxyName(proxy))
-        return UsageError("--proxy must be version, winhttp, winmm or dwmapi");
+        return UsageError("--proxy must be version, winhttp, winmm, dwmapi or msimg32");
     if (options.gameExePath.empty())
         return UsageError("--game-exe is required");
 
@@ -315,7 +315,7 @@ int RunLoader(const std::vector<std::wstring> &raw, size_t start) {
     if (verb == "install") {
         const std::string proxy = args.Value("--proxy", "version");
         if (!IsProxyName(proxy))
-            return UsageError("--proxy must be version, winhttp, winmm or dwmapi");
+            return UsageError("--proxy must be version, winhttp, winmm, dwmapi or msimg32");
         if (!InstallProxy(gameDir, proxy, args.Has("--replace-foreign"), log, error)) {
             log(LogLevel::Error, error);
             return kExitFailed;

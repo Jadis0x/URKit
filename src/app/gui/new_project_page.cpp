@@ -17,7 +17,7 @@ struct GenerateResult {
 };
 
 int ProxyIndex(const wxString &proxy) {
-    for (int index = 0; index < 4; ++index)
+    for (int index = 0; index < 5; ++index)
         if (proxy == UrkApp::kProxyNames[index])
             return index;
     return 0;
@@ -111,7 +111,7 @@ NewProjectPage::NewProjectPage(wxWindow *parent, MainFrame *frame) : Page(parent
         grid->Add(label("Engine"), 0, wxALIGN_CENTER_VERTICAL);
         grid->Add(backend_, 1, wxEXPAND);
 
-        proxy_ = new Segmented(content, {"version.dll", "winhttp.dll", "winmm.dll", "dwmapi.dll"},
+        proxy_ = new Segmented(content, {"version.dll", "winhttp.dll", "winmm.dll", "dwmapi.dll", "msimg32.dll"},
                                Segmented::Style::Field, [this](int index) {
                                    frame_->SetLoader(loader_->Selection() == 1 ? "injector" : "proxy",
                                                      UrkApp::kProxyNames[index]);

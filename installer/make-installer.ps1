@@ -25,7 +25,7 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-foreach ($name in 'urk.exe', 'version.dll', 'winhttp.dll', 'winmm.dll', 'dwmapi.dll', 'URKitInjector.dll', 'URKitDevBridge.dll') {
+foreach ($name in 'urk.exe', 'version.dll', 'winhttp.dll', 'winmm.dll', 'dwmapi.dll', 'msimg32.dll', 'URKitInjector.dll', 'URKitDevBridge.dll') {
     if (-not (Test-Path (Join-Path $BinDir $name))) {
         Write-Host "ERROR: $name is missing from $BinDir" -ForegroundColor Red
         exit 1

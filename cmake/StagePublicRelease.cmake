@@ -2,13 +2,13 @@ if (NOT DEFINED OUTPUT_DIR OR NOT IS_ABSOLUTE "${OUTPUT_DIR}")
     message(FATAL_ERROR "OUTPUT_DIR must be an absolute path.")
 endif()
 
-foreach(required_var APP VERSION_LOADER WINHTTP_LOADER WINMM_LOADER DWMAPI_LOADER INJECTED_LOADER DEV_BRIDGE SOURCE_DIR)
+foreach(required_var APP VERSION_LOADER WINHTTP_LOADER WINMM_LOADER DWMAPI_LOADER MSIMG32_LOADER INJECTED_LOADER DEV_BRIDGE SOURCE_DIR)
     if (NOT DEFINED ${required_var} OR "${${required_var}}" STREQUAL "")
         message(FATAL_ERROR "${required_var} is required.")
     endif()
 endforeach()
 
-foreach(binary_var APP VERSION_LOADER WINHTTP_LOADER WINMM_LOADER DWMAPI_LOADER INJECTED_LOADER DEV_BRIDGE)
+foreach(binary_var APP VERSION_LOADER WINHTTP_LOADER WINMM_LOADER DWMAPI_LOADER MSIMG32_LOADER INJECTED_LOADER DEV_BRIDGE)
     if (NOT EXISTS "${${binary_var}}")
         message(FATAL_ERROR "${binary_var} does not exist: ${${binary_var}}")
     endif()
@@ -20,6 +20,7 @@ set(release_files
     winhttp.dll
     winmm.dll
     dwmapi.dll
+    msimg32.dll
     URKitInjector.dll
     URKitDevBridge.dll
     LICENSE
@@ -65,6 +66,7 @@ copy_release_file("${VERSION_LOADER}" version.dll)
 copy_release_file("${WINHTTP_LOADER}" winhttp.dll)
 copy_release_file("${WINMM_LOADER}" winmm.dll)
 copy_release_file("${DWMAPI_LOADER}" dwmapi.dll)
+copy_release_file("${MSIMG32_LOADER}" msimg32.dll)
 copy_release_file("${INJECTED_LOADER}" URKitInjector.dll)
 copy_release_file("${DEV_BRIDGE}" URKitDevBridge.dll)
 copy_release_file("${SOURCE_DIR}/LICENSE" LICENSE)

@@ -23,7 +23,7 @@ Unreal Engine support is on the way, but it isn't ready yet. See
 - `urk.exe` makes new mod projects, updates existing ones without touching
   the files you wrote, and installs or injects the loader. Run it with no
   arguments for the window, or see `urk.exe help`.
-- `version.dll`, `winhttp.dll`, `winmm.dll` and `dwmapi.dll` are the proxy
+- `version.dll`, `winhttp.dll`, `winmm.dll`, `dwmapi.dll` and `msimg32.dll` are the proxy
   loaders. You only need the one the game actually loads. `version.dll` is a
   good first try. If Windows loads its own copy first (some games get a
   compatibility shim that does), try `dwmapi.dll`.

@@ -17,7 +17,7 @@ enum class LoaderMode {
 };
 
 // File names without extension, in the order they are offered.
-inline constexpr const char *kProxyNames[] = {"version", "winhttp", "winmm", "dwmapi"};
+inline constexpr const char *kProxyNames[] = {"version", "winhttp", "winmm", "dwmapi", "msimg32"};
 inline constexpr const char *kInjectorFileName = "URKitInjector.dll";
 
 const char *LoaderModeName(LoaderMode mode);

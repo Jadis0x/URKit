@@ -258,11 +258,13 @@ set(URK_VERSION_PROXY_SRC ${URK_SRC_DIR}/proxy/version_proxy.cpp)
 set(URK_WINHTTP_PROXY_SRC ${URK_SRC_DIR}/proxy/winhttp_proxy.cpp)
 set(URK_WINMM_PROXY_SRC ${URK_SRC_DIR}/proxy/winmm_proxy.cpp)
 set(URK_DWMAPI_PROXY_SRC ${URK_SRC_DIR}/proxy/dwmapi_proxy.cpp)
+set(URK_MSIMG32_PROXY_SRC ${URK_SRC_DIR}/proxy/msimg32_proxy.cpp)
 
 set(URK_VERSION_DEF ${URK_SRC_DIR}/proxy/version.def)
 set(URK_WINHTTP_DEF ${URK_SRC_DIR}/proxy/winhttp.def)
 set(URK_WINMM_DEF ${URK_SRC_DIR}/proxy/winmm.def)
 set(URK_DWMAPI_DEF ${URK_SRC_DIR}/proxy/dwmapi.def)
+set(URK_MSIMG32_DEF ${URK_SRC_DIR}/proxy/msimg32.def)
 
 set(URK_HEADER_CANDIDATES
     ${URK_SRC_DIR}/core/config.h

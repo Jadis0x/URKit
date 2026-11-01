@@ -418,6 +418,7 @@ add_urk_proxy(URKit version ${URK_VERSION_PROXY_SRC} ${URK_VERSION_DEF})
 add_urk_proxy(URKitWinHttp winhttp ${URK_WINHTTP_PROXY_SRC} ${URK_WINHTTP_DEF})
 add_urk_proxy(URKitWinMm winmm ${URK_WINMM_PROXY_SRC} ${URK_WINMM_DEF})
 add_urk_proxy(URKitDwmApi dwmapi ${URK_DWMAPI_PROXY_SRC} ${URK_DWMAPI_DEF})
+add_urk_proxy(URKitMsImg32 msimg32 ${URK_MSIMG32_PROXY_SRC} ${URK_MSIMG32_DEF})
 add_urk_injected_loader(URKitInjected URKitInjector)
 
 if (URK_BUILD_PUBLIC_RELEASE_STAGE)
@@ -429,11 +430,12 @@ if (URK_BUILD_PUBLIC_RELEASE_STAGE)
             -DWINHTTP_LOADER=$<TARGET_FILE:URKitWinHttp>
             -DWINMM_LOADER=$<TARGET_FILE:URKitWinMm>
             -DDWMAPI_LOADER=$<TARGET_FILE:URKitDwmApi>
+            -DMSIMG32_LOADER=$<TARGET_FILE:URKitMsImg32>
             -DINJECTED_LOADER=$<TARGET_FILE:URKitInjected>
             -DDEV_BRIDGE=$<TARGET_FILE:URKitDevBridge>
             -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/StagePublicRelease.cmake
-        DEPENDS URKitApp URKit URKitWinHttp URKitWinMm URKitDwmApi URKitInjected URKitDevBridge
+        DEPENDS URKitApp URKit URKitWinHttp URKitWinMm URKitDwmApi URKitMsImg32 URKitInjected URKitDevBridge
         COMMENT "Staging prebuilt URKit binaries"
         VERBATIM
     )
@@ -441,7 +443,7 @@ endif()
 
 set(URK_DEPLOY_DIR "" CACHE PATH "Target game folder for copying a proxy loader")
 set(URK_DEPLOY_PROXY "version" CACHE STRING "Proxy loader copied to URK_DEPLOY_DIR")
-set_property(CACHE URK_DEPLOY_PROXY PROPERTY STRINGS version winhttp winmm dwmapi)
+set_property(CACHE URK_DEPLOY_PROXY PROPERTY STRINGS version winhttp winmm dwmapi msimg32)
 
 if (URK_DEPLOY_DIR)
     if (URK_DEPLOY_PROXY STREQUAL "version")
@@ -450,10 +452,12 @@ if (URK_DEPLOY_DIR)
         set(URK_DEPLOY_TARGET URKitWinHttp)
     elseif (URK_DEPLOY_PROXY STREQUAL "winmm")
         set(URK_DEPLOY_TARGET URKitWinMm)
+    elseif (URK_DEPLOY_PROXY STREQUAL "msimg32")
+        set(URK_DEPLOY_TARGET URKitMsImg32)
     elseif (URK_DEPLOY_PROXY STREQUAL "dwmapi")
         set(URK_DEPLOY_TARGET URKitDwmApi)
     else()
-        message(FATAL_ERROR "URK_DEPLOY_PROXY must be version, winhttp, winmm, or dwmapi.")
+        message(FATAL_ERROR "URK_DEPLOY_PROXY must be version, winhttp, winmm, dwmapi, or msimg32.")
     endif()
 
     add_custom_command(TARGET ${URK_DEPLOY_TARGET} POST_BUILD

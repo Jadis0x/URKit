@@ -48,7 +48,7 @@ Copy-Item $installer $releaseDir
 # Portable folder: the same files the installer places, flat, as the README describes.
 $stage = Join-Path $releaseDir "URKit-$version"
 New-Item -ItemType Directory -Path $stage | Out-Null
-foreach ($name in 'urk.exe', 'version.dll', 'winhttp.dll', 'winmm.dll', 'dwmapi.dll', 'URKitInjector.dll', 'URKitDevBridge.dll') {
+foreach ($name in 'urk.exe', 'version.dll', 'winhttp.dll', 'winmm.dll', 'dwmapi.dll', 'msimg32.dll', 'URKitInjector.dll', 'URKitDevBridge.dll') {
     Copy-Item (Join-Path $BinDir $name) $stage
 }
 foreach ($name in 'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md') {

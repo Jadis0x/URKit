@@ -60,6 +60,7 @@ Source: "{#BinDir}\version.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\winhttp.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\winmm.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\dwmapi.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinDir}\msimg32.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\URKitInjector.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\URKitDevBridge.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion

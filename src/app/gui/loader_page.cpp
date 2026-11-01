@@ -13,7 +13,7 @@ std::filesystem::path GameDirectory(const wxString &exe) {
 }
 
 int ProxyIndex(const wxString &proxy) {
-    for (int index = 0; index < 4; ++index)
+    for (int index = 0; index < 5; ++index)
         if (proxy == UrkApp::kProxyNames[index])
             return index;
     return 0;
@@ -57,7 +57,7 @@ LoaderPage::LoaderPage(wxWindow *parent, MainFrame *frame) : Page(parent, frame,
         auto *more = new Collapsible(proxyPanel_, "Proxy file");
         wxPanel *content = more->Content();
         auto *contentSizer = new wxBoxSizer(wxVERTICAL);
-        proxy_ = new Segmented(content, {"version.dll", "winhttp.dll", "winmm.dll", "dwmapi.dll"},
+        proxy_ = new Segmented(content, {"version.dll", "winhttp.dll", "winmm.dll", "dwmapi.dll", "msimg32.dll"},
                                Segmented::Style::Field, [this](int index) {
                                    frame_->SetLoader("proxy", UrkApp::kProxyNames[index]);
                                    RefreshProxy();
